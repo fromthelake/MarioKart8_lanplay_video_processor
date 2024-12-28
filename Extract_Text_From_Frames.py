@@ -836,6 +836,9 @@ def process_images_in_folder(folder_path: str) -> None:
     # Add the CupName column
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
 
+    # Add the TrackID column
+    df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
+
     # Add standardized player names
     df = standardize_player_names(df, linking_data_folder)
 
@@ -853,7 +856,7 @@ def process_images_in_folder(folder_path: str) -> None:
 
     # Reorder columns for the final output
     desired_order = [
-        "RaceClass", "RaceIDNumber", "TrackName", "CupName", "RacePosition", "PlayerName",
+        "RaceClass", "RaceIDNumber", "TrackName", "TrackID", "CupName", "RacePosition", "PlayerName",
         "FixPlayerName", "RacePoints", "OldTotalScore", "NewTotalScore"
 
     ]
