@@ -52,6 +52,7 @@ def get_race_points(position: int, num_players: int) -> int:
         10: [12, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0],
         9: [11, 9, 8, 6, 5, 4, 3, 2, 1, 0],
         8: [10, 8, 6, 5, 4, 3, 2, 1, 0],
+        7: [9, 7, 5, 4, 3, 2, 1, 0],
     }
 
     # Default to 12 players if not explicitly defined
@@ -642,6 +643,49 @@ def standardize_player_names(df, output_folder):
 
     return standardized_names
 
+def validate_player_position(image_path: str, coordinates: List[Tuple[Tuple[int, int], Tuple[int, int]]], expected_position: int) -> Tuple[int, bool]:
+    """
+    Validate the player position using OCR to ensure it matches the expected position.
+
+    Parameters:
+        image_path (str): Path to the image containing player positions.
+        coordinates (List[Tuple[Tuple[int, int], Tuple[int, int]]]): Coordinates of the player position region.
+        expected_position (int): The expected player position based on iteration (i + 1).
+
+    Returns:
+        Tuple[int, bool]: Detected player position, validity flag.
+    """
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Image not found at path: {image_path}")
+
+    for (x1, y1), (x2, y2) in coordinates:
+        roi = image[y1:y2, x1:x2]
+        ocr_data = pytesseract.image_to_data(roi, lang='eng', config='--psm 7 -c tessedit_char_whitelist=0123456789', output_type=pytesseract.Output.DICT)
+
+        for i, text in enumerate(ocr_data["text"]):
+            if text.strip().isdigit():  # Ensure text is a digit
+                number = int(text.strip())
+                confidence = int(ocr_data["conf"][i])  # Get the confidence score
+                # Debug print for OCR results
+                #print(f"Debug: Detected Player Position: {number}, Confidence: {confidence}, Expected Position: {expected_position}")
+
+                # Specific check for frequent misdetection of 7
+                if number == 7 and confidence < 35:
+                    #print(f"Debug: Ignoring detected 7 due to low confidence ({confidence}).")
+                    return number, False
+
+                # Validate detected position against expected position
+                if number == expected_position:
+                    return number, True
+                else:
+                    return number, False
+
+    # Default return if no valid position is detected
+    #print("Debug: No valid player position detected.")
+    return -1, False
+
+
 
 def process_images_in_folder(folder_path: str) -> None:
     image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
@@ -781,29 +825,60 @@ def process_images_in_folder(folder_path: str) -> None:
                 config='--psm 7'
             )
 
+            # Define coordinates for player positions
+            player_position_coordinates = [
+                ((310, 52), (371, 96)), ((310, 104), (371, 148)),
+                ((310, 156), (371, 200)), ((310, 208), (371, 252)),
+                ((310, 260), (371, 304)), ((310, 312), (371, 356)),
+                ((310, 364), (371, 408)), ((310, 416), (371, 460)),
+                ((310, 468), (371, 512)), ((310, 520), (371, 564)),
+                ((310, 572), (371, 617)), ((310, 624), (371, 669))
+            ]
+
             # Initialize filtered results and temporary storage
             filtered_player_names = []
             filtered_confidences = []
 
-            # Filter invalid rows
+            # Example integration in the player name validation logic
             for i in range(len(player_name_text["player_name"])):
                 player_name = player_name_text["player_name"][i]
                 confidence_score = confidence_scores[i] if i < len(confidence_scores) else "N/A"
 
-                # Skip invalid rows
+                # Skip rows with unavailable confidence
                 if confidence_score == "N/A":
-                    #print(
-                    #    f"Skipping entry with unavailable confidence: Player Name: {player_name}, Confidence: {confidence_score}")
-                    continue
-                if (confidence_score < 50 and len(player_name) <= 2) or (
-                        len(player_name) <= 3 and not any(char.isalpha() for char in player_name)
-                ):
-                    #print(f"Skipping invalid entry: Player Name: {player_name}, Confidence: {confidence_score}")
+                    #print(f"Debug: Skipping entry due to unavailable confidence: '{player_name}'")
                     continue
 
-                # Append valid entries to filtered lists
-                filtered_player_names.append(player_name)
-                filtered_confidences.append(confidence_score)
+                # Check for at least three alphanumeric characters
+                alnum_count = sum(char.isalnum() for char in player_name)
+                if alnum_count < 3:
+                    #print( f"Debug: Skipping entry due to insufficient alphanumeric characters ({alnum_count}): '{player_name}'")
+                    continue
+
+                # Step 1: Check if confidence score is sufficient
+                if confidence_score >= 60:
+                    #print(f"Debug: Valid Entry - Player Name: '{player_name}', Confidence Score: {confidence_score}")
+                    filtered_player_names.append(player_name)
+                    filtered_confidences.append(confidence_score)
+                    continue
+
+                # Step 2: Validate player position if confidence score is low
+                expected_position = i + 1
+                detected_position, position_valid = validate_player_position(
+                    image_path=annotated_image_path,
+                    coordinates=[player_position_coordinates[i]],  # Use corresponding coordinates for each player
+                    expected_position=expected_position
+                )
+
+                #print(f"Debug: Detected Player Position: {detected_position}, Expected Position: {expected_position}, Valid: {position_valid}")
+
+                # If player position is valid, accept the player name
+                if position_valid:
+                    #print(f"Debug: Low confidence accepted based on valid player position - Player Name: '{player_name}', Confidence Score: {confidence_score}")
+                    filtered_player_names.append(player_name)
+                    filtered_confidences.append(confidence_score)
+                #else:
+                    #print(f"Debug: Skipping due to low confidence and invalid player position - Player Name: '{player_name}', Confidence Score: {confidence_score}")
 
             # Calculate the number of players after filtering
             num_players = len(filtered_player_names)

@@ -49,7 +49,10 @@ def determine_scaling(image):
 
 def load_videos_from_folder(folder_path):
     """Load video file paths from the specified folder."""
-    video_paths = glob(os.path.join(folder_path, "*.mp4")) + glob(os.path.join(folder_path, "*.mkv"))
+    video_extensions = ["*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm"]
+    video_paths = []
+    for extension in video_extensions:
+        video_paths.extend(glob(os.path.join(folder_path, extension)))
     return video_paths
 
 def crop_and_upscale_image(image, left, top, crop_width, crop_height, target_width, target_height):
@@ -57,6 +60,7 @@ def crop_and_upscale_image(image, left, top, crop_width, crop_height, target_wid
     cropped_image = image[top:top + crop_height, left:left + crop_width]
     upscaled_image = cv2.resize(cropped_image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
     return upscaled_image
+
 
 def preprocess_roi(roi, process_type):
     """Preprocess the Region of Interest (ROI) based on the process type."""
