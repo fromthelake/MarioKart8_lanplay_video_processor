@@ -255,12 +255,13 @@ def extract_text_with_confidence(image_path: str, coordinates: Dict[str, List[Tu
             words_in_roi = []
             confidences_in_roi = []
             for idx, conf in enumerate(data["conf"]):
-                if conf > 0 and data["text"][idx].strip():  # Only valid words
+                if conf >= 0 and data["text"][idx].strip():  # Only valid words
                     words_in_roi.append(data["text"][idx].strip())
                     confidences_in_roi.append(conf)
 
             # Combine words into a single string and calculate average confidence
             combined_text = " ".join(words_in_roi)
+            #print(f"text: {data["text"]} conf:{data["conf"]}")
             average_confidence = sum(confidences_in_roi) // len(confidences_in_roi) if confidences_in_roi else 0
 
             region_text.append(combined_text)
@@ -373,23 +374,37 @@ tracks_list = [
 ]
 
 def match_track_name(track_name: str, track_list: List[Tuple[int, str, str, int, str]]) -> str:
-    """Match a track name to its English equivalent."""
-    english_names = {track[1] for track in track_list}
-    dutch_to_english = {track[2]: track[1] for track in track_list}
+    """Match a track name (in English or Dutch) to its English equivalent."""
+    best_match_score = 0
+    best_match_english_name = track_name  # Default to input if no good match is found
 
-    if track_name in english_names:
-        return track_name
-    if track_name in dutch_to_english:
-        return dutch_to_english[track_name]
+    # Iterate through tracks_list
+    for track in track_list:
+        english_name = track[1]
+        dutch_name = track[2]
 
-    all_names = english_names.union(dutch_to_english.keys())
-    best_match = difflib.get_close_matches(track_name, all_names, n=1, cutoff=0.85)
+        # Compute similarity scores
+        score_english = difflib.SequenceMatcher(None, track_name, english_name).ratio()
+        score_dutch = difflib.SequenceMatcher(None, track_name, dutch_name).ratio()
 
-    if best_match:
-        match = best_match[0]
-        return dutch_to_english.get(match, match)
+        # Debugging output
+        #print(f"Checking track: {track_name}")
+        #print(f"Against English: {english_name}, Score: {score_english}")
+        #print(f"Against Dutch: {dutch_name}, Score: {score_dutch}")
 
-    return track_name
+        # Update the best match if the current score is higher
+        if score_english > best_match_score:
+            best_match_score = score_english
+            best_match_english_name = english_name
+
+        if score_dutch > best_match_score:
+            best_match_score = score_dutch
+            best_match_english_name = english_name
+
+    # Debugging final match
+    print(f"Best match for {track_name}: {best_match_english_name} with score {best_match_score}")
+    return best_match_english_name
+
 
 def get_cup_name(track_name: str, track_list: List[Tuple[int, str, str, int, str]]) -> str:
     """Get the Cup Name corresponding to a track."""
@@ -397,20 +412,6 @@ def get_cup_name(track_name: str, track_list: List[Tuple[int, str, str, int, str
         if track_name == track[1]:  # Match English name
             return track[4]
     return ""
-
-
-def match_track_name(track_name: str, track_list: List[Tuple[int, str, str, int, str]]) -> str:
-    """Match a track name to the closest name in the official track list."""
-    # Combine English and Dutch names into a flat list
-    all_names = [track[1] for track in track_list] + [track[2] for track in track_list]
-
-    # Compute similarity scores for all names
-    scores = [(difflib.SequenceMatcher(None, track_name, name).ratio(), name) for name in all_names]
-
-    # Get the name with the highest similarity score
-    best_match = max(scores, key=lambda x: x[0], default=(0, track_name))[1]
-
-    return best_match
 
 def preprocess_name(name):
     """Preprocess the name by removing special characters, normalizing case and whitespace."""
@@ -643,49 +644,6 @@ def standardize_player_names(df, output_folder):
 
     return standardized_names
 
-def validate_player_position(image_path: str, coordinates: List[Tuple[Tuple[int, int], Tuple[int, int]]], expected_position: int) -> Tuple[int, bool]:
-    """
-    Validate the player position using OCR to ensure it matches the expected position.
-
-    Parameters:
-        image_path (str): Path to the image containing player positions.
-        coordinates (List[Tuple[Tuple[int, int], Tuple[int, int]]]): Coordinates of the player position region.
-        expected_position (int): The expected player position based on iteration (i + 1).
-
-    Returns:
-        Tuple[int, bool]: Detected player position, validity flag.
-    """
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"Image not found at path: {image_path}")
-
-    for (x1, y1), (x2, y2) in coordinates:
-        roi = image[y1:y2, x1:x2]
-        ocr_data = pytesseract.image_to_data(roi, lang='eng', config='--psm 7 -c tessedit_char_whitelist=0123456789', output_type=pytesseract.Output.DICT)
-
-        for i, text in enumerate(ocr_data["text"]):
-            if text.strip().isdigit():  # Ensure text is a digit
-                number = int(text.strip())
-                confidence = int(ocr_data["conf"][i])  # Get the confidence score
-                # Debug print for OCR results
-                #print(f"Debug: Detected Player Position: {number}, Confidence: {confidence}, Expected Position: {expected_position}")
-
-                # Specific check for frequent misdetection of 7
-                if number == 7 and confidence < 35:
-                    #print(f"Debug: Ignoring detected 7 due to low confidence ({confidence}).")
-                    return number, False
-
-                # Validate detected position against expected position
-                if number == expected_position:
-                    return number, True
-                else:
-                    return number, False
-
-    # Default return if no valid position is detected
-    #print("Debug: No valid player position detected.")
-    return -1, False
-
-
 
 def process_images_in_folder(folder_path: str) -> None:
     image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
@@ -735,7 +693,7 @@ def process_images_in_folder(folder_path: str) -> None:
 
         # Adjusted logging statement to show only the base name of the images
         base_names = [os.path.basename(image_path) for _, image_path in images]
-        logging.info(f"Processing: {base_names}")
+        print(f"Processing: {base_names}")
 
         track_name_image = None
         race_score_images = []
@@ -759,7 +717,7 @@ def process_images_in_folder(folder_path: str) -> None:
 
         # Match the extracted track name to the closest name in the official track list
         track_name_text = match_track_name(raw_track_name_text, tracks_list)
-
+        #print(f"raw_track_name_text:{raw_track_name_text} track_name_text: {track_name_text}")
         for race_score_image in race_score_images:
             processed_img = process_image(race_score_image)
             processed_img_pil = Image.fromarray(processed_img).convert('RGB')
@@ -825,60 +783,22 @@ def process_images_in_folder(folder_path: str) -> None:
                 config='--psm 7'
             )
 
-            # Define coordinates for player positions
-            player_position_coordinates = [
-                ((310, 52), (371, 96)), ((310, 104), (371, 148)),
-                ((310, 156), (371, 200)), ((310, 208), (371, 252)),
-                ((310, 260), (371, 304)), ((310, 312), (371, 356)),
-                ((310, 364), (371, 408)), ((310, 416), (371, 460)),
-                ((310, 468), (371, 512)), ((310, 520), (371, 564)),
-                ((310, 572), (371, 617)), ((310, 624), (371, 669))
-            ]
-
             # Initialize filtered results and temporary storage
             filtered_player_names = []
-            filtered_confidences = []
 
-            # Example integration in the player name validation logic
+            # Filter invalid rows
             for i in range(len(player_name_text["player_name"])):
                 player_name = player_name_text["player_name"][i]
-                confidence_score = confidence_scores[i] if i < len(confidence_scores) else "N/A"
+                #print(f"{player_name_text["player_name"][i]}")
 
-                # Skip rows with unavailable confidence
-                if confidence_score == "N/A":
-                    #print(f"Debug: Skipping entry due to unavailable confidence: '{player_name}'")
-                    continue
+                # Strip all non-alphanumeric characters
+                stripped_name = re.sub(r'[^a-zA-Z0-9]', '', player_name)
+                alphanumeric_count = len(stripped_name)
+                unique_alphanumeric_count = len(set(stripped_name))
 
-                # Check for at least three alphanumeric characters
-                alnum_count = sum(char.isalnum() for char in player_name)
-                if alnum_count < 3:
-                    #print( f"Debug: Skipping entry due to insufficient alphanumeric characters ({alnum_count}): '{player_name}'")
-                    continue
-
-                # Step 1: Check if confidence score is sufficient
-                if confidence_score >= 60:
-                    #print(f"Debug: Valid Entry - Player Name: '{player_name}', Confidence Score: {confidence_score}")
+                # Validate the name based on the given conditions
+                if alphanumeric_count >= 3 and unique_alphanumeric_count >= 3:
                     filtered_player_names.append(player_name)
-                    filtered_confidences.append(confidence_score)
-                    continue
-
-                # Step 2: Validate player position if confidence score is low
-                expected_position = i + 1
-                detected_position, position_valid = validate_player_position(
-                    image_path=annotated_image_path,
-                    coordinates=[player_position_coordinates[i]],  # Use corresponding coordinates for each player
-                    expected_position=expected_position
-                )
-
-                #print(f"Debug: Detected Player Position: {detected_position}, Expected Position: {expected_position}, Valid: {position_valid}")
-
-                # If player position is valid, accept the player name
-                if position_valid:
-                    #print(f"Debug: Low confidence accepted based on valid player position - Player Name: '{player_name}', Confidence Score: {confidence_score}")
-                    filtered_player_names.append(player_name)
-                    filtered_confidences.append(confidence_score)
-                #else:
-                    #print(f"Debug: Skipping due to low confidence and invalid player position - Player Name: '{player_name}', Confidence Score: {confidence_score}")
 
             # Calculate the number of players after filtering
             num_players = len(filtered_player_names)
@@ -940,7 +860,7 @@ def process_images_in_folder(folder_path: str) -> None:
     # Save to Excel
     output_excel_path = os.path.join(folder_path, '..', "Tournament_Results.xlsx")
     df.to_excel(output_excel_path, index=False)
-    logging.info(f'Results saved to {output_excel_path}')
+    print(f'Results saved to {output_excel_path}')
 
 
 # Folder path to the images
