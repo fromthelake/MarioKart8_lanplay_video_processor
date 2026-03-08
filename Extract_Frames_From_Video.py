@@ -232,14 +232,12 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                     #print("TWO!!")
                     # #if 12th we have an overlap problem, continue searching the frame with the highest score.
                     #template match 12th
-                    upscaled_image2 = crop_and_upscale_image(frame, left, top, crop_width, crop_height, target_width, target_height)
-                    gray_image2 = cv2.cvtColor(upscaled_image2, cv2.COLOR_BGR2GRAY)
                     roi_x2, roi_y2, roi_width2, roi_height2 = 338, 657, 601, 39
                     roi_x2 = max(roi_x2 - 25, 0)
                     roi_y2 = max(roi_y2 - 25, 0)
-                    roi_width2 = min(roi_width2 + 50, gray_image2.shape[1] - roi_x2)
-                    roi_height2 = min(roi_height2 + 50, gray_image2.shape[0] - roi_y2)
-                    roi2 = gray_image2[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
+                    roi_width2 = min(roi_width2 + 50, gray_image.shape[1] - roi_x2)
+                    roi_height2 = min(roi_height2 + 50, gray_image.shape[0] - roi_y2)
+                    roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
                     processed_roi2 = preprocess_roi(roi2, 0)
 
 

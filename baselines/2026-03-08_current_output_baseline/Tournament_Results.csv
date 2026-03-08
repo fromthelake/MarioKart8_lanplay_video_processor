@@ -1,0 +1,397 @@
+RaceClass,RaceIDNumber,TrackName,TrackID,CupName,RacePosition,PlayerName,FixPlayerName,RacePoints,OldTotalScore,NewTotalScore
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,1,Blaasie,Blaasie,15,0,15
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,2,Bas,Bas,12,0,12
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,3,Pieter,Pieter,10,0,10
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,4,bokkie,bokkie,9,0,9
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,5,Gianni,Gianni,8,0,8
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,6,Erwin,Erwin,7,0,7
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,7,Mike,Mike,6,0,6
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,8,Brian,Brian,5,0,5
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,9,Christiaan,Christiaan,4,0,4
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,10,Erik,Erik,3,0,3
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,11,Menno,Menno,2,0,2
+Demo_CaptureCard_Race,1,GCN Waluigi Stadium,79,Boomerang Cup,12,Thijmen,Thijmen,1,0,1
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,1,Erik,Erik,15,0,15
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,2,Gianni,Gianni,12,0,12
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,3,Bas,Bas,10,0,10
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,4,Mike,Mike,9,0,9
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,5,Blaasie,Blaasie,8,0,8
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,6,Christiaan,Christiaan,7,0,7
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,7,Menno,Menno,6,0,6
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,8,bokkie,bokkie,5,0,5
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,9,Brian,Brian,4,0,4
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,10,Pieter,Pieter,3,0,3
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,11,Thijmen,Thijmen,2,0,2
+Divisie_1,1,Mario Kart Stadium,1,Mushroom Cup,12,Erwin,Erwin,1,0,1
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,1,Blaasie,Blaasie,15,8,23
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,2,Bas,Bas,12,10,22
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,3,Thijmen,Thijmen,10,2,12
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,4,bokkie,bokkie,9,5,14
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,5,Erwin,Erwin,8,1,9
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,6,Pieter,Pieter,7,3,10
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,7,Mike,Mike,6,9,15
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,8,Gianni,Gianni,5,12,17
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,9,Erik,Erik,4,15,19
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,10,Christiaan,Christiaan,3,7,10
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,11,Brian,Brian,2,4,6
+Divisie_1,2,Wii Wario's Gold Mine,41,Triforce Cup,12,Menno,Menno,1,6,7
+Divisie_1,3,Sunshine Airport,9,Star Cup,1,Gianni,Gianni,15,17,32
+Divisie_1,3,Sunshine Airport,9,Star Cup,2,Erik,Erik,12,19,31
+Divisie_1,3,Sunshine Airport,9,Star Cup,3,Pieter,Pieter,10,10,20
+Divisie_1,3,Sunshine Airport,9,Star Cup,4,Thijmen,Thijmen,9,12,21
+Divisie_1,3,Sunshine Airport,9,Star Cup,5,Mike,Mike,8,15,23
+Divisie_1,3,Sunshine Airport,9,Star Cup,6,Menna,Menno,7,7,14
+Divisie_1,3,Sunshine Airport,9,Star Cup,7,Biaasie,Blaasie,6,23,29
+Divisie_1,3,Sunshine Airport,9,Star Cup,8,Erwin,Erwin,5,9,14
+Divisie_1,3,Sunshine Airport,9,Star Cup,9,bokkie,bokkie,4,14,18
+Divisie_1,3,Sunshine Airport,9,Star Cup,10,Christiaan,Christiaan,3,10,13
+Divisie_1,3,Sunshine Airport,9,Star Cup,11,Bas,Bas,2,22,24
+Divisie_1,3,Sunshine Airport,9,Star Cup,12,Brian,Brian,1,6,7
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,1,Pieter,Pieter,15,20,35
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,2,Gianni,Gianni,12,32,44
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,3,Brian,Brian,10,7,17
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,4,Biaasie,Blaasie,9,29,38
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,5,Erik,Erik,8,31,39
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,6,Menno,Menno,7,14,21
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,7,Mike,Mike,6,23,29
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,8,Erwin,Erwin,5,14,19
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,9,Bas,Bas,4,24,28
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,10,bokkie,bokkie,3,18,21
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,11,Thijmen,Thijmen,2,21,23
+Divisie_1,4,Sky-High Sundae,64,Propeller Cup,12,Christiaan,Christiaan,1,13,14
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,1,Blaasie,Blaasie,15,38,53
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,2,Menno,Menno,12,21,33
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,3,Bas,Bas,10,28,38
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,4,bokkie,bokkie,9,21,30
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,5,Pieter,Pieter,8,35,43
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,6,Mike,Mike,7,29,36
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,7,Envin,Erwin,6,19,25
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,8,Brian 7,Brian,5,17,22
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,9,Erik,Erik,4,39,43
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,10,Thijmen,Thijmen,3,23,26
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,11,Gianni,Gianni,2,44,46
+Divisie_1,5,GBA Sky Garden,55,Lucky Cat Cup,12,Christiaan,Christiaan,1,14,15
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,1,Gianni,Gianni,15,46,61
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,2,Biaasie,Blaasie,12,53,65
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,3,Bas,Bas,10,38,48
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,4,Brian,Brian,9,22,31
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,5,Mike,Mike,8,36,44
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,6,Menna,Menno,7,33,40
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,7,Thijmen,Thijmen,6,26,32
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,8,Erik,Erik,5,43,48
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,9,Pieter,Pieter,4,43,47
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,10,Erwin,Erwin,3,25,28
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,11,Christiaan,Christiaan,2,15,17
+Divisie_1,6,DS Cheep Cheep Beach,27,Shell Cup,12,bokkie,bokkie,1,30,31
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,1,Biaasie,Blaasie,15,65,80
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,2,bokkie,bokkie,12,31,43
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,3,Menno,Menno,10,40,50
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,4,Erik,Erik,9,48,57
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,5,Christiaan,Christiaan,8,17,25
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,6,Erwin,Erwin,7,28,35
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,7,Brian,Brian,6,31,37
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,8,Bas,Bas,5,48,53
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,9,Mike,Mike,4,44,48
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,10,Pieter,Pieter,3,47,50
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,11,Gianni,Gianni,2,61,63
+Divisie_1,7,GCN Baby Park,21,Crossing Cup,12,Thijmen,Thijmen,1,32,33
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,1,Brian,Brian,15,37,52
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,2,Menna,Menno,12,50,62
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,3,Pieter,Pieter,10,50,60
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,4,Thijmen,Thijmen,9,33,42
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,5,Mike,Mike,8,48,56
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,6,Blaasie,Blaasie,7,80,87
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,7,Giannm,Gianni,6,63,69
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,8,Bas,Bas,5,53,58
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,9,Erik,Erik,4,57,61
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,10,Erwin,Erwin,3,35,38
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,11,bokkie,bokkie,2,43,45
+Divisie_1,8,3DS Piranha Plant Pipeway,38,Lightning Cup,12,Christiaan,Christiaan,1,25,26
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,1,Bas,Bas,15,58,73
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,2,Blaasie,Blaasie,12,87,99
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,3,Mike,Mike,10,56,66
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,4,Pieter,Pieter,9,60,69
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,5,Brian,Brian,8,52,60
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,6,Menno,Menno,7,62,69
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,7,Christiaan,Christiaan,6,26,32
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,8,Erik,Erik,5,61,66
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,9,bokkie,bokkie,4,45,49
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,10,Gianni,Gianni,3,69,72
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,11,Thijmen,Thijmen,2,42,44
+Divisie_1,9,GBA Ribbon Road,46,Bell Cup,12,Erwin,Erwin,1,38,39
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,1,Blaasia,Blaasie,15,99,114
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,2,Gianni,Gianni,12,72,84
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,3,Mike,Mike,10,66,76
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,4,Pieter,Pieter,9,69,78
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,5,Erwin,Erwin,8,39,47
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,6,Erik,Erik,7,66,73
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,7,Bas,Bas,6,73,79
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,8,Christiaan,Christiaan,5,32,37
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,9,Thijmen,Thijmen,4,44,48
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,10,Brian,Brian,3,60,63
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,11,bokkie,bokkie,2,49,51
+Divisie_1,10,Wii Wario's Gold Mine,41,Triforce Cup,12,Menno,Menno,1,69,70
+Divisie_1,11,Dolphin Shoals,10,Star Cup,1,Mike,Mike,15,76,91
+Divisie_1,11,Dolphin Shoals,10,Star Cup,2,Erik,Erik,12,73,85
+Divisie_1,11,Dolphin Shoals,10,Star Cup,3,Christiaan,Christiaan,10,37,47
+Divisie_1,11,Dolphin Shoals,10,Star Cup,4,Bas,Bas,9,79,88
+Divisie_1,11,Dolphin Shoals,10,Star Cup,5,Brian,Brian,8,63,71
+Divisie_1,11,Dolphin Shoals,10,Star Cup,6,Blaasie,Blaasie,7,114,121
+Divisie_1,11,Dolphin Shoals,10,Star Cup,7,Pieter,Pieter,6,78,84
+Divisie_1,11,Dolphin Shoals,10,Star Cup,8,Erwin,Erwin,5,47,52
+Divisie_1,11,Dolphin Shoals,10,Star Cup,9,Menno,Menno,4,70,74
+Divisie_1,11,Dolphin Shoals,10,Star Cup,10,Gianni,Gianni,3,84,87
+Divisie_1,11,Dolphin Shoals,10,Star Cup,11,bokkie,bokkie,2,51,53
+Divisie_1,11,Dolphin Shoals,10,Star Cup,12,Thijmen,Thijmen,1,48,49
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,1,Pieter,Pieter,15,84,99
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,2,Bas,Bas,12,88,100
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,3,Menno,Menno,10,74,84
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,4,Blaasie,Blaasie,9,121,130
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,5,Mike,Mike,8,91,99
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,6,Brian,Brian,7,71,78
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,7,Thijmen,Thijmen,6,49,55
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,8,bokkie,bokkie,5,53,58
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,9,Gianni,Gianni,4,87,91
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,10,Erik,Erik,3,85,88
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,11,Erwin,Erwin,2,52,54
+Divisie_1,12,Wii DK's Snowboard Cross,75,Fruit Cup,12,Christiaan,Christiaan,1,47,48
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,1,Mike,Mike,15,99,114
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,2,Gianni,Gianni,12,91,103
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,3,Brian,Brian,10,78,88
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,4,Pieter,Pieter,9,99,108
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,5,Erwin,Erwin,8,54,62
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,6,Blaasie,Blaasie,7,130,137
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,7,Erik,Erik,6,88,94
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,8,Thijmen,Thijmen,5,55,60
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,9,Menno,Menno,4,84,88
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,10,Bas,Bas,3,100,103
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,11,bokkie,bokkie,2,58,60
+Divisie_1,13,Tour Athens Dash,81,Feather Cup,12,Christiaan,Christiaan,1,48,49
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,1,Mike,Mike,15,114,129
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,2,Gianni,Gianni,12,103,115
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,3,Pieter,Pieter,10,108,118
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,4,Menno,Menno,9,88,97
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,5,Erik,Erik,8,94,102
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,6,Blaasie,Blaasie,7,137,144
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,7,Erwin,Erwin,6,62,68
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,8,Bas,Bas,5,103,108
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,9,Thijmen,Thijmen,4,60,64
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,10,Brian,Brian,3,88,91
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,11,Christiaan,Christiaan,2,49,51
+Divisie_1,14,Sweet Sweet Canyon,3,Mushroom Cup,12,bokkie,bokkie,1,60,61
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,1,Erik,Erik,15,102,117
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,2,Blaasie,Blaasie,12,144,156
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,3,Gianni,Gianni,10,115,125
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,4,Bas,Bas,9,108,117
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,5,Christiaan,Christiaan,8,51,59
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,6,Erwin,Erwin,7,68,75
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,7,Thijmen,Thijmen,6,64,70
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,8,Pieter,Pieter,5,118,123
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,9,Menno,Menno,4,97,101
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,10,Mike,Mike,3,129,132
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,11,bokkie,bokkie,2,61,63
+Divisie_1,15,Mario Kart Stadium,1,Mushroom Cup,12,Brian,Brian,1,91,92
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,1,Mike,Mike,15,132,147
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,2,Erik,Erik,12,117,129
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,3,Christiaan,Christiaan,10,59,69
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,4,Thijmen,Thijmen,9,70,79
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,5,Bas,Bas,8,117,125
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,6,bokkie,bokkie,7,63,70
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,7,Menno,Menno,6,101,107
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,8,Brian,Brian,5,92,97
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,9,Blaasie,Blaasie,4,156,160
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,10,Gianni,Gianni,3,125,128
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,11,Pieter,Pieter,2,123,125
+Divisie_1,16,Yoshi's Island,76,Fruit Cup,12,Erwin,Erwin,1,75,76
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,1,bokkie,bokkie,15,70,85
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,2,Erik,Erik,12,129,141
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,3,Thijmen,Thijmen,10,79,89
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,4,Menno,Menno,9,107,116
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,5,Mike,Mike,8,147,155
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,6,Bas,Bas,7,125,132
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,7,Blaasie,Blaasie,6,160,166
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,8,Erwin,Erwin,5,76,81
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,9,Gianni,Gianni,4,128,132
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,10,Brian,Brian,3,97,100
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,11,Pieter,Pieter,2,125,127
+Divisie_1,17,GCN Sherbet Land,34,Leaf Cup,12,Christiaan,Christiaan,1,69,70
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,1,Pieter,Pieter,15,127,142
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,2,Bas,Bas,12,132,144
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,3,Gianni,Gianni,10,132,142
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,4,Mike,Mike,9,155,164
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,5,Erik,Erik,8,141,149
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,6,Blaasie,Blaasie,7,166,173
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,7,Erwin,Erwin,6,81,87
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,8,Menno,Menno,5,116,121
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,9,Thijmen,Thijmen,4,89,93
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,10,bokkie,bokkie,3,85,88
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,11,Brian,Brian,2,100,102
+Divisie_1,18,DS Cheep Cheep Beach,27,Shell Cup,12,Christiaan,Christiaan,1,70,71
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,1,Blaasie,Blaasie,15,173,188
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,2,Bas,Bas,12,144,156
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,3,Menno,Menno,10,121,131
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,4,Erik,Erik,9,149,158
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,5,Brian,Brian,8,102,110
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,6,bokkie,bokkie,7,88,95
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,7,Gianni,Gianni,6,142,148
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,8,Pieter,Pieter,5,142,147
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,9,Mike,Mike,4,164,168
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,10,Erwin,Erwin,3,87,90
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,11,Thijmen,Thijmen,2,93,95
+Divisie_1,19,Piranha Plant Cove,92,Acorn Cup,12,Christiaan,Christiaan,1,71,72
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,1,Gianni,Gianni,15,148,163
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,2,Erik,Erik,12,158,170
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,3,Blaasie,Blaasie,10,188,198
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,4,Mike,Mike,9,168,177
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,5,Thijmen,Thijmen,8,95,103
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,6,bokkie,bokkie,7,95,102
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,7,Erwin,Erwin,6,90,96
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,8,Menno,Menno,5,131,136
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,9,Bas,Bas,4,156,160
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,10,Brian,Brian,3,110,113
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,11,Pieter,Pieter,2,147,149
+Divisie_1,20,N64 Toad's Turnpike,28,Shell Cup,12,Christiaan,Christiaan,1,72,73
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,1,Brian,Brian,15,113,128
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,2,Blaasie,Blaasie,12,198,210
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,3,Thijmen,Thijmen,10,103,113
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,4,Mike,Mike,9,177,186
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,5,Gianni,Gianni,8,163,171
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,6,Pieter,Pieter,7,149,156
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,7,Erwin,Erwin,6,96,102
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,8,Erik,Erik,5,170,175
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,9,Menna,Menno,4,136,140
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,10,Christiaan,Christiaan,3,73,76
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,11,bokkie,bokkie,2,102,104
+Divisie_1,21,SNES Rainbow Road,42,Triforce Cup,12,Bas,Bas,1,160,161
+Divisie_1,22,Bowser's Castle,15,Special Cup,1,Blaasie,Blaasie,15,210,225
+Divisie_1,22,Bowser's Castle,15,Special Cup,2,Mike,Mike,12,186,198
+Divisie_1,22,Bowser's Castle,15,Special Cup,3,Gianni,Gianni,10,171,181
+Divisie_1,22,Bowser's Castle,15,Special Cup,4,Erik,Erik,9,175,184
+Divisie_1,22,Bowser's Castle,15,Special Cup,5,Christiaan,Christiaan,8,76,84
+Divisie_1,22,Bowser's Castle,15,Special Cup,6,Bas,Bas,7,161,168
+Divisie_1,22,Bowser's Castle,15,Special Cup,7,Menno,Menno,6,140,146
+Divisie_1,22,Bowser's Castle,15,Special Cup,8,Thijmen,Thijmen,5,113,118
+Divisie_1,22,Bowser's Castle,15,Special Cup,9,bokkie,bokkie,4,104,108
+Divisie_1,22,Bowser's Castle,15,Special Cup,10,Pieter,Pieter,3,156,159
+Divisie_1,22,Bowser's Castle,15,Special Cup,11,Erwin,Erwin,2,102,104
+Divisie_1,22,Bowser's Castle,15,Special Cup,12,Brian,Brian,1,128,129
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,1,Blaasie,Blaasie,15,225,240
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,2,Bas,Bas,12,168,180
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,3,Gianni,Gianni,10,181,191
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,4,Pieter,Pieter,9,159,168
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,5,Erwin,Erwin,8,104,112
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,6,Erik,Erik,7,184,191
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,7,Mike,Mike,6,198,204
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,8,Christiaan,Christiaan,5,84,89
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,9,bokkie,bokkie,4,108,112
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,10,Thijmen,Thijmen,3,118,121
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,11,Menno,Menno,2,146,148
+Divisie_1,23,GCN Daisy Cruiser,82,Feather Cup,12,Brian,Brian,1,129,130
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,1,Biaasie,Blaasie,15,240,255
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,2,Erik,Erik,12,191,203
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,3,Erwin,Erwin,10,112,122
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,4,Brian,Brian,9,130,139
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,5,Mike,Mike,8,204,212
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,6,Pieter,Pieter,7,168,175
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,7,Christiaan,Christiaan,6,89,95
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,8,Gianni,Gianni,5,191,196
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,9,Bas,Bas,4,180,184
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,10,Thijmen,Thijmen,3,121,124
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,11,Menno,Menno,2,148,150
+Divisie_1,24,Ice Ice Outpost,43,Triforce Cup,12,bokkie,bokkie,1,112,113
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,1,Mike,Mike,15,212,227
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,2,Erik,Erik,12,203,215
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,3,Bas,Bas,10,184,194
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,4,Blaasie,Blaasie,9,255,264
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,5,Erwin,Erwin,8,122,130
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,6,Thijmen,Thijmen,7,124,131
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,7,Menna,Menno,6,150,156
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,8,Gianni,Gianni,5,196,201
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,9,Christiaan,Christiaan,4,95,99
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,10,Pieter,Pieter,3,175,178
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,11,Brian,Brian,2,139,141
+Divisie_1,25,GCN DK Mountain,90,Acorn Cup,12,bokkis,bokkie,1,113,114
+Divisie_1,26,Mario Circuit,5,Flower Cup,1,Brian,Brian,15,141,156
+Divisie_1,26,Mario Circuit,5,Flower Cup,2,Erik,Erik,12,215,227
+Divisie_1,26,Mario Circuit,5,Flower Cup,3,Blaasie,Blaasie,10,264,274
+Divisie_1,26,Mario Circuit,5,Flower Cup,4,Christiaan,Christiaan,9,99,108
+Divisie_1,26,Mario Circuit,5,Flower Cup,5,Mike,Mike,8,227,235
+Divisie_1,26,Mario Circuit,5,Flower Cup,6,Pieter,Pieter,7,178,185
+Divisie_1,26,Mario Circuit,5,Flower Cup,7,Bas,Bas,6,194,200
+Divisie_1,26,Mario Circuit,5,Flower Cup,8,bokkie,bokkie,5,114,119
+Divisie_1,26,Mario Circuit,5,Flower Cup,9,Erwin,Erwin,4,130,134
+Divisie_1,26,Mario Circuit,5,Flower Cup,10,Menno,Menno,3,156,159
+Divisie_1,26,Mario Circuit,5,Flower Cup,11,Gianni,Gianni,2,201,203
+Divisie_1,26,Mario Circuit,5,Flower Cup,12,Thijmen,Thijmen,1,131,132
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,1,Thijmen,Thijmen,15,132,147
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,2,Menno,Menno,12,159,171
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,3,Gianni,Gianni,10,203,213
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,4,Mike,Mike,9,235,244
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,5,Erik,Erik,8,227,235
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,6,Bas,Bas,7,200,207
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,7,Erwin,Erwin,6,134,140
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,8,Blaasie,Blaasie,5,274,279
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,9,Pieter,Pieter,4,185,189
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,10,Brian,Brian,3,156,159
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,11,Christiaan,Christiaan,2,108,110
+Divisie_1,27,SNES Rainbow Road,42,Triforce Cup,12,bokkia,bokkie,1,119,120
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,1,Gianni,Gianni,15,213,228
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,2,Mike,Mike,12,244,256
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,3,Christiaan,Christiaan,10,110,120
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,4,Erik,Erik,9,235,244
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,5,bokkie,bokkie,8,120,128
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,6,Menno,Menno,7,171,178
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,7,Pieter,Pieter,6,189,195
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,8,Brian,Brian,5,159,164
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,9,Bas,Bas,4,207,211
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,10,Blaasie,Blaasie,3,279,282
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,11,Thijmen,Thijmen,2,147,149
+Divisie_1,28,Mario Kart Stadium,1,Mushroom Cup,12,Erwin,Erwin,1,140,141
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,1,Mike,Mike,15,256,271
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,2,Erik,Erik,12,244,256
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,3,Gianni,Gianni,10,228,238
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,4,Blaasie,Blaasie,9,282,291
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,5,Bas,Bas,8,211,219
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,6,Erwin,Erwin,7,141,148
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,7,Menno,Menno,6,178,184
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,8,Christiaan,Christiaan,5,120,125
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,9,Brian,Brian,4,164,168
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,10,bokkie,bokkie,3,128,131
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,11,Thijmen,Thijmen,2,149,151
+Divisie_1,29,Shy Guy Falls,8,Flower Cup,12,Pieter,Pieter,1,195,196
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,1,Erik,Erik,15,256,271
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,2,Blaasie,Blaasie,12,291,303
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,3,Gianni,Gianni,10,238,248
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,4,Mike,Mike,9,271,280
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,5,Christiaan,Christiaan,8,125,133
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,6,Brian,Brian,7,168,175
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,7,Erwin,Erwin,6,148,154
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,8,Thijmen,Thijmen,5,151,156
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,9,Menno,Menno,4,184,188
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,10,bokkie,bokkie,3,131,134
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,11,Pieter,Pieter,2,196,198
+Divisie_1,30,Tour Athens Dash,81,Feather Cup,12,Bas,Bas,1,219,220
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,1,Blaasie,Blaasie,15,303,318
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,2,Bas,Bas,12,220,232
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,3,Pieter,Pieter,10,198,208
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,4,bokkie,bokkie,9,134,143
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,5,Gianni,Gianni,8,248,256
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,6,Erwin,Erwin,7,154,161
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,7,Mike,Mike,6,280,286
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,8,Brian,Brian,5,175,180
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,9,Christiaan,Christiaan,4,133,137
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,10,Erik,Erik,3,271,274
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,11,Menno,Menno,2,188,190
+Divisie_1,31,GCN Waluigi Stadium,79,Boomerang Cup,12,Thijmen,Thijmen,1,156,157
+Divisie_1,32,Excitebike Arena,18,Egg Cup,1,Mike,Mike,15,286,301
+Divisie_1,32,Excitebike Arena,18,Egg Cup,2,Menno,Menno,12,190,202
+Divisie_1,32,Excitebike Arena,18,Egg Cup,3,Erik,Erik,10,274,284
+Divisie_1,32,Excitebike Arena,18,Egg Cup,4,Biaasie,Blaasie,9,318,327
+Divisie_1,32,Excitebike Arena,18,Egg Cup,5,Gianni,Gianni,8,256,264
+Divisie_1,32,Excitebike Arena,18,Egg Cup,6,Brian,Brian,7,180,187
+Divisie_1,32,Excitebike Arena,18,Egg Cup,7,Pieter,Pieter,6,208,214
+Divisie_1,32,Excitebike Arena,18,Egg Cup,8,Bas,Bas,5,232,237
+Divisie_1,32,Excitebike Arena,18,Egg Cup,9,Erwin,Erwin,4,161,165
+Divisie_1,32,Excitebike Arena,18,Egg Cup,10,Thijmen,Thijmen,3,157,160
+Divisie_1,32,Excitebike Arena,18,Egg Cup,11,Christiaan,Christiaan,2,137,139
+Divisie_1,32,Excitebike Arena,18,Egg Cup,12,bokkie,bokkie,1,143,144

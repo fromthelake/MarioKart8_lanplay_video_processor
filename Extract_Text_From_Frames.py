@@ -15,12 +15,14 @@ import textdistance
 import re
 from jellyfish import soundex
 from collections import defaultdict, Counter
+from concurrent.futures import ThreadPoolExecutor
 
 # Specify the path to tesseract executable
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Record the start time
 start_run_time = time.time()
+OCR_WORKERS = max(1, min(8, os.cpu_count() or 1))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -235,14 +237,19 @@ def scale_pixel_positions(pixels, scale_factor):
     return {label: (x * scale_factor, y * scale_factor) for label, (x, y) in pixels.items()}
 
 
-def extract_text_with_confidence(image_path: str, coordinates: Dict[str, List[Tuple[Tuple[int, int], Tuple[int, int]]]],
+def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple[Tuple[int, int], Tuple[int, int]]]],
                                  lang: str, config: str) -> Tuple[Dict[str, List[str]], List[int]]:
     """Extract text and confidence scores from image ROIs using Tesseract OCR."""
     extracted_text = {}
     confidence_scores = []
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"Image not found at path: {image_path}")
+    if isinstance(image_source, str):
+        image = cv2.imread(image_source)
+        if image is None:
+            raise FileNotFoundError(f"Image not found at path: {image_source}")
+    else:
+        image = image_source
+        if image is None:
+            raise ValueError("Image source array is None")
 
     for region_type, coord_list in coordinates.items():
         region_text = []
@@ -645,6 +652,129 @@ def standardize_player_names(df, output_folder):
     return standardized_names
 
 
+def process_race_group(grouped_item, text_detected_folder):
+    """Process a single race group and return extracted rows."""
+    (race_class, race_id_number), images = grouped_item
+    if len(images) != 2:
+        return []
+
+    base_names = [os.path.basename(image_path) for _, image_path in images]
+    print(f"Processing: {base_names}")
+
+    track_name_image = None
+    race_score_images = []
+
+    for frame_content, image_path in images:
+        if frame_content == "0TrackName":
+            track_name_image = image_path
+        elif frame_content == "2RaceScore":
+            race_score_images.append(image_path)
+
+    if not track_name_image or len(race_score_images) != 1:
+        return []
+
+    results = []
+    track_name_img = cv2.imread(track_name_image)
+    coordinates = {"TrackName": [((319, 633), (925, 685))]}
+    track_name_data, _ = extract_text_with_confidence(track_name_img, coordinates, 'eng', '--psm 7')
+
+    raw_track_name_text = " ".join(track_name_data['TrackName']).strip()
+    track_name_text = match_track_name(raw_track_name_text, tracks_list)
+
+    for race_score_image in race_score_images:
+        processed_img = process_image(race_score_image)
+        processed_img_pil = Image.fromarray(processed_img).convert('RGB')
+        scale_factor = 5
+        scaled_image = processed_img_pil.resize(
+            (processed_img_pil.width * scale_factor, processed_img_pil.height * scale_factor), Image.NEAREST)
+
+        start_coords_run1 = [(830, 71), (843, 71)]
+        start_coords_run1 = scale_coords(start_coords_run1, scale_factor)
+
+        red_pixels_run1 = {
+            "top_middle": (7, 2), "left_middle": (2, 5), "middle_middle": (7, 5),
+            "right_middle": (11, 5), "left_bottom": (2, 13), "middle_bottom": (7, 13),
+            "right_bottom": (11, 13), "middle_bottom_edge": (7, 17), "center": (7, 9)
+        }
+        red_pixels_run1 = scale_pixel_positions(red_pixels_run1, scale_factor)
+
+        row_offset_run1 = 52 * scale_factor
+        box_dims_run1 = (13 * scale_factor, 19 * scale_factor)
+        num_rows_run1 = 12
+        boxes_per_row_run1 = 2
+
+        race_points = detect_digits_in_image(
+            scaled_image, start_coords_run1, row_offset_run1, box_dims_run1,
+            red_pixels_run1, num_rows_run1, boxes_per_row_run1
+        )
+
+        start_coords_run2 = [(916, 66), (933, 66), (950, 66)]
+        start_coords_run2 = scale_coords(start_coords_run2, scale_factor)
+
+        red_pixels_run2 = {
+            "top_middle": (8, 2), "left_middle": (2, 7), "middle_middle": (8, 7),
+            "right_middle": (13, 7), "left_bottom": (2, 16), "middle_bottom": (8, 16),
+            "right_bottom": (13, 16), "middle_bottom_edge": (8, 21), "center": (8, 11)
+        }
+        red_pixels_run2 = scale_pixel_positions(red_pixels_run2, scale_factor)
+
+        row_offset_run2 = 52 * scale_factor
+        box_dims_run2 = (16 * scale_factor, 24 * scale_factor)
+        num_rows_run2 = 12
+        boxes_per_row_run2 = 3
+
+        old_total_score = detect_digits_in_image(
+            scaled_image, start_coords_run2, row_offset_run2, box_dims_run2,
+            red_pixels_run2, num_rows_run2, boxes_per_row_run2
+        )
+
+        annotated_image_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
+        scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height),
+                                                   Image.NEAREST)
+        scaled_image_resized.save(annotated_image_path)
+        annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
+
+        player_name_text, confidence_scores = extract_text_with_confidence(
+            annotated_image, {"player_name": [
+                ((428, 52), (620, 96)), ((428, 104), (620, 148)),
+                ((428, 156), (620, 200)), ((428, 208), (620, 252)),
+                ((428, 260), (620, 304)), ((428, 312), (620, 356)),
+                ((428, 364), (620, 408)), ((428, 416), (620, 460)),
+                ((428, 468), (620, 512)), ((428, 520), (620, 564)),
+                ((428, 572), (620, 617)), ((428, 624), (620, 669))
+            ]},
+            lang='eng',
+            config='--psm 7'
+        )
+
+        filtered_player_names = []
+
+        for i in range(len(player_name_text["player_name"])):
+            player_name = player_name_text["player_name"][i]
+            stripped_name = re.sub(r'[^a-zA-Z0-9]', '', player_name)
+            alphanumeric_count = len(stripped_name)
+            unique_alphanumeric_count = len(set(stripped_name))
+
+            if alphanumeric_count >= 3 and unique_alphanumeric_count >= 3:
+                filtered_player_names.append(player_name)
+
+        num_players = len(filtered_player_names)
+
+        for i, player_name in enumerate(filtered_player_names):
+            race_position = i + 1
+            race_points_fix = get_race_points(race_position, num_players)
+
+            old_total_score_value = 0
+            new_total_score = old_total_score_value + race_points_fix
+
+            results.append([
+                race_class, race_id_number, track_name_text, race_position, player_name,
+                race_points_fix
+            ])
+
+    return results
+
+
 def process_images_in_folder(folder_path: str) -> None:
     image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
 
@@ -652,8 +782,6 @@ def process_images_in_folder(folder_path: str) -> None:
     if not image_files:
         print("Error: The Frames folder within the Output_Results folder is empty or contains no PNG files. Please Run Step 2 first.")
         sys.exit(1)  # Exit the script with a non-zero status
-
-    results = []
 
     script_dir = os.path.dirname(__file__)  # Directory of the script
     text_detected_folder = os.path.join(script_dir, 'Output_Results', 'Debug', 'Score_Frames')
@@ -687,146 +815,18 @@ def process_images_in_folder(folder_path: str) -> None:
             grouped_images[key] = []
         grouped_images[key].append((frame_content, os.path.join(folder_path, image_file)))
 
-    for (race_class, race_id_number), images in grouped_images.items():
-        if len(images) != 2:
-            continue
-
-        # Adjusted logging statement to show only the base name of the images
-        base_names = [os.path.basename(image_path) for _, image_path in images]
-        print(f"Processing: {base_names}")
-
-        track_name_image = None
-        race_score_images = []
-
-        for frame_content, image_path in images:
-            if frame_content == "0TrackName":
-                track_name_image = image_path
-            elif frame_content == "2RaceScore":
-                race_score_images.append(image_path)
-
-        if not track_name_image or len(race_score_images) != 1:
-            continue
-
-        track_name_img = cv2.imread(track_name_image)
-        coordinates = {"TrackName": [((319, 633), (925, 685))]}
-        # Extract track name data with confidence
-        track_name_data, _ = extract_text_with_confidence(track_name_image, coordinates, 'eng', '--psm 7')
-
-        # Combine the extracted text into a single string
-        raw_track_name_text = " ".join(track_name_data['TrackName']).strip()
-
-        # Match the extracted track name to the closest name in the official track list
-        track_name_text = match_track_name(raw_track_name_text, tracks_list)
-        #print(f"raw_track_name_text:{raw_track_name_text} track_name_text: {track_name_text}")
-        for race_score_image in race_score_images:
-            processed_img = process_image(race_score_image)
-            processed_img_pil = Image.fromarray(processed_img).convert('RGB')
-            scale_factor = 5
-            scaled_image = processed_img_pil.resize(
-                (processed_img_pil.width * scale_factor, processed_img_pil.height * scale_factor), Image.NEAREST)
-
-            start_coords_run1 = [(830, 71), (843, 71)]
-            start_coords_run1 = scale_coords(start_coords_run1, scale_factor)
-
-            red_pixels_run1 = {
-                "top_middle": (7, 2), "left_middle": (2, 5), "middle_middle": (7, 5),
-                "right_middle": (11, 5), "left_bottom": (2, 13), "middle_bottom": (7, 13),
-                "right_bottom": (11, 13), "middle_bottom_edge": (7, 17), "center": (7, 9)
-            }
-            red_pixels_run1 = scale_pixel_positions(red_pixels_run1, scale_factor)
-
-            row_offset_run1 = 52 * scale_factor
-            box_dims_run1 = (13 * scale_factor, 19 * scale_factor)
-            num_rows_run1 = 12
-            boxes_per_row_run1 = 2
-
-            race_points = detect_digits_in_image(
-                scaled_image, start_coords_run1, row_offset_run1, box_dims_run1,
-                red_pixels_run1, num_rows_run1, boxes_per_row_run1
-            )
-
-            start_coords_run2 = [(916, 66), (933, 66), (950, 66)]
-            start_coords_run2 = scale_coords(start_coords_run2, scale_factor)
-
-            red_pixels_run2 = {
-                "top_middle": (8, 2), "left_middle": (2, 7), "middle_middle": (8, 7),
-                "right_middle": (13, 7), "left_bottom": (2, 16), "middle_bottom": (8, 16),
-                "right_bottom": (13, 16), "middle_bottom_edge": (8, 21), "center": (8, 11)
-            }
-            red_pixels_run2 = scale_pixel_positions(red_pixels_run2, scale_factor)
-
-            row_offset_run2 = 52 * scale_factor
-            box_dims_run2 = (16 * scale_factor, 24 * scale_factor)
-            num_rows_run2 = 12
-            boxes_per_row_run2 = 3
-
-            old_total_score = detect_digits_in_image(
-                scaled_image, start_coords_run2, row_offset_run2, box_dims_run2,
-                red_pixels_run2, num_rows_run2, boxes_per_row_run2
-            )
-
-            annotated_image_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
-            scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height),
-                                                       Image.NEAREST)
-            scaled_image_resized.save(annotated_image_path)
-
-            player_name_text, confidence_scores = extract_text_with_confidence(
-                annotated_image_path, {"player_name": [
-                    ((428, 52), (620, 96)), ((428, 104), (620, 148)),
-                    ((428, 156), (620, 200)), ((428, 208), (620, 252)),
-                    ((428, 260), (620, 304)), ((428, 312), (620, 356)),
-                    ((428, 364), (620, 408)), ((428, 416), (620, 460)),
-                    ((428, 468), (620, 512)), ((428, 520), (620, 564)),
-                    ((428, 572), (620, 617)), ((428, 624), (620, 669))
-                ]},
-                lang='eng',
-                config='--psm 7'
-            )
-
-            # Initialize filtered results and temporary storage
-            filtered_player_names = []
-
-            # Filter invalid rows
-            for i in range(len(player_name_text["player_name"])):
-                player_name = player_name_text["player_name"][i]
-                #print(f"{player_name_text["player_name"][i]}")
-
-                # Strip all non-alphanumeric characters
-                stripped_name = re.sub(r'[^a-zA-Z0-9]', '', player_name)
-                alphanumeric_count = len(stripped_name)
-                unique_alphanumeric_count = len(set(stripped_name))
-
-                # Validate the name based on the given conditions
-                if alphanumeric_count >= 3 and unique_alphanumeric_count >= 3:
-                    filtered_player_names.append(player_name)
-
-            # Calculate the number of players after filtering
-            num_players = len(filtered_player_names)
-
-            # Process filtered players
-            for i, player_name in enumerate(filtered_player_names):
-                race_position = i + 1
-                race_points_fix = get_race_points(race_position, num_players)  # Dynamic race points
-
-                # Calculate scores
-                old_total_score_value = 0  # Replace with actual logic for old total score
-                new_total_score = old_total_score_value + race_points_fix
-
-                # Build the results list
-                results.append([
-                    race_class, race_id_number, track_name_text, race_position, player_name,
-                    race_points_fix
-                ])
-
-            # Print confidence scores for debugging
-            #for player_name, confidence_score in zip(filtered_player_names, filtered_confidences):
-            #    print(f"Player Name: {player_name}, Confidence Score: {confidence_score}")
+    sorted_grouped_images = sorted(grouped_images.items(), key=lambda item: item[0])
+    results = []
+    with ThreadPoolExecutor(max_workers=OCR_WORKERS) as executor:
+        for race_results in executor.map(lambda item: process_race_group(item, text_detected_folder), sorted_grouped_images):
+            results.extend(race_results)
 
     # Create DataFrame without ConfidenceScore
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "RacePoints"
     ])
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
 
     # Add the CupName column
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
