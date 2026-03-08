@@ -22,7 +22,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 # Record the start time
 start_run_time = time.time()
-OCR_WORKERS = max(1, min(8, os.cpu_count() or 1))
+OCR_WORKERS = max(1, min(16, os.cpu_count() or 1))
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
