@@ -21,6 +21,7 @@ LastTrackNameFrame = 0
 LastRaceNumberFrame = 0
 RaceCount = 1
 SCORE_ANALYSIS_WORKERS = APP_CONFIG.score_analysis_workers
+PASS1_WINDOW_STEPS = 2
 
 
 class NullCsvWriter:
@@ -53,6 +54,23 @@ def read_video_frame(cap, stats):
     return ret, frame
 
 
+def grab_video_frame(cap, stats):
+    """Advance one frame without decoding it for analysis."""
+    start_time = time.perf_counter()
+    ret = cap.grab()
+    add_timing(stats, "grab_time_s", start_time)
+    stats["grab_calls"] += 1
+    return ret
+
+
+def advance_frames_by_grab(cap, frames_to_advance, stats):
+    """Advance by grabbing frames, avoiding full reads inside local scan windows."""
+    for _ in range(max(0, frames_to_advance)):
+        if not grab_video_frame(cap, stats):
+            return False
+    return True
+
+
 def print_timing_summary(video_name, stats):
     """Print a compact timing summary for a processed video."""
     summary_order = [
@@ -69,6 +87,7 @@ def print_timing_summary(video_name, stats):
         "score_detail_match_12th_s",
         "output_frame_capture_s",
         "seek_time_s",
+        "grab_time_s",
         "read_time_s",
     ]
     print(f"Timing Summary: {video_name}")
@@ -76,6 +95,7 @@ def print_timing_summary(video_name, stats):
         if key in stats:
             print(f"  {key}: {stats[key]:.3f}")
     print(f"  seek_calls: {int(stats.get('seek_calls', 0))}")
+    print(f"  grab_calls: {int(stats.get('grab_calls', 0))}")
     print(f"  read_calls: {int(stats.get('read_calls', 0))}")
 
 
@@ -747,18 +767,38 @@ def main():
             frame_count = 0
 
             stage_start = time.perf_counter()
-            while cap.isOpened():
-                ret, frame = read_video_frame(cap, video_stats)
-                if not ret:
+            while cap.isOpened() and frame_count < total_frames:
+                window_interrupted = False
+
+                for _ in range(PASS1_WINDOW_STEPS):
+                    ret, frame = read_video_frame(cap, video_stats)
+                    if not ret:
+                        window_interrupted = True
+                        break
+
+                    frames_to_skip = process_frame(frame, frame_count, video_path, templates, fps, csv_writer,
+                                                   median_scale_x, median_scale_y, median_left, median_top,
+                                                   median_crop_width, median_crop_height, video_stats, score_candidates)
+
+                    if frames_to_skip > 0:
+                        frame_count += frames_to_skip + FRAME_SKIP
+                        if frame_count < total_frames:
+                            seek_to_frame(cap, frame_count, video_stats)
+                        window_interrupted = True
+                        break
+
+                    if not advance_frames_by_grab(cap, FRAME_SKIP - 1, video_stats):
+                        window_interrupted = True
+                        frame_count = total_frames
+                        break
+
+                    frame_count += FRAME_SKIP
+                    if frame_count >= total_frames:
+                        window_interrupted = True
+                        break
+
+                if window_interrupted and frame_count >= total_frames:
                     break
-
-                frames_to_skip = process_frame(frame, frame_count, video_path, templates, fps, csv_writer,
-                                               median_scale_x, median_scale_y, median_left, median_top,
-                                               median_crop_width, median_crop_height, video_stats, score_candidates)
-
-                frame_count += frames_to_skip
-                frame_count += FRAME_SKIP
-                seek_to_frame(cap, frame_count, video_stats)
             add_timing(video_stats, "main_scan_loop_s", stage_start)
 
             process_score_candidates(
