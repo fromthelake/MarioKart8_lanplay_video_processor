@@ -36,6 +36,28 @@ python3 Main_RunMe.py --all
 When it finishes, open:
 - `Output_Results/Tournament_Results.xlsx`
 
+Fastest First-Time Setup
+
+If you want the easiest setup path, use one of the included setup scripts.
+
+Windows PowerShell:
+
+```powershell
+.\scripts\setup_windows.ps1
+```
+
+Linux/macOS:
+
+```bash
+./scripts/setup_unix.sh
+```
+
+These scripts:
+- create a virtual environment if needed
+- install Python dependencies
+- create `app_config.json` from the example file if missing
+- run `Main_RunMe.py --check`
+
 What Kind Of Video Is Expected
 
 The project is built for:
@@ -298,6 +320,19 @@ The GUI can:
 - merge multiple clips into one file with FFmpeg
 
 On systems without Tkinter, use the CLI instead.
+
+Git And Generated Files
+
+Generated outputs are intentionally not tracked in git.
+
+That includes:
+- extracted race screenshots
+- OCR debug images
+- `Tournament_Results.xlsx`
+- local benchmark outputs
+- local large input videos
+
+This keeps the repository clean and makes commits focus on code and documentation only.
 
 Troubleshooting
 
