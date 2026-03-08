@@ -1,235 +1,421 @@
 Mario Kart 8 Local Play Video Processor
 
-This tool analyzes Mario Kart 8 local play vertical split-screen videos, finds the important race result screens, reads the player names and points, and exports the results to an Excel file.
+This project scans Mario Kart 8 local play vertical split-screen videos, extracts the important race result screenshots, reads the names and scores from those screenshots, and exports the results to an Excel workbook.
 
-In short, it does this:
-1. scans videos in `Input_Videos`
-2. saves the important screenshots for each race
-3. OCRs those screenshots
-4. writes `Output_Results/Tournament_Results.xlsx`
-
-It supports:
-- Windows GUI usage
-- Windows/Linux/macOS command-line usage
-- optional runtime configuration without editing Python files
-
-Quick Start
-
-If you just want to try it:
-
-Windows:
-
-```powershell
-pip install -r requirements.txt
-python Main_RunMe.py --check
-python Main_RunMe.py --all
-```
-
-Linux:
-
-```bash
-pip install -r requirements.txt
-python3 Main_RunMe.py --check
-python3 Main_RunMe.py --all
-```
-
-When it finishes, open:
+Final output:
 - `Output_Results/Tournament_Results.xlsx`
 
-Fastest First-Time Setup
+In simple terms:
+1. you put one or more videos into `Input_Videos`
+2. the tool finds the race result screens
+3. the tool reads the text and points
+4. the tool writes the final tournament results to Excel
 
-If you want the easiest setup path, use one of the included setup scripts.
+Index
 
-Windows PowerShell:
+1. What This Tool Does
+2. What You Need Before You Start
+3. Video Requirements
+4. Windows Guide
+5. Linux Guide
+6. macOS Guide
+7. Command Reference
+8. What Output To Expect
+9. Configuration
+10. Benchmark And Validation Scripts
+11. Troubleshooting
+12. Notes About Git And Generated Files
+
+1. What This Tool Does
+
+The tool is built for Mario Kart 8 local play videos with a vertical split-screen layout.
+
+It creates:
+- extracted race screenshots in `Output_Results/Frames`
+- optional debug files in `Output_Results/Debug`
+- a final Excel workbook in `Output_Results/Tournament_Results.xlsx`
+
+The extracted screenshots usually include these types:
+- `0TrackName`
+- `1RaceNumber`
+- `2RaceScore`
+- `3TotalScore`
+
+Those screenshots are the key screens used to build the Excel output.
+
+2. What You Need Before You Start
+
+Before running any command, install these:
+
+1. Python
+- Python `3.12` is recommended
+- Python `3.10+` should usually work
+- using a virtual environment is recommended
+
+2. Tesseract OCR
+- required
+- used to read player names and track text
+
+3. FFmpeg
+- optional
+- only needed if you want to use the video merge feature
+
+If you only remember one thing from this section, remember this:
+- install Python first
+- then install dependencies
+- then run `Main_RunMe.py --check`
+
+3. Video Requirements
+
+Best supported input:
+- Mario Kart 8 local play
+- vertical split-screen
+- clear capture-card footage
+- no large overlays
+- full game image visible
+
+Less reliable input:
+- heavy compression
+- cropped videos
+- stream overlays
+- webcam boxes
+- unusual layouts
+
+If the tool struggles, the first thing to verify is whether the video format matches the expected layout.
+
+4. Windows Guide
+
+Windows is the easiest platform for this project because it supports both:
+- GUI mode
+- command-line mode
+
+Windows Setup
+
+1. Install Python 3.12
+2. Install Tesseract OCR
+3. Optionally install FFmpeg if you want video merging
+4. Open PowerShell in the project folder
+
+Fastest Windows Setup
+
+Run:
 
 ```powershell
 .\scripts\setup_windows.ps1
 ```
 
-Linux/macOS:
+What this command does:
+- creates `.venv` if needed
+- installs Python packages from `requirements.txt`
+- creates `app_config.json` from `app_config.example.json` if needed
+- runs the built-in environment check
+
+What you should expect:
+- Python package installation output
+- a runtime summary from `Main_RunMe.py --check`
+- ideally:
+  - `Tesseract: OK`
+  - `FFmpeg: OK` or `FFmpeg: MISSING` if you did not install FFmpeg
+
+If Tesseract says `MISSING`, install it first or set the path in `app_config.json`.
+
+Windows First Run
+
+After setup:
+
+```powershell
+.\.venv\Scripts\python.exe Main_RunMe.py --check
+```
+
+What this command does:
+- checks whether Python, Tesseract, FFmpeg, and config values are available
+
+What you should expect:
+- a printed summary showing paths and status
+- for a normal OCR-capable setup:
+  - `Tesseract: OK`
+
+Then place your videos in:
+- `Input_Videos`
+
+Then run:
+
+```powershell
+.\.venv\Scripts\python.exe Main_RunMe.py --all
+```
+
+What this command does:
+- runs frame extraction
+- runs OCR/export
+
+What you should expect:
+- console output showing detected races
+- screenshots created in `Output_Results/Frames`
+- final Excel created at `Output_Results/Tournament_Results.xlsx`
+
+Windows GUI Mode
+
+If you prefer the GUI:
+
+```powershell
+.\.venv\Scripts\python.exe Main_RunMe.py
+```
+
+What this does:
+- opens the Windows GUI
+
+What you should expect:
+- buttons for opening folders, extracting races, exporting to Excel, and merging videos
+
+5. Linux Guide
+
+Linux works best in command-line mode.
+
+Linux Setup
+
+Install system dependencies first:
 
 ```bash
+sudo apt-get update
+sudo apt-get install python3 python3-venv python3-pip tesseract-ocr
+```
+
+If you want the merge feature:
+
+```bash
+sudo apt-get install ffmpeg
+```
+
+Fastest Linux Setup
+
+Run:
+
+```bash
+chmod +x ./scripts/setup_unix.sh
 ./scripts/setup_unix.sh
 ```
 
-These scripts:
-- create a virtual environment if needed
-- install Python dependencies
-- create `app_config.json` from the example file if missing
-- run `Main_RunMe.py --check`
+What this command does:
+- creates `.venv` if needed
+- installs Python packages
+- creates `app_config.json` if needed
+- runs the environment check
 
-What Kind Of Video Is Expected
+What you should expect:
+- package installation output
+- a final check summary
+- ideally:
+  - `Tesseract: OK`
 
-The project is built for:
-- Mario Kart 8 local play
-- vertical split-screen layout
-- result screens that look like the included sample material
+Linux First Run
 
-Best results usually come from:
-- clear capture-card footage
-- stable resolution
-- visible full game image
-- normal scoreboard/result screens without overlays
+Run:
 
-Less reliable inputs:
-- heavily compressed footage
-- unusual crops
-- missing borders / partial game capture
-- streams with large overlays, alerts, or webcam boxes
+```bash
+.venv/bin/python Main_RunMe.py --check
+```
 
-What The Tool Creates
+What this command does:
+- verifies the runtime environment
 
-Main result:
+Expected result:
+- shows folder paths
+- shows `Tesseract: OK`
+
+Then place your videos in:
+- `Input_Videos`
+
+Then run:
+
+```bash
+.venv/bin/python Main_RunMe.py --all
+```
+
+What this command does:
+- runs extraction
+- runs OCR/export
+
+Expected result:
+- screenshots in `Output_Results/Frames`
+- Excel output in `Output_Results/Tournament_Results.xlsx`
+
+Linux Note
+
+If Tkinter is unavailable, that is fine. Use the CLI. The CLI is the preferred Linux path anyway.
+
+6. macOS Guide
+
+macOS works similarly to Linux.
+
+macOS Setup
+
+Recommended:
+- install Python 3.12
+- install Homebrew if you do not already have it
+
+Install dependencies:
+
+```bash
+brew install python@3.12 tesseract
+```
+
+Optional for merge support:
+
+```bash
+brew install ffmpeg
+```
+
+Then run:
+
+```bash
+chmod +x ./scripts/setup_unix.sh
+./scripts/setup_unix.sh
+```
+
+What this command does:
+- creates `.venv`
+- installs Python packages
+- creates `app_config.json` if needed
+- runs `--check`
+
+Expected result:
+- setup completes
+- `Tesseract: OK`
+
+macOS First Run
+
+Run:
+
+```bash
+.venv/bin/python Main_RunMe.py --all
+```
+
+Expected result:
+- screenshots written to `Output_Results/Frames`
+- Excel file written to `Output_Results/Tournament_Results.xlsx`
+
+7. Command Reference
+
+This section explains what each command does and what you should expect from it.
+
+`Main_RunMe.py --check`
+
+Example:
+
+```powershell
+python Main_RunMe.py --check
+```
+
+What it does:
+- checks runtime dependencies and config
+
+What you should expect:
+- Python executable path
+- input/output folder paths
+- Tesseract status
+- FFmpeg status
+- worker counts
+- debug settings
+
+Good result:
+- `Tesseract: OK`
+
+`Main_RunMe.py --extract`
+
+Example:
+
+```powershell
+python Main_RunMe.py --extract
+```
+
+What it does:
+- scans videos in `Input_Videos`
+- finds race result screens
+- writes screenshots into `Output_Results/Frames`
+
+What you should expect:
+- printed race detections
+- files like:
+  - `...+0TrackName.png`
+  - `...+1RaceNumber.png`
+  - `...+2RaceScore.png`
+  - `...+3TotalScore.png`
+
+`Main_RunMe.py --ocr`
+
+Example:
+
+```powershell
+python Main_RunMe.py --ocr
+```
+
+What it does:
+- reads the screenshots from `Output_Results/Frames`
+- OCRs names and track information
+- writes the final Excel workbook
+
+What you should expect:
+- printed OCR progress
 - `Output_Results/Tournament_Results.xlsx`
 
-Intermediate screenshots:
-- `Output_Results/Frames`
+`Main_RunMe.py --all`
+
+Example:
+
+```powershell
+python Main_RunMe.py --all
+```
+
+What it does:
+- runs both `--extract` and `--ocr`
+
+What you should expect:
+- extracted screenshots
+- final Excel workbook
+
+`Main_RunMe.py`
+
+Example:
+
+```powershell
+python Main_RunMe.py
+```
+
+What it does:
+- launches the GUI
+
+What you should expect:
+- a window with buttons for extraction, export, folder opening, and optional merge
+
+8. What Output To Expect
+
+After `--extract`:
+- files appear in `Output_Results/Frames`
+- these are the key screenshots the tool selected
+
+After `--ocr` or `--all`:
+- `Output_Results/Tournament_Results.xlsx` appears
 
 Optional debug output:
 - `Output_Results/Debug/debug_max_val.csv`
 - `Output_Results/Debug/Score_Frames`
 - `Output_Results/Debug/linking_*.xlsx`
 
-The screenshots in `Output_Results/Frames` are the key race screens the tool selected:
-- `0TrackName`
-- `1RaceNumber`
-- `2RaceScore`
-- `3TotalScore`
+What success usually looks like:
+- several `png` files per race in `Output_Results/Frames`
+- one final Excel workbook
+- no missing Tesseract error
 
-Requirements
+9. Configuration
 
-1. Python
-- Python 3.10+ recommended
-
-Install Python packages:
-
-```powershell
-pip install -r requirements.txt
-```
-
-2. Tesseract OCR
-- Required for reading player names and text
-
-Windows:
-- install Tesseract OCR, for example the UB Mannheim build
-
-Linux:
-
-```bash
-sudo apt-get install tesseract-ocr
-```
-
-macOS:
-
-```bash
-brew install tesseract
-```
-
-3. FFmpeg
-- Only required for the optional video merge feature
-
-Windows:
-- install FFmpeg and make sure `ffmpeg` works from a terminal
-
-Linux:
-
-```bash
-sudo apt-get install ffmpeg
-```
-
-macOS:
-
-```bash
-brew install ffmpeg
-```
-
-Check Your Setup
-
-Before running the pipeline, use:
-
-```powershell
-python Main_RunMe.py --check
-```
-
-or:
-
-```bash
-python3 Main_RunMe.py --check
-```
-
-This prints:
-- whether Tesseract was found
-- whether FFmpeg was found
-- where the input and output folders are
-- worker counts
-- debug settings
-
-Typical Usage
-
-GUI mode on Windows:
-
-```powershell
-python Main_RunMe.py
-```
-
-Headless mode:
-
-```powershell
-python Main_RunMe.py --extract
-python Main_RunMe.py --ocr
-python Main_RunMe.py --all
-```
-
-Linux/macOS:
-
-```bash
-python3 Main_RunMe.py --extract
-python3 Main_RunMe.py --ocr
-python3 Main_RunMe.py --all
-```
-
-Recommended Workflow
-
-1. Put your `.mp4` or `.mkv` files into `Input_Videos`
-2. Run `--check`
-3. Run `--extract` or `--all`
-4. Inspect `Output_Results/Frames` if you want to verify the selected race screenshots
-5. Run `--ocr` if you did not use `--all`
-6. Open `Output_Results/Tournament_Results.xlsx`
-
-Examples
-
-Example 1: full run on Windows
-
-```powershell
-python Main_RunMe.py --check
-python Main_RunMe.py --all
-```
-
-Example 2: split the run into two steps
-
-```powershell
-python Main_RunMe.py --extract
-python Main_RunMe.py --ocr
-```
-
-Example 3: full run on Linux
-
-```bash
-python3 Main_RunMe.py --check
-python3 Main_RunMe.py --all
-```
-
-Configuration
-
-You can configure the runtime in either of these ways:
+You can configure the tool with:
+- `app_config.json`
 - environment variables
-- an optional `app_config.json` file in the project root
 
-An example file is included:
+Start from:
 - `app_config.example.json`
 
-Supported config keys:
+Main config keys:
 - `tesseract_cmd`
 - `ocr_workers`
 - `score_analysis_workers`
@@ -237,7 +423,7 @@ Supported config keys:
 - `write_debug_score_images`
 - `write_debug_linking_excel`
 
-Example `app_config.json`:
+Example:
 
 ```json
 {
@@ -250,19 +436,7 @@ Example `app_config.json`:
 }
 ```
 
-Supported environment variables:
-- `MK8_TESSERACT_CMD`
-- `MK8_OCR_WORKERS`
-- `MK8_SCORE_ANALYSIS_WORKERS`
-- `MK8_WRITE_DEBUG_CSV`
-- `MK8_WRITE_DEBUG_SCORE_IMAGES`
-- `MK8_WRITE_DEBUG_LINKING_EXCEL`
-
-If Tesseract is installed but not on `PATH`, the easiest fix is usually:
-- set `tesseract_cmd` in `app_config.json`
-- or set `MK8_TESSERACT_CMD`
-
-Example Windows config:
+Windows Tesseract example:
 
 ```json
 {
@@ -270,18 +444,26 @@ Example Windows config:
 }
 ```
 
-Benchmark And Validation Scripts
+Environment variables:
+- `MK8_TESSERACT_CMD`
+- `MK8_OCR_WORKERS`
+- `MK8_SCORE_ANALYSIS_WORKERS`
+- `MK8_WRITE_DEBUG_CSV`
+- `MK8_WRITE_DEBUG_SCORE_IMAGES`
+- `MK8_WRITE_DEBUG_LINKING_EXCEL`
 
-These scripts are mainly for development and regression testing.
+10. Benchmark And Validation Scripts
 
-PowerShell:
+These scripts are mainly for regression testing and performance checking.
+
+Windows PowerShell:
 
 ```powershell
 .\scripts\quick_benchmark.ps1
 .\scripts\release_benchmark.ps1
 ```
 
-Bash:
+Linux/macOS:
 
 ```bash
 ./scripts/quick_benchmark.sh
@@ -292,80 +474,51 @@ What they do:
 - isolate the selected benchmark video
 - clear generated outputs
 - run `--check`
-- run extraction and OCR/export
-- validate the result against a stored baseline
-- print extraction and OCR timings
+- run extraction
+- run OCR/export
+- validate output against a stored baseline
+- print timing information
 
 Default benchmark videos:
 - quick benchmark: `Test_3_Races.mkv`
 - release benchmark: `Divisie_1.mkv`
 
-You can also validate manually:
+Expected result:
+- `validation_passed: True`
+- timing lines like:
+  - `extract_seconds=...`
+  - `ocr_seconds=...`
 
-```powershell
-python tools\validate_outputs.py --baseline-dir baselines/quick/Test_3_Races
-```
-
-GUI Notes
-
-The GUI is mainly for Windows users who want a simple click-through workflow.
-
-The GUI can:
-- open the input folder
-- run extraction
-- open the extracted frames folder
-- clear found race screenshots
-- run OCR/export
-- open the result workbook
-- merge multiple clips into one file with FFmpeg
-
-On systems without Tkinter, use the CLI instead.
-
-Git And Generated Files
-
-Generated outputs are intentionally not tracked in git.
-
-That includes:
-- extracted race screenshots
-- OCR debug images
-- `Tournament_Results.xlsx`
-- local benchmark outputs
-- local large input videos
-
-This keeps the repository clean and makes commits focus on code and documentation only.
-
-Troubleshooting
+11. Troubleshooting
 
 Problem: `Tesseract was not found`
 - install Tesseract
 - run `python Main_RunMe.py --check`
-- if needed, set `tesseract_cmd` in `app_config.json`
+- set `tesseract_cmd` in `app_config.json` if needed
 
 Problem: `FFmpeg was not found`
 - install FFmpeg
-- make sure `ffmpeg` is available on `PATH`
-- FFmpeg is only needed for the merge-video feature
+- FFmpeg is only required for merging videos
 
 Problem: no races were found
 - verify the video is Mario Kart 8 local play vertical split-screen
 - check whether the full game image is visible
 - inspect `Output_Results/Frames`
-- try one of the included example-style clips first
 
 Problem: OCR output looks wrong
 - inspect `Output_Results/Frames`
 - inspect `Output_Results/Debug/Score_Frames`
-- poor quality input or unusual overlays can reduce OCR quality
+- low-quality or unusual input can reduce OCR quality
 
-Problem: the GUI does not start on Linux
-- use the CLI mode instead:
+Problem: GUI does not start on Linux or macOS
+- use the CLI:
 
 ```bash
-python3 Main_RunMe.py --all
+.venv/bin/python Main_RunMe.py --all
 ```
 
-Problem: normal runs generate too many debug files
-- disable debug artifacts in `app_config.json`:
+Problem: too many debug files are generated
+- disable them in `app_config.json`:
 
 ```json
 {
@@ -375,17 +528,15 @@ Problem: normal runs generate too many debug files
 }
 ```
 
-Project Summary
+12. Notes About Git And Generated Files
 
-This project is a practical local-play results extractor:
-- it finds result screens from long videos
-- it OCRs names and track information
-- it reconstructs race points
-- it exports a tournament-style Excel overview
+Generated outputs are intentionally not tracked in git.
 
-If you are sharing it with friends, the simplest path is:
-1. install Python dependencies
-2. install Tesseract
-3. run `python Main_RunMe.py --check`
-4. put videos in `Input_Videos`
-5. run `python Main_RunMe.py --all`
+Examples:
+- extracted screenshots
+- OCR debug images
+- `Tournament_Results.xlsx`
+- local benchmark outputs
+- local large input videos
+
+This keeps the repository clean and makes commits focus on code and documentation rather than generated artifacts.
