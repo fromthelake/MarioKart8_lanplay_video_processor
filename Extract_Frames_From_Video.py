@@ -7,9 +7,11 @@ import time
 from PIL import Image, ImageEnhance, ImageFilter
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from app_runtime import load_app_config
 
 # Record the start time
 start_run_time = time.time()
+APP_CONFIG = load_app_config()
 
 print("Extract Frames Started - Calculating black borders")
 
@@ -18,7 +20,14 @@ FRAME_SKIP = int(3 * 30)  # Skip 3 seconds (assuming 30 FPS)
 LastTrackNameFrame = 0
 LastRaceNumberFrame = 0
 RaceCount = 1
-SCORE_ANALYSIS_WORKERS = max(1, min(4, os.cpu_count() or 1))
+SCORE_ANALYSIS_WORKERS = APP_CONFIG.score_analysis_workers
+
+
+class NullCsvWriter:
+    """Drop debug CSV rows when debug output is disabled."""
+
+    def writerow(self, _row):
+        return None
 
 
 def add_timing(stats, key, start_time):
@@ -674,10 +683,16 @@ def main():
         print("No videos found in the specified folder. Exiting.")
         return
 
-    with open(csv_output_path, mode='w', newline='') as csv_file:
-        csv_writer = csv.writer(csv_file, delimiter=';')
+    if APP_CONFIG.write_debug_csv:
+        os.makedirs(os.path.dirname(csv_output_path), exist_ok=True)
+        csv_context = open(csv_output_path, mode='w', newline='')
+        csv_writer = csv.writer(csv_context, delimiter=';')
         csv_writer.writerow(["Video", "Target", "Frame Number", "Max Value", "Timecode"])
+    else:
+        csv_context = None
+        csv_writer = NullCsvWriter()
 
+    try:
         for video_path in video_paths:
             global LastTrackNameFrame
             global LastRaceNumberFrame
@@ -763,6 +778,9 @@ def main():
             cap.release()
             video_stats["video_total_s"] = time.perf_counter() - video_start
             print_timing_summary(os.path.basename(video_path), video_stats)
+    finally:
+        if csv_context is not None:
+            csv_context.close()
 
     # Record the end time
     end_time = time.time()

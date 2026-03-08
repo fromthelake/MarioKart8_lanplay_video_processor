@@ -1,79 +1,356 @@
-### Mario Kart 8 Video-to-Text Analysis
+Mario Kart 8 Local Play Video Processor
 
-This project allows you to analyze Mario Kart 8 race videos, extract relevant data such as player names and scores, and export them into an organized Excel file. The process is automated via a GUI for ease of use.
-The video should be from Mario Kart 8 Local Play vertical split screen.
+This tool analyzes Mario Kart 8 local play vertical split-screen videos, finds the important race result screens, reads the player names and points, and exports the results to an Excel file.
 
----
+In short, it does this:
+1. scans videos in `Input_Videos`
+2. saves the important screenshots for each race
+3. OCRs those screenshots
+4. writes `Output_Results/Tournament_Results.xlsx`
 
-### Requirements
-1. **Python Dependencies**:
-   - Ensure you have all required Python packages installed by running:
-     ```bash
-     pip install -r requirements.txt
-     ```
-2. **Tesseract OCR**:
-   - Install Tesseract OCR, as it is required for text recognition.
-   - Download Tesseract from: [Tesseract GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
-   - Update the `Extract_Text_From_Frames.py` script (line 18) with the installed Tesseract location:
-     ```python
-     pytesseract.pytesseract.tesseract_cmd = r'C:\\Program Files\\Tesseract-OCR\\tesseract.exe'
-     ```
-     *(The example above uses the default installation path on Windows.)*
+It supports:
+- Windows GUI usage
+- Windows/Linux/macOS command-line usage
+- optional runtime configuration without editing Python files
 
-3. **FFmpeg**:
-   - FFmpeg is required for video processing.
-   - Install FFmpeg and add its `bin` folder to your system's PATH.
-     - **Windows**: Add `C:\\ffmpeg\\bin` to the PATH variable. [Detailed Instructions](https://ffmpeg.org/download.html)
-     - **Linux/Mac**: Install via your package manager or from source.
+Quick Start
 
----
+If you just want to try it:
 
-### How to Use the Script
-1. **Prepare Video Files**:
-   - Place `.mkv` or `.mp4` videos in the `Input_Videos` folder.
+Windows:
 
-2. **Run the GUI**:
-   - Execute the `Main_RunMe.py` script to launch the GUI.
+```powershell
+pip install -r requirements.txt
+python Main_RunMe.py --check
+python Main_RunMe.py --all
+```
 
-3. **Steps in the GUI**:
-   - **Step 1 - Ensure Videos are in Input Folder**:
-     - Verifies that videos are correctly placed in the `Input_Videos` folder.
-   - **Optional - Merge Videos**:
-     - Use this button to combine multiple video clips into a single file, if necessary.
-     - Follow the prompts to select videos and specify the merged output file.
-     - Only required if multiple clips should be treated as a single race pool.
-   - **Step 2 - Analyze Videos and Find Races**:
-     - Click this button to process the videos in the `Input_Videos` folder.
-     - Extracted frames will be saved in the `.\Output_Results\Frames` folder.
-   - **View Races Found**:
-     - Opens the `Frames` folder to view extracted frames.
-   - **Delete All Races Found**:
-     - Removes all `.png` files from the `Frames` folder.
-   - **Step 3 - Export Found Races into Excel**:
-     - Processes extracted frames and exports race results to an Excel file.
-     - The Excel file will be saved in the `.\Output_Results` folder as `Tournament_Results.xlsx`.
-   - **Open Excel Scores**:
-     - Opens the generated Excel file for review.
+Linux:
 
----
+```bash
+pip install -r requirements.txt
+python3 Main_RunMe.py --check
+python3 Main_RunMe.py --all
+```
 
-### Output Details
-- The Excel file will include race results for all videos in the `Input_Videos` folder, provided the following frame types are present in the `.\Output_Results\Frames` folder:
-  - `TrackName`
-  - `RaceNumber`
-  - `RaceScoreFrames`
-  - `TotalScoreFrames`
+When it finishes, open:
+- `Output_Results/Tournament_Results.xlsx`
 
----
+What Kind Of Video Is Expected
 
-### Additional Notes
-- **Tesseract Configuration**:
-  - Ensure the `pytesseract.pytesseract_cmd` in `Extract_Text_From_Frames.py` points to your Tesseract installation.
+The project is built for:
+- Mario Kart 8 local play
+- vertical split-screen layout
+- result screens that look like the included sample material
 
-- **Supported Formats**:
-  - Only `.mkv` and `.mp4` files are supported for analysis.
+Best results usually come from:
+- clear capture-card footage
+- stable resolution
+- visible full game image
+- normal scoreboard/result screens without overlays
 
-- **Output Structure**:
-  - Extracted frames are stored in `.\Output_Results\Frames`.
-  - The final results are compiled into `.\Output_Results\Tournament_Results.xlsx`.
-"""
+Less reliable inputs:
+- heavily compressed footage
+- unusual crops
+- missing borders / partial game capture
+- streams with large overlays, alerts, or webcam boxes
+
+What The Tool Creates
+
+Main result:
+- `Output_Results/Tournament_Results.xlsx`
+
+Intermediate screenshots:
+- `Output_Results/Frames`
+
+Optional debug output:
+- `Output_Results/Debug/debug_max_val.csv`
+- `Output_Results/Debug/Score_Frames`
+- `Output_Results/Debug/linking_*.xlsx`
+
+The screenshots in `Output_Results/Frames` are the key race screens the tool selected:
+- `0TrackName`
+- `1RaceNumber`
+- `2RaceScore`
+- `3TotalScore`
+
+Requirements
+
+1. Python
+- Python 3.10+ recommended
+
+Install Python packages:
+
+```powershell
+pip install -r requirements.txt
+```
+
+2. Tesseract OCR
+- Required for reading player names and text
+
+Windows:
+- install Tesseract OCR, for example the UB Mannheim build
+
+Linux:
+
+```bash
+sudo apt-get install tesseract-ocr
+```
+
+macOS:
+
+```bash
+brew install tesseract
+```
+
+3. FFmpeg
+- Only required for the optional video merge feature
+
+Windows:
+- install FFmpeg and make sure `ffmpeg` works from a terminal
+
+Linux:
+
+```bash
+sudo apt-get install ffmpeg
+```
+
+macOS:
+
+```bash
+brew install ffmpeg
+```
+
+Check Your Setup
+
+Before running the pipeline, use:
+
+```powershell
+python Main_RunMe.py --check
+```
+
+or:
+
+```bash
+python3 Main_RunMe.py --check
+```
+
+This prints:
+- whether Tesseract was found
+- whether FFmpeg was found
+- where the input and output folders are
+- worker counts
+- debug settings
+
+Typical Usage
+
+GUI mode on Windows:
+
+```powershell
+python Main_RunMe.py
+```
+
+Headless mode:
+
+```powershell
+python Main_RunMe.py --extract
+python Main_RunMe.py --ocr
+python Main_RunMe.py --all
+```
+
+Linux/macOS:
+
+```bash
+python3 Main_RunMe.py --extract
+python3 Main_RunMe.py --ocr
+python3 Main_RunMe.py --all
+```
+
+Recommended Workflow
+
+1. Put your `.mp4` or `.mkv` files into `Input_Videos`
+2. Run `--check`
+3. Run `--extract` or `--all`
+4. Inspect `Output_Results/Frames` if you want to verify the selected race screenshots
+5. Run `--ocr` if you did not use `--all`
+6. Open `Output_Results/Tournament_Results.xlsx`
+
+Examples
+
+Example 1: full run on Windows
+
+```powershell
+python Main_RunMe.py --check
+python Main_RunMe.py --all
+```
+
+Example 2: split the run into two steps
+
+```powershell
+python Main_RunMe.py --extract
+python Main_RunMe.py --ocr
+```
+
+Example 3: full run on Linux
+
+```bash
+python3 Main_RunMe.py --check
+python3 Main_RunMe.py --all
+```
+
+Configuration
+
+You can configure the runtime in either of these ways:
+- environment variables
+- an optional `app_config.json` file in the project root
+
+An example file is included:
+- `app_config.example.json`
+
+Supported config keys:
+- `tesseract_cmd`
+- `ocr_workers`
+- `score_analysis_workers`
+- `write_debug_csv`
+- `write_debug_score_images`
+- `write_debug_linking_excel`
+
+Example `app_config.json`:
+
+```json
+{
+  "tesseract_cmd": "/usr/bin/tesseract",
+  "ocr_workers": 16,
+  "score_analysis_workers": 4,
+  "write_debug_csv": true,
+  "write_debug_score_images": true,
+  "write_debug_linking_excel": true
+}
+```
+
+Supported environment variables:
+- `MK8_TESSERACT_CMD`
+- `MK8_OCR_WORKERS`
+- `MK8_SCORE_ANALYSIS_WORKERS`
+- `MK8_WRITE_DEBUG_CSV`
+- `MK8_WRITE_DEBUG_SCORE_IMAGES`
+- `MK8_WRITE_DEBUG_LINKING_EXCEL`
+
+If Tesseract is installed but not on `PATH`, the easiest fix is usually:
+- set `tesseract_cmd` in `app_config.json`
+- or set `MK8_TESSERACT_CMD`
+
+Example Windows config:
+
+```json
+{
+  "tesseract_cmd": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+}
+```
+
+Benchmark And Validation Scripts
+
+These scripts are mainly for development and regression testing.
+
+PowerShell:
+
+```powershell
+.\scripts\quick_benchmark.ps1
+.\scripts\release_benchmark.ps1
+```
+
+Bash:
+
+```bash
+./scripts/quick_benchmark.sh
+./scripts/release_benchmark.sh
+```
+
+What they do:
+- isolate the selected benchmark video
+- clear generated outputs
+- run `--check`
+- run extraction and OCR/export
+- validate the result against a stored baseline
+- print extraction and OCR timings
+
+Default benchmark videos:
+- quick benchmark: `Test_3_Races.mkv`
+- release benchmark: `Divisie_1.mkv`
+
+You can also validate manually:
+
+```powershell
+python tools\validate_outputs.py --baseline-dir baselines/quick/Test_3_Races
+```
+
+GUI Notes
+
+The GUI is mainly for Windows users who want a simple click-through workflow.
+
+The GUI can:
+- open the input folder
+- run extraction
+- open the extracted frames folder
+- clear found race screenshots
+- run OCR/export
+- open the result workbook
+- merge multiple clips into one file with FFmpeg
+
+On systems without Tkinter, use the CLI instead.
+
+Troubleshooting
+
+Problem: `Tesseract was not found`
+- install Tesseract
+- run `python Main_RunMe.py --check`
+- if needed, set `tesseract_cmd` in `app_config.json`
+
+Problem: `FFmpeg was not found`
+- install FFmpeg
+- make sure `ffmpeg` is available on `PATH`
+- FFmpeg is only needed for the merge-video feature
+
+Problem: no races were found
+- verify the video is Mario Kart 8 local play vertical split-screen
+- check whether the full game image is visible
+- inspect `Output_Results/Frames`
+- try one of the included example-style clips first
+
+Problem: OCR output looks wrong
+- inspect `Output_Results/Frames`
+- inspect `Output_Results/Debug/Score_Frames`
+- poor quality input or unusual overlays can reduce OCR quality
+
+Problem: the GUI does not start on Linux
+- use the CLI mode instead:
+
+```bash
+python3 Main_RunMe.py --all
+```
+
+Problem: normal runs generate too many debug files
+- disable debug artifacts in `app_config.json`:
+
+```json
+{
+  "write_debug_csv": false,
+  "write_debug_score_images": false,
+  "write_debug_linking_excel": false
+}
+```
+
+Project Summary
+
+This project is a practical local-play results extractor:
+- it finds result screens from long videos
+- it OCRs names and track information
+- it reconstructs race points
+- it exports a tournament-style Excel overview
+
+If you are sharing it with friends, the simplest path is:
+1. install Python dependencies
+2. install Tesseract
+3. run `python Main_RunMe.py --check`
+4. put videos in `Input_Videos`
+5. run `python Main_RunMe.py --all`

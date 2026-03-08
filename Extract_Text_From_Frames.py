@@ -16,13 +16,12 @@ import re
 from jellyfish import soundex
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor
-
-# Specify the path to tesseract executable
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+from app_runtime import configure_tesseract, load_app_config
 
 # Record the start time
 start_run_time = time.time()
-OCR_WORKERS = max(1, min(16, os.cpu_count() or 1))
+APP_CONFIG = load_app_config()
+OCR_WORKERS = APP_CONFIG.ocr_workers
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -595,8 +594,9 @@ def build_name_links(df, output_folder):
                 for name in name_link:
                     name_links[name].append(most_common_name)
 
-        output_path = os.path.join(output_folder, f'linking_{race_class}.xlsx')
-        player_names_df.to_excel(output_path, index=False)
+        if APP_CONFIG.write_debug_linking_excel:
+            output_path = os.path.join(output_folder, f'linking_{race_class}.xlsx')
+            player_names_df.to_excel(output_path, index=False)
 
         all_player_names_df[race_class] = player_names_df
 
@@ -728,11 +728,12 @@ def process_race_group(grouped_item, text_detected_folder):
             red_pixels_run2, num_rows_run2, boxes_per_row_run2
         )
 
-        annotated_image_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
         scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height),
                                                    Image.NEAREST)
-        scaled_image_resized.save(annotated_image_path)
         annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
+        if APP_CONFIG.write_debug_score_images:
+            annotated_image_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
+            scaled_image_resized.save(annotated_image_path)
 
         player_name_text, confidence_scores = extract_text_with_confidence(
             annotated_image, {"player_name": [
@@ -785,11 +786,11 @@ def process_images_in_folder(folder_path: str) -> None:
 
     script_dir = os.path.dirname(__file__)  # Directory of the script
     text_detected_folder = os.path.join(script_dir, 'Output_Results', 'Debug', 'Score_Frames')
-    if not os.path.exists(text_detected_folder):
+    if APP_CONFIG.write_debug_score_images and not os.path.exists(text_detected_folder):
         os.makedirs(text_detected_folder)
 
     linking_data_folder = os.path.join(script_dir, 'Output_Results', 'Debug')
-    if not os.path.exists(linking_data_folder):
+    if APP_CONFIG.write_debug_linking_excel and not os.path.exists(linking_data_folder):
         os.makedirs(linking_data_folder)
 
     grouped_images = {}
@@ -863,20 +864,23 @@ def process_images_in_folder(folder_path: str) -> None:
     print(f'Results saved to {output_excel_path}')
 
 
-# Folder path to the images
-script_dir = os.path.dirname(__file__)  # Directory of the script
-folder_path = os.path.join(script_dir, 'Output_Results', 'Frames')
-process_images_in_folder(folder_path)
+if __name__ == "__main__":
+    configure_tesseract(pytesseract, APP_CONFIG)
 
-# Record the end time
-end_time = time.time()
+    # Folder path to the images
+    script_dir = os.path.dirname(__file__)  # Directory of the script
+    folder_path = os.path.join(script_dir, 'Output_Results', 'Frames')
+    process_images_in_folder(folder_path)
 
-# Calculate the elapsed time
-elapsed_time = end_time - start_run_time
+    # Record the end time
+    end_time = time.time()
 
-# Convert elapsed time to minutes and seconds
-minutes = int(elapsed_time // 60)
-seconds = int(elapsed_time % 60)
+    # Calculate the elapsed time
+    elapsed_time = end_time - start_run_time
 
-# Print the elapsed time in mm:ss format
-print(f"Runtime was: {minutes:02}:{seconds:02}")
+    # Convert elapsed time to minutes and seconds
+    minutes = int(elapsed_time // 60)
+    seconds = int(elapsed_time % 60)
+
+    # Print the elapsed time in mm:ss format
+    print(f"Runtime was: {minutes:02}:{seconds:02}")
