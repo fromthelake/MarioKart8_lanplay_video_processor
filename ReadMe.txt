@@ -489,6 +489,28 @@ Expected result:
   - `extract_seconds=...`
   - `ocr_seconds=...`
 
+Extraction profiling:
+- the extractor also prints a per-video timing summary to stdout
+- useful buckets include:
+  - `main_scan_loop_s`
+  - `score_candidate_pass_s`
+  - `score_detail_frame_prepare_s`
+  - `score_detail_crop_upscale_s`
+  - `score_detail_grayscale_s`
+  - `score_detail_score_preprocess_s`
+  - `score_detail_match_score_s`
+  - `score_detail_match_12th_s`
+  - `output_frame_capture_s`
+  - `seek_time_s`
+  - `grab_time_s`
+  - `read_time_s`
+
+Validation policy during performance work:
+- default target is exact output parity with the stored baseline
+- if workbook output changes, or files are missing/unexpected, treat that as a hard failure
+- if only a very small number of exported frame images differ while workbook output stays identical, treat that as a manual review case instead of an automatic rejection
+- use `Test_3_Races.mkv` first for quick verification, then `Divisie_1.mkv` for release verification
+
 11. Troubleshooting
 
 Problem: `Tesseract was not found`

@@ -77,12 +77,19 @@ def print_timing_summary(video_name, stats):
         "video_total_s",
         "scaling_scan_s",
         "main_scan_loop_s",
+        "score_candidate_pass_s",
         "process_frame_total_s",
         "initial_frame_prepare_s",
         "initial_roi_preprocess_s",
         "initial_match_s",
         "score_detail_total_s",
         "score_detail_frame_prepare_s",
+        "score_detail_crop_upscale_s",
+        "score_detail_grayscale_s",
+        "score_detail_score_roi_extract_s",
+        "score_detail_score_preprocess_s",
+        "score_detail_12th_roi_extract_s",
+        "score_detail_12th_preprocess_s",
         "score_detail_match_score_s",
         "score_detail_match_12th_s",
         "output_frame_capture_s",
@@ -121,17 +128,32 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
             break
 
         timecode = frame_to_timecode(detail_frame_number, fps)
+        frame_prepare_start = time.perf_counter()
+        gray_image, crop_upscale_time, grayscale_time = crop_to_gray_and_upscale_image(
+            frame,
+            left,
+            top,
+            crop_width,
+            crop_height,
+            target_width,
+            target_height,
+        )
+        stats["score_detail_crop_upscale_s"] += crop_upscale_time
+        stats["score_detail_grayscale_s"] += grayscale_time
+
         stage_start = time.perf_counter()
-        upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, target_width, target_height)
-        gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
         roi_x, roi_y, roi_width, roi_height = 315, 57, 52, 610
         roi_x = max(roi_x - 25, 0)
         roi_y = max(roi_y - 25, 0)
         roi_width = min(roi_width + 50, gray_image.shape[1] - roi_x)
         roi_height = min(roi_height + 50, gray_image.shape[0] - roi_y)
         roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        add_timing(stats, "score_detail_score_roi_extract_s", stage_start)
+
+        stage_start = time.perf_counter()
         processed_roi = preprocess_roi(roi, 0)
-        add_timing(stats, "score_detail_frame_prepare_s", stage_start)
+        add_timing(stats, "score_detail_score_preprocess_s", stage_start)
+        add_timing(stats, "score_detail_frame_prepare_s", frame_prepare_start)
 
         black_pixel_percentage = np.mean(processed_roi == 0)
         if black_pixel_percentage >= 0.97:
@@ -151,7 +173,10 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
             )
 
         stage_start = time.perf_counter()
-        res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+        if alpha_mask is None:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
+        else:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         add_timing(stats, "score_detail_match_score_s", stage_start)
 
@@ -163,13 +188,18 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
             continue
 
         if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
+            stage_start = time.perf_counter()
             roi_x2, roi_y2, roi_width2, roi_height2 = 338, 657, 601, 39
             roi_x2 = max(roi_x2 - 25, 0)
             roi_y2 = max(roi_y2 - 25, 0)
             roi_width2 = min(roi_width2 + 50, gray_image.shape[1] - roi_x2)
             roi_height2 = min(roi_height2 + 50, gray_image.shape[0] - roi_y2)
             roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
+            add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
+
+            stage_start = time.perf_counter()
             processed_roi2 = preprocess_roi(roi2, 0)
+            add_timing(stats, "score_detail_12th_preprocess_s", stage_start)
 
             template_binary2, alpha_mask2 = templates[3]
             if processed_roi2.shape[0] < template_binary2.shape[0] or processed_roi2.shape[1] < template_binary2.shape[1]:
@@ -181,7 +211,10 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
                 )
 
             stage_start = time.perf_counter()
-            res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
+            if alpha_mask2 is None:
+                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED)
+            else:
+                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
             _, max_val2, _, _ = cv2.minMaxLoc(res)
             add_timing(stats, "score_detail_match_12th_s", stage_start)
 
@@ -240,17 +273,32 @@ def analyze_score_window_task(task):
             break
 
         timecode = frame_to_timecode(detail_frame_number, fps)
+        frame_prepare_start = time.perf_counter()
+        gray_image, crop_upscale_time, grayscale_time = crop_to_gray_and_upscale_image(
+            frame,
+            left,
+            top,
+            crop_width,
+            crop_height,
+            target_width,
+            target_height,
+        )
+        stats["score_detail_crop_upscale_s"] += crop_upscale_time
+        stats["score_detail_grayscale_s"] += grayscale_time
+
         stage_start = time.perf_counter()
-        upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, target_width, target_height)
-        gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
         roi_x, roi_y, roi_width, roi_height = 315, 57, 52, 610
         roi_x = max(roi_x - 25, 0)
         roi_y = max(roi_y - 25, 0)
         roi_width = min(roi_width + 50, gray_image.shape[1] - roi_x)
         roi_height = min(roi_height + 50, gray_image.shape[0] - roi_y)
         roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        add_timing(stats, "score_detail_score_roi_extract_s", stage_start)
+
+        stage_start = time.perf_counter()
         processed_roi = preprocess_roi(roi, 0)
-        add_timing(stats, "score_detail_frame_prepare_s", stage_start)
+        add_timing(stats, "score_detail_score_preprocess_s", stage_start)
+        add_timing(stats, "score_detail_frame_prepare_s", frame_prepare_start)
 
         black_pixel_percentage = np.mean(processed_roi == 0)
         if black_pixel_percentage >= 0.97:
@@ -270,7 +318,10 @@ def analyze_score_window_task(task):
             )
 
         stage_start = time.perf_counter()
-        res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+        if alpha_mask is None:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
+        else:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         add_timing(stats, "score_detail_match_score_s", stage_start)
         debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, max_val, timecode])
@@ -281,13 +332,18 @@ def analyze_score_window_task(task):
             continue
 
         if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
+            stage_start = time.perf_counter()
             roi_x2, roi_y2, roi_width2, roi_height2 = 338, 657, 601, 39
             roi_x2 = max(roi_x2 - 25, 0)
             roi_y2 = max(roi_y2 - 25, 0)
             roi_width2 = min(roi_width2 + 50, gray_image.shape[1] - roi_x2)
             roi_height2 = min(roi_height2 + 50, gray_image.shape[0] - roi_y2)
             roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
+            add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
+
+            stage_start = time.perf_counter()
             processed_roi2 = preprocess_roi(roi2, 0)
+            add_timing(stats, "score_detail_12th_preprocess_s", stage_start)
             template_binary2, alpha_mask2 = templates[3]
 
             if processed_roi2.shape[0] < template_binary2.shape[0] or processed_roi2.shape[1] < template_binary2.shape[1]:
@@ -299,7 +355,10 @@ def analyze_score_window_task(task):
                 )
 
             stage_start = time.perf_counter()
-            res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
+            if alpha_mask2 is None:
+                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED)
+            else:
+                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
             _, max_val2, _, _ = cv2.minMaxLoc(res)
             add_timing(stats, "score_detail_match_12th_s", stage_start)
 
@@ -483,6 +542,19 @@ def crop_and_upscale_image(image, left, top, crop_width, crop_height, target_wid
     return upscaled_image
 
 
+def crop_to_gray_and_upscale_image(image, left, top, crop_width, crop_height, target_width, target_height):
+    """Crop first, convert to grayscale, then resize to reduce pass-2 image work."""
+    stage_start = time.perf_counter()
+    cropped_image = image[top:top + crop_height, left:left + crop_width]
+    gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+    grayscale_time = time.perf_counter() - stage_start
+
+    stage_start = time.perf_counter()
+    upscaled_gray_image = cv2.resize(gray_image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+    crop_upscale_time = time.perf_counter() - stage_start
+    return upscaled_gray_image, crop_upscale_time, grayscale_time
+
+
 def preprocess_roi(roi, process_type):
     """Preprocess the Region of Interest (ROI) based on the process type."""
     if process_type == 0:
@@ -594,7 +666,10 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                                        interpolation=cv2.INTER_LINEAR)
 
         stage_start = time.perf_counter()
-        res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+        if alpha_mask is None:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
+        else:
+            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
         _, max_val, _, _ = cv2.minMaxLoc(res)
         add_timing(stats, "initial_match_s", stage_start)
 
@@ -687,10 +762,10 @@ def main():
         elif len(template.shape) == 3 and template.shape[2] == 3:
             template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
             _, template_binary = cv2.threshold(template_gray, 180, 255, cv2.THRESH_BINARY)
-            alpha_mask = np.ones(template_binary.shape, dtype=np.uint8) * 255
+            alpha_mask = None
         elif len(template.shape) == 2:
             template_binary = template
-            alpha_mask = np.ones(template_binary.shape, dtype=np.uint8) * 255
+            alpha_mask = None
         else:
             print(f"Error: Template image at '{template_path}' has an unexpected number of channels.")
             return
