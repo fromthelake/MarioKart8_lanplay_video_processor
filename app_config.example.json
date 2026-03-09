@@ -1,8 +1,12 @@
 {
   "tesseract_cmd": null,
+  "execution_mode": "auto",
   "ocr_workers": 16,
   "score_analysis_workers": 4,
   "pass1_scan_workers": 4,
+  "ocr_consensus_frames": 7,
+  "pass1_segment_overlap_frames": 2100,
+  "pass1_min_segment_frames": 27000,
   "write_debug_csv": true,
   "write_debug_score_images": true,
   "write_debug_linking_excel": true

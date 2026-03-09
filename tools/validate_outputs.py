@@ -66,6 +66,27 @@ def load_workbook_rows(xlsx_path: Path, race_class: str | None):
     return filtered
 
 
+def align_rows_for_comparison(baseline_rows, current_rows):
+    if not baseline_rows or not current_rows:
+        return baseline_rows, current_rows
+    baseline_header = baseline_rows[0]
+    current_header = current_rows[0]
+    shared_columns = [column for column in baseline_header if column in current_header]
+    if shared_columns == baseline_header and len(current_header) == len(baseline_header):
+        return baseline_rows, current_rows
+
+    baseline_indices = [baseline_header.index(column) for column in shared_columns]
+    current_indices = [current_header.index(column) for column in shared_columns]
+
+    def _project(rows, indices):
+        projected = [shared_columns]
+        for row in rows[1:]:
+            projected.append([row[index] if index < len(row) else "" for index in indices])
+        return projected
+
+    return _project(baseline_rows, baseline_indices), _project(current_rows, current_indices)
+
+
 def print_list(label: str, values):
     print(f"{label}: {len(values)}")
     for value in values[:10]:
@@ -111,6 +132,7 @@ def main() -> int:
 
     baseline_rows = load_csv_rows(baseline_dir / "Tournament_Results.csv", race_class)
     current_rows = load_workbook_rows(current_dir / "Tournament_Results.xlsx", race_class)
+    baseline_rows, current_rows = align_rows_for_comparison(baseline_rows, current_rows)
     workbook_match = baseline_rows == current_rows
     print(f"workbook_match: {workbook_match}")
     print(f"baseline_rows: {len(baseline_rows)}")

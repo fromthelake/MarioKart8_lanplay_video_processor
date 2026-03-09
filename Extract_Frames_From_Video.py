@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import argparse
 from glob import glob
 import csv
 import time
@@ -10,7 +11,8 @@ from bisect import bisect_left
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from queue import Empty, Queue
-from app_runtime import load_app_config
+from app_runtime import detect_gpu_runtime, load_app_config
+from console_logging import LOGGER
 
 # Record the start time
 start_run_time = time.time()
@@ -27,14 +29,16 @@ PASS1_WINDOW_STEPS = 2
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 VERTICAL_DILATE_KERNEL = np.ones((2, 1), np.uint8)
-PASS1_SEGMENT_OVERLAP_SECONDS = 70
-PASS1_MIN_SEGMENT_SECONDS = 15 * 60
+PASS1_SEGMENT_OVERLAP_FRAMES = APP_CONFIG.pass1_segment_overlap_frames
+PASS1_MIN_SEGMENT_FRAMES = APP_CONFIG.pass1_min_segment_frames
 PASS1_PROGRESS_REPORT_SECONDS = 2.0
+GPU_RUNTIME = detect_gpu_runtime(APP_CONFIG)
 
 # Pass-two ROIs are evaluated on a fixed 1280x720 working image, so these bounds
 # can be precomputed once instead of rebuilt for every frame.
 PASS2_SCORE_ROI = (290, 32, 102, 660)
 PASS2_12TH_ROI = (313, 632, 651, 88)
+CONSENSUS_FRAME_CACHE = {}
 
 
 class NullCsvWriter:
@@ -57,13 +61,22 @@ class MetadataCsvWriter:
 class ProgressPrinter:
     """Print throttled progress updates for long-running stages."""
 
-    def __init__(self, label, total_units, percent_step=5, min_interval_s=3.0):
-        self.label = label
+    def __init__(self, scope, total_units, percent_step=5, min_interval_s=3.0):
+        self.scope = scope
         self.total_units = max(1, int(total_units))
         self.percent_step = max(1, int(percent_step))
         self.min_interval_s = float(min_interval_s)
         self.last_percent = -1
         self.last_print_time = 0.0
+        self.start_time = time.perf_counter()
+        self.phase_peak = {
+            "cpu_percent": None,
+            "ram_used_gb": None,
+            "ram_total_gb": None,
+            "gpu_percent": None,
+            "vram_used_gb": None,
+            "vram_total_gb": None,
+        }
 
     def update(self, completed_units, detail=""):
         percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
@@ -75,10 +88,40 @@ class ProgressPrinter:
             should_print = True
         if not should_print:
             return
+        snapshot = LOGGER.resources.sample()
+        self._update_phase_peak(snapshot)
+        resource_text = LOGGER.resource_text(snapshot)
         detail_suffix = f" | {detail}" if detail else ""
-        print(f"[{self.label}] {percent:3d}% ({min(completed_units, self.total_units):,}/{self.total_units:,}){detail_suffix}")
+        LOGGER.log(
+            self.scope,
+            f"{percent:3d}% | {min(completed_units, self.total_units):,}/{self.total_units:,} | "
+            f"{resource_text}{detail_suffix}",
+        )
         self.last_percent = percent
         self.last_print_time = now
+
+    def _update_phase_peak(self, snapshot):
+        for field in ("cpu_percent", "ram_used_gb", "gpu_percent", "vram_used_gb"):
+            current = getattr(snapshot, field)
+            peak_value = self.phase_peak[field]
+            if current is not None and (peak_value is None or current > peak_value):
+                self.phase_peak[field] = current
+        for field in ("ram_total_gb", "vram_total_gb"):
+            current = getattr(snapshot, field)
+            if current is not None:
+                self.phase_peak[field] = current
+
+    def peak_lines(self):
+        lines = []
+        if self.phase_peak["cpu_percent"] is not None:
+            lines.append(f"Peak CPU: {self.phase_peak['cpu_percent']:.0f}%")
+        if self.phase_peak["ram_used_gb"] is not None and self.phase_peak["ram_total_gb"] is not None:
+            lines.append(f"Peak RAM: {self.phase_peak['ram_used_gb']:.1f} / {self.phase_peak['ram_total_gb']:.1f} GB")
+        if self.phase_peak["gpu_percent"] is not None:
+            lines.append(f"Peak GPU: {self.phase_peak['gpu_percent']:.0f}%")
+        if self.phase_peak["vram_used_gb"] is not None and self.phase_peak["vram_total_gb"] is not None:
+            lines.append(f"Peak VRAM: {self.phase_peak['vram_used_gb']:.1f} / {self.phase_peak['vram_total_gb']:.1f} GB")
+        return lines
 
 
 def format_duration(seconds):
@@ -90,12 +133,12 @@ def format_duration(seconds):
     return f"{hours:02}:{minutes:02}:{secs:02}"
 
 
-def update_segment_progress(progress_queue, segment_index, frame_number, scan_start, scan_end, force=False):
+def update_segment_progress(progress_queue, segment_index, frame_number, scan_start, scan_end, emit_start, emit_end, force=False):
     """Send best-effort in-segment progress updates from pass-one workers."""
     if progress_queue is None:
         return
-    completed = max(0, min(frame_number - scan_start, max(1, scan_end - scan_start)))
-    total = max(1, scan_end - scan_start)
+    completed = max(0, min(max(frame_number, emit_start), emit_end) - emit_start)
+    total = max(1, emit_end - emit_start)
     progress_queue.put(
         {
             "segment_index": segment_index,
@@ -147,43 +190,31 @@ def advance_frames_by_grab(cap, frames_to_advance, stats):
 
 
 def print_timing_summary(video_name, stats):
-    """Print a compact timing summary for a processed video."""
-    summary_order = [
-        "video_total_s",
-        "scaling_scan_s",
-        "main_scan_loop_s",
-        "score_candidate_pass_s",
-        "process_frame_total_s",
-        "initial_frame_prepare_s",
-        "initial_roi_preprocess_s",
-        "initial_match_s",
-        "score_detail_total_s",
-        "score_detail_frame_prepare_s",
-        "score_detail_crop_upscale_s",
-        "score_detail_grayscale_s",
-        "score_detail_score_roi_extract_s",
-        "score_detail_score_preprocess_s",
-        "score_detail_12th_roi_extract_s",
-        "score_detail_12th_preprocess_s",
-        "score_detail_match_score_s",
-        "score_detail_match_12th_s",
-        "output_frame_capture_s",
-        "seek_time_s",
-        "grab_time_s",
-        "read_time_s",
+    """Print a user-facing summary of where time went."""
+    total_time = float(stats.get("video_total_s", 0.0))
+    if total_time <= 0:
+        return
+
+    major_buckets = [
+        ("calibration", float(stats.get("scaling_scan_s", 0.0))),
+        ("pass 1 scan", float(stats.get("main_scan_loop_s", 0.0))),
+        ("pass 2 score selection", float(stats.get("score_candidate_pass_s", 0.0))),
+        ("frame export", float(stats.get("output_frame_capture_s", 0.0))),
+        ("video seek/read/grab", float(stats.get("seek_time_s", 0.0) + stats.get("read_time_s", 0.0) + stats.get("grab_time_s", 0.0))),
     ]
-    print(f"Timing Summary: {video_name}")
-    for key in summary_order:
-        if key in stats:
-            print(f"  {key}: {stats[key]:.3f}")
-    print(f"  seek_calls: {int(stats.get('seek_calls', 0))}")
-    print(f"  grab_calls: {int(stats.get('grab_calls', 0))}")
-    print(f"  read_calls: {int(stats.get('read_calls', 0))}")
+    ranked = [(label, value) for label, value in major_buckets if value > 0.0]
+    ranked.sort(key=lambda item: item[1], reverse=True)
+
+    lines = []
+    for label, value in ranked[:3]:
+        percent = (value / total_time) * 100 if total_time > 0 else 0.0
+        lines.append(f"{label}: {format_duration(value)} ({percent:.0f}%)")
+    LOGGER.summary_block(f"[{video_name} - Debug Timing]", lines, color_name="dim")
 
 
 def print_detection_event(video_path, label, race_number, timecode):
     """Print concise user-facing detection updates."""
-    print(f"[{os.path.basename(video_path)}] Found {label} for race {race_number:03} at {timecode}")
+    LOGGER.log("", f"Race {race_number:03} | {label} found at source {timecode}", color_name="green")
 
 
 def actual_frame_after_read(cap):
@@ -206,6 +237,27 @@ def log_exported_frame(metadata_writer, video_path, race_number, kind, requested
             frame_to_timecode(actual_frame, fps),
         ]
     )
+
+
+def collect_consensus_frames(video_path, center_frame, fps, left, top, crop_width, crop_height, bundle_kind):
+    """Collect nearby upscaled frames for in-memory OCR consensus during --all runs."""
+    radius = max(0, APP_CONFIG.ocr_consensus_frames // 2)
+    cache_key = (os.path.splitext(os.path.basename(video_path))[0], int(bundle_kind[0]), bundle_kind[1])
+    local_cap = cv2.VideoCapture(video_path)
+    if not local_cap.isOpened():
+        return
+
+    total_frames = int(local_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    bundled_frames = []
+    for frame_number in range(max(0, center_frame - radius), min(total_frames, center_frame + radius + 1)):
+        local_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ret, frame = local_cap.read()
+        if not ret:
+            continue
+        bundled_frames.append(crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT))
+    local_cap.release()
+    if bundled_frames:
+        CONSENSUS_FRAME_CACHE[cache_key] = bundled_frames
 
 
 def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, scale_x, scale_y, left, top,
@@ -262,11 +314,7 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
             continue
 
         stage_start = time.perf_counter()
-        if alpha_mask is None:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
-        else:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
         add_timing(stats, "score_detail_match_score_s", stage_start)
 
         timecode = frame_to_timecode(detail_frame_number, fps)
@@ -289,11 +337,7 @@ def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, s
 
             template_binary2, alpha_mask2 = templates[3]
             stage_start = time.perf_counter()
-            if alpha_mask2 is None:
-                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED)
-            else:
-                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
-            _, max_val2, _, _ = cv2.minMaxLoc(res)
+            max_val2 = match_template(processed_roi2, template_binary2, alpha_mask2)
             add_timing(stats, "score_detail_match_12th_s", stage_start)
 
             if max_val2 > 0.4 and not np.isinf(max_val2):
@@ -383,11 +427,7 @@ def analyze_score_window_task(task):
             continue
 
         stage_start = time.perf_counter()
-        if alpha_mask is None:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
-        else:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
         add_timing(stats, "score_detail_match_score_s", stage_start)
         timecode = frame_to_timecode(detail_frame_number, fps)
         debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, max_val, timecode])
@@ -409,11 +449,7 @@ def analyze_score_window_task(task):
             template_binary2, alpha_mask2 = templates[3]
 
             stage_start = time.perf_counter()
-            if alpha_mask2 is None:
-                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED)
-            else:
-                res = cv2.matchTemplate(processed_roi2, template_binary2, cv2.TM_CCOEFF_NORMED, mask=alpha_mask2)
-            _, max_val2, _, _ = cv2.minMaxLoc(res)
+            max_val2 = match_template(processed_roi2, template_binary2, alpha_mask2)
             add_timing(stats, "score_detail_match_12th_s", stage_start)
 
             if max_val2 > 0.4 and not np.isinf(max_val2):
@@ -471,12 +507,10 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
         f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+2RaceScore.png"
     )
     cv2.imwrite(frame_filename, upscaled_image)
+    collect_consensus_frames(video_path, actual_race_score_frame, fps, left, top, crop_width, crop_height, (race_number, "RaceScore"))
     log_exported_frame(
         metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps
     )
-
-    timecode = frame_to_timecode(total_score_frame, fps)
-    print(f"[{os.path.basename(video_path)}] Saved total score frame for race {race_number:03} at {timecode}")
 
     seek_to_frame(cap, total_score_frame, stats)
     ret, frame = read_video_frame(cap, stats)
@@ -499,6 +533,7 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
         f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+3TotalScore.png"
     )
     cv2.imwrite(frame_filename, upscaled_image)
+    collect_consensus_frames(video_path, actual_total_score_frame, fps, left, top, crop_width, crop_height, (race_number, "TotalScore"))
     log_exported_frame(
         metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps
     )
@@ -507,7 +542,7 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
 
 
 def process_score_candidates(video_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
-                             crop_width, crop_height, stats, metadata_writer):
+                             crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
         return
@@ -529,19 +564,26 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
     ]
 
     worker_count = min(SCORE_ANALYSIS_WORKERS, len(tasks))
-    progress = ProgressPrinter(
-        f"{os.path.basename(video_path)} pass 2",
+    local_progress = progress or ProgressPrinter(
+        f"[Video {video_index}/{total_videos} - Total Score Screen]" if video_index is not None else "[Total Score Screen]",
         len(tasks),
-        percent_step=10,
+        percent_step=5,
         min_interval_s=2.0,
     )
     if worker_count == 1:
         results = []
         for completed_count, task in enumerate(tasks, start=1):
-            results.append(analyze_score_window_task(task))
-            progress.update(
+            result = analyze_score_window_task(task)
+            results.append(result)
+            if result["total_score_frame"] > 0:
+                LOGGER.log(
+                    "",
+                    f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                    color_name="green",
+                )
+            local_progress.update(
                 completed_count,
-                f"completed {completed_count}/{len(tasks)} score windows",
+                f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
             )
     else:
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -552,10 +594,17 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
             results = []
             for completed_count, future in enumerate(as_completed(future_map), start=1):
                 task = future_map[future]
-                results.append(future.result())
-                progress.update(
+                result = future.result()
+                results.append(result)
+                if result["total_score_frame"] > 0:
+                    LOGGER.log(
+                        "",
+                        f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                        color_name="green",
+                    )
+                local_progress.update(
                     completed_count,
-                    f"completed {completed_count}/{len(tasks)} score windows",
+                    f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
                 )
 
     for result in sorted(results, key=lambda item: item["candidate"]["race_number"]):
@@ -612,6 +661,79 @@ def determine_scaling(image):
 
     return scale_x, scale_y, left, top, crop_width, crop_height
 
+
+def gpu_resize(image, width, height, interpolation=cv2.INTER_LINEAR):
+    if not GPU_RUNTIME["enabled"]:
+        return cv2.resize(image, (width, height), interpolation=interpolation)
+    if GPU_RUNTIME["backend"] == "cuda":
+        try:
+            gpu_mat = cv2.cuda_GpuMat()
+            gpu_mat.upload(image)
+            resized = cv2.cuda.resize(gpu_mat, (width, height), interpolation=interpolation)
+            return resized.download()
+        except Exception:
+            return cv2.resize(image, (width, height), interpolation=interpolation)
+    if GPU_RUNTIME["backend"] == "opencl":
+        try:
+            return cv2.resize(cv2.UMat(image), (width, height), interpolation=interpolation).get()
+        except Exception:
+            return cv2.resize(image, (width, height), interpolation=interpolation)
+    try:
+        gpu_mat = cv2.cuda_GpuMat()
+        gpu_mat.upload(image)
+        resized = cv2.cuda.resize(gpu_mat, (width, height), interpolation=interpolation)
+        return resized.download()
+    except Exception:
+        return cv2.resize(image, (width, height), interpolation=interpolation)
+
+
+def gpu_cvt_color(image, code):
+    if not GPU_RUNTIME["enabled"]:
+        return cv2.cvtColor(image, code)
+    if GPU_RUNTIME["backend"] == "cuda":
+        try:
+            gpu_mat = cv2.cuda_GpuMat()
+            gpu_mat.upload(image)
+            converted = cv2.cuda.cvtColor(gpu_mat, code)
+            return converted.download()
+        except Exception:
+            return cv2.cvtColor(image, code)
+    if GPU_RUNTIME["backend"] == "opencl":
+        try:
+            return cv2.cvtColor(cv2.UMat(image), code).get()
+        except Exception:
+            return cv2.cvtColor(image, code)
+    return cv2.cvtColor(image, code)
+
+
+def match_template(processed_roi, template_binary, alpha_mask=None):
+    if GPU_RUNTIME["enabled"] and alpha_mask is None and GPU_RUNTIME["backend"] == "cuda":
+        try:
+            matcher = cv2.cuda.createTemplateMatching(processed_roi.dtype, cv2.TM_CCOEFF_NORMED)
+            roi_gpu = cv2.cuda_GpuMat()
+            template_gpu = cv2.cuda_GpuMat()
+            roi_gpu.upload(processed_roi)
+            template_gpu.upload(template_binary)
+            res = matcher.match(roi_gpu, template_gpu).download()
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val
+        except Exception:
+            pass
+    if GPU_RUNTIME["enabled"] and alpha_mask is None and GPU_RUNTIME["backend"] == "opencl":
+        try:
+            res = cv2.matchTemplate(cv2.UMat(processed_roi), cv2.UMat(template_binary), cv2.TM_CCOEFF_NORMED).get()
+            _, max_val, _, _ = cv2.minMaxLoc(res)
+            return max_val
+        except Exception:
+            pass
+
+    if alpha_mask is None:
+        res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
+    else:
+        res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+    _, max_val, _, _ = cv2.minMaxLoc(res)
+    return max_val
+
 def load_videos_from_folder(folder_path):
     """Load video file paths from the specified folder."""
     video_extensions = ["*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm"]
@@ -620,10 +742,22 @@ def load_videos_from_folder(folder_path):
         video_paths.extend(glob(os.path.join(folder_path, extension)))
     return video_paths
 
+
+def count_exported_detection_files(video_path):
+    script_dir = os.path.dirname(__file__)
+    output_folder = os.path.join(script_dir, 'Output_Results', 'Frames')
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    return {
+        "track": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+0TrackName.png"))),
+        "race": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+1RaceNumber.png"))),
+        "score": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+2RaceScore.png"))),
+        "total": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+3TotalScore.png"))),
+    }
+
 def crop_and_upscale_image(image, left, top, crop_width, crop_height, target_width, target_height):
     """Crop the image to the detected borders and upscale to the target size."""
     cropped_image = image[top:top + crop_height, left:left + crop_width]
-    upscaled_image = cv2.resize(cropped_image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+    upscaled_image = gpu_resize(cropped_image, target_width, target_height, interpolation=cv2.INTER_LINEAR)
     return upscaled_image
 
 
@@ -631,11 +765,11 @@ def crop_to_gray_and_upscale_image(image, left, top, crop_width, crop_height, ta
     """Crop first, convert to grayscale, then resize to reduce pass-2 image work."""
     stage_start = time.perf_counter()
     cropped_image = image[top:top + crop_height, left:left + crop_width]
-    gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+    gray_image = gpu_cvt_color(cropped_image, cv2.COLOR_BGR2GRAY)
     grayscale_time = time.perf_counter() - stage_start
 
     stage_start = time.perf_counter()
-    upscaled_gray_image = cv2.resize(gray_image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+    upscaled_gray_image = gpu_resize(gray_image, target_width, target_height, interpolation=cv2.INTER_LINEAR)
     crop_upscale_time = time.perf_counter() - stage_start
     return upscaled_gray_image, crop_upscale_time, grayscale_time
 
@@ -746,11 +880,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                                        interpolation=cv2.INTER_LINEAR)
 
         stage_start = time.perf_counter()
-        if alpha_mask is None:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
-        else:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
         add_timing(stats, "initial_match_s", stage_start)
 
         if i == 0 and max_val > 0.3 and not np.isinf(max_val):
@@ -889,11 +1019,7 @@ def process_segment_frame(frame, frame_number, video_path, templates, fps, scale
             )
 
         stage_start = time.perf_counter()
-        if alpha_mask is None:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED)
-        else:
-            res = cv2.matchTemplate(processed_roi, template_binary, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
-        _, max_val, _, _ = cv2.minMaxLoc(res)
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
         add_timing(stats, "initial_match_s", stage_start)
 
         if emit_results:
@@ -993,7 +1119,7 @@ def scan_pass1_segment(task):
     seek_to_frame(local_cap, scan_start, stats)
     frame_count = scan_start
     last_progress_report = time.perf_counter()
-    update_segment_progress(progress_queue, task["segment_index"], frame_count, scan_start, scan_end, force=True)
+    update_segment_progress(progress_queue, task["segment_index"], frame_count, scan_start, scan_end, emit_start, emit_end, force=True)
 
     while local_cap.isOpened() and frame_count < scan_end:
         window_interrupted = False
@@ -1041,14 +1167,14 @@ def scan_pass1_segment(task):
 
             now = time.perf_counter()
             if now - last_progress_report >= PASS1_PROGRESS_REPORT_SECONDS:
-                update_segment_progress(progress_queue, task["segment_index"], frame_count, scan_start, scan_end)
+                update_segment_progress(progress_queue, task["segment_index"], frame_count, scan_start, scan_end, emit_start, emit_end)
                 last_progress_report = now
 
         if window_interrupted and frame_count >= scan_end:
             break
 
     local_cap.release()
-    update_segment_progress(progress_queue, task["segment_index"], scan_end, scan_start, scan_end, force=True)
+    update_segment_progress(progress_queue, task["segment_index"], emit_end, scan_start, scan_end, emit_start, emit_end, force=True)
     return {
         "segment_index": task["segment_index"],
         "stats": dict(stats),
@@ -1061,10 +1187,9 @@ def scan_pass1_segment(task):
 
 def choose_pass1_segment_count(total_frames, fps, requested_workers):
     """Use multiprocessing only for sufficiently long videos."""
-    duration_seconds = total_frames / max(fps, 1)
-    if requested_workers <= 1 or duration_seconds < PASS1_MIN_SEGMENT_SECONDS:
+    if requested_workers <= 1 or total_frames < PASS1_MIN_SEGMENT_FRAMES:
         return 1
-    segment_count = int(duration_seconds // PASS1_MIN_SEGMENT_SECONDS)
+    segment_count = int(total_frames // PASS1_MIN_SEGMENT_FRAMES)
     return max(1, min(requested_workers, segment_count if segment_count > 0 else 1))
 
 
@@ -1075,7 +1200,7 @@ def build_pass1_segment_tasks(video_path, total_frames, fps, templates, scale_x,
     if segment_count == 1:
         return []
 
-    overlap_frames = int(PASS1_SEGMENT_OVERLAP_SECONDS * fps)
+    overlap_frames = PASS1_SEGMENT_OVERLAP_FRAMES
     segment_size = (total_frames + segment_count - 1) // segment_count
     tasks = []
     for segment_index in range(segment_count):
@@ -1198,13 +1323,11 @@ def run_parallel_pass1_segments(segment_tasks, progress=None):
         if changed and progress is not None:
             completed_frames = sum(item[0] for item in segment_state.values())
             total_frames = sum(item[1] for item in segment_state.values())
-            active_segments = sum(1 for completed, total in segment_state.values() if completed < total)
-            detail = f"{active_segments}/{len(segment_tasks)} worker segments active"
             progress.total_units = max(1, total_frames)
-            progress.update(completed_frames, detail)
+            progress.update(completed_frames)
 
     def _run_with_executor(executor_factory, progress_queue):
-        segment_state = {task["segment_index"]: (0, max(1, task["scan_end"] - task["scan_start"])) for task in segment_tasks}
+        segment_state = {task["segment_index"]: (0, max(1, task["emit_end"] - task["emit_start"])) for task in segment_tasks}
         task_payloads = [{**task, "progress_queue": progress_queue} for task in segment_tasks]
         with executor_factory(max_workers=len(segment_tasks)) as executor:
             pending = {
@@ -1220,10 +1343,7 @@ def run_parallel_pass1_segments(segment_tasks, progress=None):
                     results.append(future.result())
                     if progress is not None:
                         _drain_progress(progress_queue, segment_state)
-                        print(
-                            f"[{progress.label}] segment {task['segment_index'] + 1}/{len(segment_tasks)} finished "
-                            f"({len(results)}/{len(segment_tasks)} complete)"
-                        )
+                        pass
             _drain_progress(progress_queue, segment_state)
             return results
 
@@ -1232,13 +1352,15 @@ def run_parallel_pass1_segments(segment_tasks, progress=None):
             progress_queue = manager.Queue()
             return _run_with_executor(ProcessPoolExecutor, progress_queue)
     except (PermissionError, OSError) as exc:
-        print(f"Parallel pass-1 process pool unavailable, falling back to threads: {exc}")
+        LOGGER.log("[Extract - Settings]", "Process pool unavailable, falling back to threads", color_name="yellow")
         progress_queue = Queue()
         return _run_with_executor(ThreadPoolExecutor, progress_queue)
 
-def main():
+def extract_frames(return_frame_cache=False, selected_videos=None):
     """Main function to process videos and apply template matching."""
-    print("Extract Frames Started - Calculating black borders")
+    phase_start_time = time.time()
+    CONSENSUS_FRAME_CACHE.clear()
+    LOGGER.log("[Extract - Phase Start]", "Extract race and score screens", color_name="cyan")
 
     script_dir = os.path.dirname(__file__)  # Directory of the script
     folder_path = os.path.join(script_dir, 'Input_Videos')
@@ -1255,8 +1377,8 @@ def main():
     for template_path, _ in template_paths:
         template = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
         if template is None:
-            print(f"Error: Template image at '{template_path}' could not be loaded.")
-            return
+            LOGGER.log("[Extract - Phase Start]", f"Template image could not be loaded: {template_path}", color_name="red")
+            return {} if return_frame_cache else None
         if len(template.shape) == 3 and template.shape[2] == 4:
             template_gray = cv2.cvtColor(template, cv2.COLOR_BGRA2GRAY)
             _, alpha_mask = cv2.threshold(template[:, :, 3], 0, 255, cv2.THRESH_BINARY)
@@ -1269,17 +1391,20 @@ def main():
             template_binary = template
             alpha_mask = None
         else:
-            print(f"Error: Template image at '{template_path}' has an unexpected number of channels.")
-            return
+            LOGGER.log("[Extract - Phase Start]", f"Template image has an unexpected number of channels: {template_path}", color_name="red")
+            return {} if return_frame_cache else None
         templates.append((template_binary, alpha_mask))
     template_load_time_s = time.perf_counter() - template_load_start
 
     csv_output_path = os.path.join(script_dir, 'Output_Results', 'Debug', 'debug_max_val.csv')
     metadata_output_path = os.path.join(script_dir, 'Output_Results', 'Debug', 'exported_frame_metadata.csv')
     video_paths = load_videos_from_folder(folder_path)
+    if selected_videos:
+        selected_names = {str(name).lower() for name in selected_videos}
+        video_paths = [path for path in video_paths if os.path.basename(path).lower() in selected_names]
     if not video_paths:
-        print("No videos found in the specified folder. Exiting.")
-        return
+        LOGGER.log("[Extract - Phase Start]", "No videos found in Input_Videos", color_name="red")
+        return {} if return_frame_cache else None
 
     if APP_CONFIG.write_debug_csv:
         os.makedirs(os.path.dirname(csv_output_path), exist_ok=True)
@@ -1297,8 +1422,22 @@ def main():
         metadata_context = None
         metadata_writer = None
 
+    total_source_seconds = 0.0
+    for video_path in video_paths:
+        probe = cv2.VideoCapture(video_path)
+        if probe.isOpened():
+            fps = probe.get(cv2.CAP_PROP_FPS) or 1
+            frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+            total_source_seconds += frames / max(fps, 1)
+        probe.release()
+    LOGGER.log("[Extract - Settings]", f"GPU acceleration: {GPU_RUNTIME['backend']} | Scan workers: {PASS1_SCAN_WORKERS}", color_name="cyan")
+
     try:
         total_videos = len(video_paths)
+        total_score_screens_found = 0
+        total_track_screens_found = 0
+        total_race_numbers_found = 0
+        per_video_summaries = []
         for video_index, video_path in enumerate(video_paths, start=1):
             global LastTrackNameFrame
             global LastRaceNumberFrame
@@ -1314,7 +1453,7 @@ def main():
             video_stats["template_load_s"] = template_load_time_s
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
-                print(f"Error: Could not open video {video_path}")
+                LOGGER.log(f"[Video {video_index}/{total_videos} - Start]", f"Could not open video: {video_path}", color_name="red")
                 continue
             #Determine the FPS
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -1324,12 +1463,11 @@ def main():
             sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
             scales = []
             video_name = os.path.basename(video_path)
-            print(
-                f"\n[{video_index}/{total_videos}] Extracting {video_name} | "
-                f"duration {format_duration(total_frames / max(fps, 1))} | "
-                f"frames {total_frames:,} | pass-1 workers {PASS1_SCAN_WORKERS}"
+            LOGGER.log(
+                f"[Video {video_index}/{total_videos} - Start]",
+                f"{video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
+                color_name="cyan",
             )
-
             stage_start = time.perf_counter()
             for frame_num in sample_frames:
                 seek_to_frame(cap, frame_num, video_stats)
@@ -1341,7 +1479,7 @@ def main():
             add_timing(video_stats, "scaling_scan_s", stage_start)
 
             if not scales:
-                print(f"Error: No valid frames found for scaling in video {video_path}.")
+                LOGGER.log(f"[Video {video_index}/{total_videos} - Start]", f"No valid frames found for scaling: {video_path}", color_name="red")
                 continue
 
             median_scale_x = np.median([s[0] for s in scales])
@@ -1350,11 +1488,6 @@ def main():
             median_top = int(np.median([s[3] for s in scales]))
             median_crop_width = int(np.median([s[4] for s in scales]))
             median_crop_height = int(np.median([s[5] for s in scales]))
-
-            print(
-                f"[{video_name}] Crop calibrated: left={median_left}, top={median_top}, "
-                f"size={median_crop_width}x{median_crop_height}"
-            )
 
             seek_to_frame(cap, 0, video_stats)
             segment_tasks = build_pass1_segment_tasks(
@@ -1372,16 +1505,18 @@ def main():
                 APP_CONFIG.write_debug_csv,
             )
 
+            LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", "", color_name="cyan")
+            scan_progress = None
             if not segment_tasks:
                 frame_count = 0
                 stage_start = time.perf_counter()
-                pass1_progress = ProgressPrinter(
-                    f"{video_name} pass 1",
+                scan_progress = ProgressPrinter(
+                    f"[Video {video_index}/{total_videos} - Scan]",
                     total_frames,
                     percent_step=5,
                     min_interval_s=2.0,
                 )
-                pass1_progress.update(0, "serial scan")
+                scan_progress.update(0)
                 while cap.isOpened() and frame_count < total_frames:
                     window_interrupted = False
 
@@ -1395,12 +1530,12 @@ def main():
                                                        median_scale_x, median_scale_y, median_left, median_top,
                                                        median_crop_width, median_crop_height, video_stats, score_candidates,
                                                        metadata_writer)
-
                         if frames_to_skip > 0:
                             frame_count += frames_to_skip + FRAME_SKIP
                             if frame_count < total_frames:
                                 seek_to_frame(cap, frame_count, video_stats)
                             window_interrupted = True
+                            scan_progress.update(min(frame_count, total_frames), f"Races found: {len(score_candidates)}")
                             break
 
                         if not advance_frames_by_grab(cap, FRAME_SKIP - 1, video_stats):
@@ -1413,29 +1548,23 @@ def main():
                             window_interrupted = True
                             break
 
-                        pass1_progress.update(
-                            frame_count,
-                            f"serial scan | race candidates {len(score_candidates)}",
-                        )
+                        scan_progress.update(frame_count, f"Races found: {len(score_candidates)}")
 
                     if window_interrupted and frame_count >= total_frames:
                         break
-                pass1_progress.update(total_frames, f"serial scan | race candidates {len(score_candidates)}")
+                if scan_progress.last_percent < 100:
+                    scan_progress.update(total_frames, f"Races found: {len(score_candidates)}")
                 add_timing(video_stats, "main_scan_loop_s", stage_start)
             else:
                 stage_start = time.perf_counter()
-                print(
-                    f"[{video_name} pass 1] scanning in {len(segment_tasks)} parallel ranges "
-                    f"with {PASS1_SEGMENT_OVERLAP_SECONDS}s overlap"
-                )
-                segment_progress = ProgressPrinter(
-                    f"{video_name} pass 1",
-                    sum(max(1, task["scan_end"] - task["scan_start"]) for task in segment_tasks),
+                scan_progress = ProgressPrinter(
+                    f"[Video {video_index}/{total_videos} - Scan]",
+                    total_frames,
                     percent_step=5,
                     min_interval_s=1.0,
                 )
-                segment_progress.update(0, "starting worker scans")
-                segment_results = run_parallel_pass1_segments(segment_tasks, segment_progress)
+                scan_progress.update(0)
+                segment_results = run_parallel_pass1_segments(segment_tasks, scan_progress)
                 add_timing(video_stats, "main_scan_loop_s", stage_start)
 
                 merged_score_detections = []
@@ -1471,6 +1600,8 @@ def main():
                 ]
                 auxiliary_detections.extend({"kind": "race", **item} for item in merged_race_detections)
                 auxiliary_detections.sort(key=lambda item: item["frame_number"])
+                if auxiliary_detections:
+                    LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", "", color_name="cyan")
                 save_auxiliary_detection_frames(
                     video_path,
                     auxiliary_detections,
@@ -1485,11 +1616,33 @@ def main():
                     video_stats,
                     metadata_writer,
                 )
-                print(
-                    f"[{video_name} pass 1] found {len(score_candidates)} score screens, "
-                    f"{len(merged_track_detections)} track screens, {len(merged_race_detections)} race numbers"
-                )
-
+            pre_pass2_counts = count_exported_detection_files(video_path)
+            scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
+            scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
+            scan_summary_lines = [
+                f"Duration: {format_duration(scan_duration)}",
+                f"Source length: {format_duration(total_frames / max(fps, 1))}",
+                f"Frames scanned: {total_frames:,}",
+                f"Scan speed: {scan_speed:,.0f} frames/s",
+                f"Track screens found: {pre_pass2_counts['track']}",
+                f"Race numbers found: {pre_pass2_counts['race']}",
+                f"Total score screens queued: {len(score_candidates)}",
+            ]
+            if scan_progress is not None:
+                scan_summary_lines.extend(scan_progress.peak_lines())
+            LOGGER.summary_block(
+                f"[Video {video_index}/{total_videos} - Scan - Phase Complete]",
+                scan_summary_lines,
+                color_name="green",
+            )
+            LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
+            total_score_progress = ProgressPrinter(
+                f"[Video {video_index}/{total_videos} - Total Score Screen]",
+                max(1, len(score_candidates)),
+                percent_step=5,
+                min_interval_s=2.0,
+            )
+            total_score_progress.update(0)
             process_score_candidates(
                 video_path,
                 score_candidates,
@@ -1504,11 +1657,51 @@ def main():
                 median_crop_height,
                 video_stats,
                 metadata_writer,
+                video_index=video_index,
+                total_videos=total_videos,
+                progress=total_score_progress,
             )
+            exported_counts = count_exported_detection_files(video_path)
+            total_score_screens_found += exported_counts["score"]
+            total_track_screens_found += exported_counts["track"]
+            total_race_numbers_found += exported_counts["race"]
             cap.release()
             video_stats["video_total_s"] = time.perf_counter() - video_start
-            print(f"[{video_name}] extraction finished in {video_stats['video_total_s']:.2f}s")
-            print_timing_summary(video_name, video_stats)
+            if total_score_progress.last_percent < 100:
+                total_score_progress.update(len(score_candidates))
+            LOGGER.summary_block(
+                f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
+                [
+                    f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+                    f"Total score screens found: {exported_counts['total']}",
+                    *total_score_progress.peak_lines(),
+                ] if total_score_progress.peak_lines() else [
+                    f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+                    f"Total score screens found: {exported_counts['total']}",
+                ],
+                color_name="green",
+            )
+            LOGGER.log(
+                f"[Video {video_index}/{total_videos} - Complete]",
+                f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
+                f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
+                f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
+                color_name="green",
+            )
+            if video_index < total_videos:
+                LOGGER.blank_lines(2)
+            per_video_summaries.append(
+                {
+                    "video_name": video_name,
+                    "source_length_s": total_frames / max(fps, 1),
+                    "processing_duration_s": float(video_stats["video_total_s"]),
+                    "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
+                    "total_score_duration_s": float(video_stats.get("score_candidate_pass_s", 0.0)),
+                    "track_screens": exported_counts["track"],
+                    "race_numbers": exported_counts["race"],
+                    "total_score_screens": exported_counts["total"],
+                }
+            )
     finally:
         if csv_context is not None:
             csv_context.close()
@@ -1519,14 +1712,43 @@ def main():
     end_time = time.time()
 
     # Calculate the elapsed time
-    elapsed_time = end_time - start_run_time
+    elapsed_time = end_time - phase_start_time
 
     # Convert elapsed time to minutes and seconds
     minutes = int(elapsed_time // 60)
     seconds = int(elapsed_time % 60)
 
     # Print the elapsed time in mm:ss format
-    print(f"Runtime was: {minutes:02}:{seconds:02}")
+    extract_summary = {
+        "duration_s": elapsed_time,
+        "total_source_seconds": total_source_seconds,
+        "track_screens": total_track_screens_found,
+        "race_numbers": total_race_numbers_found,
+        "total_score_screens": total_score_screens_found,
+        "per_video_summaries": per_video_summaries,
+    }
+    extract_lines = [
+        f"Duration: {format_duration(elapsed_time)}",
+        f"Source video total: {format_duration(total_source_seconds)}",
+        f"Track screens found: {total_track_screens_found}",
+        f"Race numbers found: {total_race_numbers_found}",
+        f"Total score screens found: {total_score_screens_found}",
+    ]
+    extract_lines.extend(LOGGER.peak_lines())
+    LOGGER.summary_block("[Extract - Phase Complete]", extract_lines, color_name="green")
+    if return_frame_cache:
+        return {
+            "frame_bundle_cache": {key: value[:] for key, value in CONSENSUS_FRAME_CACHE.items()},
+            "summary": extract_summary,
+        }
+    return None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract Mario Kart 8 race and score screens")
+    parser.add_argument("--video", help="Process only a specific video filename")
+    args = parser.parse_args()
+    extract_frames(return_frame_cache=False, selected_videos=[args.video] if args.video else None)
 
 if __name__ == "__main__":
     main()

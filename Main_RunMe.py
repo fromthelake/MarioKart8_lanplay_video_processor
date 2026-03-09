@@ -3,6 +3,7 @@ import glob
 import os
 import subprocess
 import sys
+import cv2
 from pathlib import Path
 
 try:
@@ -15,7 +16,8 @@ except Exception:
 
 from PIL import Image, ImageTk
 
-from app_runtime import check_runtime, load_app_config, open_path
+from app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path
+from console_logging import LOGGER
 
 
 APP_CONFIG = load_app_config()
@@ -49,8 +51,11 @@ def show_error(title: str, message: str) -> None:
         print(f"{title}: {message}", file=sys.stderr)
 
 
-def run_python_script(script_path: Path) -> None:
-    subprocess.run([sys.executable, str(script_path)], check=True)
+def run_python_script(script_path: Path, extra_args: list[str] | None = None) -> None:
+    command = [sys.executable, str(script_path)]
+    if extra_args:
+        command.extend(extra_args)
+    subprocess.run(command, check=True)
 
 
 def ensure_runtime_or_raise(require_tesseract: bool = False, require_ffmpeg: bool = False) -> None:
@@ -162,24 +167,123 @@ def merge_videos() -> None:
             temp_file.unlink()
 
 
-def run_extract() -> None:
+def run_extract(selected_video: str | None = None) -> None:
     ensure_runtime_or_raise()
-    run_python_script(EXTRACT_SCRIPT)
+    extra_args = ["--video", selected_video] if selected_video else None
+    run_python_script(EXTRACT_SCRIPT, extra_args=extra_args)
 
 
-def run_ocr() -> None:
+def run_ocr(selected_video: str | None = None) -> None:
     ensure_runtime_or_raise(require_tesseract=True)
-    run_python_script(OCR_SCRIPT)
+    extra_args = ["--video", Path(selected_video).stem] if selected_video else None
+    run_python_script(OCR_SCRIPT, extra_args=extra_args)
 
 
-def run_all() -> None:
-    run_extract()
-    run_ocr()
+def run_all(selected_video: str | None = None) -> None:
+    ensure_runtime_or_raise(require_tesseract=True)
+    import Extract_Frames_From_Video
+    import Extract_Text_From_Frames
+
+    LOGGER.log("[Run - Phase Start]", "Run all", color_name="cyan")
+    video_files = sorted(INPUT_DIR.glob("*"))
+    if selected_video:
+        selected_name = Path(selected_video).name.lower()
+        video_files = [path for path in video_files if path.is_file() and path.name.lower() == selected_name]
+    source_summaries = []
+    total_source_seconds = 0.0
+    for video_path in video_files:
+        if not video_path.is_file():
+            continue
+        capture = cv2.VideoCapture(str(video_path))
+        if capture.isOpened():
+            fps = capture.get(cv2.CAP_PROP_FPS) or 1
+            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            source_length = frame_count / max(fps, 1)
+            total_source_seconds += source_length
+            source_summaries.append(f"{video_path.name} ({Extract_Frames_From_Video.format_duration(source_length)})")
+        capture.release()
+    LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {Extract_Frames_From_Video.format_duration(total_source_seconds)}", color_name="cyan")
+    for index, summary in enumerate(source_summaries, start=1):
+        LOGGER.log("[Run - Input Summary]", f"{index}. {summary}")
+    extract_result = Extract_Frames_From_Video.extract_frames(return_frame_cache=True, selected_videos=[selected_video] if selected_video else None)
+    LOGGER.blank_lines(2)
+    frame_bundle_cache = extract_result["frame_bundle_cache"]
+    Extract_Text_From_Frames.configure_tesseract(Extract_Text_From_Frames.pytesseract, Extract_Text_From_Frames.APP_CONFIG)
+    selected_race_classes = [Path(selected_video).stem] if selected_video else None
+    ocr_result = Extract_Text_From_Frames.process_images_in_folder(
+        str(FRAMES_DIR),
+        in_memory_frame_bundles=frame_bundle_cache,
+        selected_race_classes=selected_race_classes,
+    )
+    frame_bundle_cache.clear()
+    total_processing_seconds = LOGGER.elapsed_seconds()
+    ratio = total_source_seconds / total_processing_seconds if total_processing_seconds > 0 else 0.0
+    extract_summary = extract_result.get("summary", {})
+    per_video_summaries = extract_summary.get("per_video_summaries", [])
+    ocr_per_video_work_durations = ocr_result.get("per_video_durations", {})
+    ocr_per_video_summary = ocr_result.get("per_video_summary", {})
+    total_ocr_duration_s = float(ocr_result.get("duration_s", 0.0))
+    total_ocr_work_s = sum(float(value) for value in ocr_per_video_work_durations.values())
+    performance_lines = [
+        f"Total processing time: {Extract_Frames_From_Video.format_duration(total_processing_seconds)}",
+        f"Total source video length: {Extract_Frames_From_Video.format_duration(total_source_seconds)}",
+        f"Source-length / processing-time ratio: {ratio:.1f}x real-time",
+        "",
+        "Phase durations",
+        f"- Extract race and score screens: {Extract_Frames_From_Video.format_duration(extract_summary.get('duration_s', 0.0))}",
+        f"- OCR and workbook export: {Extract_Frames_From_Video.format_duration(ocr_result.get('duration_s', 0.0))}",
+    ]
+    if per_video_summaries:
+        performance_lines.extend(["", "Per-video durations"])
+        for summary in per_video_summaries:
+            video_stem = Path(summary["video_name"]).stem
+            video_ocr_summary = ocr_per_video_summary.get(video_stem, {})
+            performance_lines.append(
+                f"- {summary['video_name']} | Source: {Extract_Frames_From_Video.format_duration(summary['source_length_s'])} | "
+                f"Processing: {Extract_Frames_From_Video.format_duration(summary['processing_duration_s'])}"
+            )
+            performance_lines.append(f"  - Scan: {Extract_Frames_From_Video.format_duration(summary['scan_duration_s'])}")
+            performance_lines.append(f"  - Total score screen: {Extract_Frames_From_Video.format_duration(summary['total_score_duration_s'])}")
+            ocr_work_s = float(ocr_per_video_work_durations.get(video_stem, 0.0))
+            if total_ocr_work_s > 0:
+                ocr_duration_s = total_ocr_duration_s * (ocr_work_s / total_ocr_work_s)
+            else:
+                ocr_duration_s = 0.0
+            performance_lines.append(f"  - OCR: {Extract_Frames_From_Video.format_duration(ocr_duration_s)}")
+            if video_ocr_summary:
+                performance_lines.append(
+                    f"  - Races found: {video_ocr_summary.get('race_count', 0)} | "
+                    f"Players: {video_ocr_summary.get('dominant_players', 0)}/12"
+                )
+                review_race_count = int(video_ocr_summary.get("review_race_count", 0))
+                review_row_count = int(video_ocr_summary.get("review_row_count", 0))
+                if review_race_count > 0 or review_row_count > 0:
+                    performance_lines.append(
+                        f"  - Needs review: {review_race_count} {('race' if review_race_count == 1 else 'races')} | "
+                        f"{review_row_count} flagged rows"
+                    )
+                else:
+                    performance_lines.append("  - Needs review: none")
+    performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
+    LOGGER.summary_block(
+        "[Run - Performance Summary]",
+        performance_lines,
+        color_name="cyan",
+    )
+    LOGGER.blank_lines(2)
+    LOGGER.log("[Run - Output]", str(RESULTS_XLSX), color_name="green")
+    print(
+        f"[{LOGGER.elapsed_label()}] "
+        f"{LOGGER.color('[RUN - COMPLETED]', 'green')} "
+        f"{LOGGER.color('[ ENJOY HAVE FUN ]', 'magenta')}"
+        f"{LOGGER.color('[LET\\'S A GO!]', 'yellow')}"
+    )
 
 
 def print_runtime_status() -> int:
     ffmpeg_issues = check_runtime(APP_CONFIG, require_ffmpeg=True)
     tesseract_issues = check_runtime(APP_CONFIG, require_tesseract=True)
+    gpu_runtime = detect_gpu_runtime(APP_CONFIG)
 
     print(f"Python executable: {sys.executable}")
     print(f"Input folder: {INPUT_DIR}")
@@ -187,9 +291,18 @@ def print_runtime_status() -> int:
     print(f"Results file: {RESULTS_XLSX}")
     print(f"Tesseract: {'OK' if not tesseract_issues else 'MISSING'}")
     print(f"FFmpeg: {'OK' if not ffmpeg_issues else 'MISSING'}")
+    print(
+        f"GPU mode: {gpu_runtime['mode']} "
+        f"({'ENABLED' if gpu_runtime['enabled'] else 'DISABLED'}, backend={gpu_runtime['backend']}, "
+        f"cuda_devices={gpu_runtime['device_count']}, opencl={gpu_runtime['opencl_in_use']})"
+    )
+    print(f"GPU detail: {gpu_runtime['reason']}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
     print(f"Pass-1 scan workers: {APP_CONFIG.pass1_scan_workers}")
+    print(f"OCR consensus frames: {APP_CONFIG.ocr_consensus_frames}")
+    print(f"Pass-1 segment overlap frames: {APP_CONFIG.pass1_segment_overlap_frames}")
+    print(f"Pass-1 minimum segment frames: {APP_CONFIG.pass1_min_segment_frames}")
     print(f"Write debug CSV: {APP_CONFIG.write_debug_csv}")
     print(f"Write debug score images: {APP_CONFIG.write_debug_score_images}")
     print(f"Write debug linking Excel: {APP_CONFIG.write_debug_linking_excel}")
@@ -275,6 +388,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--extract", action="store_true", help="Run frame extraction only")
     parser.add_argument("--ocr", action="store_true", help="Run OCR/export only")
     parser.add_argument("--all", action="store_true", help="Run extraction and OCR/export")
+    parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     return parser.parse_args()
 
 
@@ -283,13 +397,13 @@ def main() -> int:
     if args.check:
         return print_runtime_status()
     if args.extract:
-        run_extract()
+        run_extract(selected_video=args.video)
         return 0
     if args.ocr:
-        run_ocr()
+        run_ocr(selected_video=args.video)
         return 0
     if args.all:
-        run_all()
+        run_all(selected_video=args.video)
         return 0
     return launch_gui()
 

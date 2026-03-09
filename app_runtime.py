@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import sys
+import cv2
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -11,9 +12,13 @@ from typing import List, Optional
 @dataclass(frozen=True)
 class AppConfig:
     tesseract_cmd: Optional[str]
+    execution_mode: str
     ocr_workers: int
     score_analysis_workers: int
     pass1_scan_workers: int
+    ocr_consensus_frames: int
+    pass1_segment_overlap_frames: int
+    pass1_min_segment_frames: int
     write_debug_csv: bool
     write_debug_score_images: bool
     write_debug_linking_excel: bool
@@ -32,6 +37,13 @@ def _parse_int(value, default: int, minimum: int = 1) -> int:
         return max(minimum, int(value))
     except (TypeError, ValueError):
         return default
+
+
+def _parse_execution_mode(value, default: str = "auto") -> str:
+    candidate = str(value or default).strip().lower()
+    if candidate in {"auto", "gpu", "cpu"}:
+        return candidate
+    return default
 
 
 def _load_json_config(config_path: Path) -> dict:
@@ -60,6 +72,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         default_pass1_workers = 1
 
     tesseract_cmd = os.environ.get("MK8_TESSERACT_CMD", json_config.get("tesseract_cmd"))
+    execution_mode = _parse_execution_mode(
+        os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
+        "auto",
+    )
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
         default_ocr_workers,
@@ -71,6 +87,18 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     pass1_scan_workers = _parse_int(
         os.environ.get("MK8_PASS1_SCAN_WORKERS", json_config.get("pass1_scan_workers")),
         default_pass1_workers,
+    )
+    ocr_consensus_frames = _parse_int(
+        os.environ.get("MK8_OCR_CONSENSUS_FRAMES", json_config.get("ocr_consensus_frames")),
+        7,
+    )
+    pass1_segment_overlap_frames = _parse_int(
+        os.environ.get("MK8_PASS1_SEGMENT_OVERLAP_FRAMES", json_config.get("pass1_segment_overlap_frames")),
+        70 * 30,
+    )
+    pass1_min_segment_frames = _parse_int(
+        os.environ.get("MK8_PASS1_MIN_SEGMENT_FRAMES", json_config.get("pass1_min_segment_frames")),
+        15 * 60 * 30,
     )
     write_debug_csv = _parse_bool(
         os.environ.get("MK8_WRITE_DEBUG_CSV", json_config.get("write_debug_csv")),
@@ -87,9 +115,13 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
 
     return AppConfig(
         tesseract_cmd=tesseract_cmd,
+        execution_mode=execution_mode,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
         pass1_scan_workers=pass1_scan_workers,
+        ocr_consensus_frames=ocr_consensus_frames,
+        pass1_segment_overlap_frames=pass1_segment_overlap_frames,
+        pass1_min_segment_frames=pass1_min_segment_frames,
         write_debug_csv=write_debug_csv,
         write_debug_score_images=write_debug_score_images,
         write_debug_linking_excel=write_debug_linking_excel,
@@ -130,6 +162,56 @@ def resolve_tesseract_cmd(config: AppConfig) -> Optional[str]:
     if config.tesseract_cmd and Path(config.tesseract_cmd).exists():
         return config.tesseract_cmd
     return find_executable("tesseract", _tesseract_candidates())
+
+
+def detect_gpu_runtime(config: AppConfig) -> dict:
+    cuda_module = getattr(cv2, "cuda", None) if "cv2" in sys.modules else None
+    cuda_devices = 0
+    if cuda_module is not None:
+        try:
+            cuda_devices = int(cuda_module.getCudaEnabledDeviceCount())
+        except Exception:
+            cuda_devices = 0
+    gpu_available = cuda_devices > 0
+    opencl_available = False
+    opencl_in_use = False
+    try:
+        opencl_available = bool(cv2.ocl.haveOpenCL())
+        if opencl_available:
+            cv2.ocl.setUseOpenCL(True)
+            opencl_in_use = bool(cv2.ocl.useOpenCL())
+    except Exception:
+        opencl_available = False
+        opencl_in_use = False
+    mode = config.execution_mode
+    backend = "cpu"
+    reason = "CPU mode selected" if mode == "cpu" else "No GPU backend available"
+    if mode == "cpu":
+        enabled = False
+    elif gpu_available:
+        enabled = True
+        backend = "cuda"
+        reason = f"CUDA device(s) available: {cuda_devices}"
+    elif opencl_in_use:
+        enabled = True
+        backend = "opencl"
+        reason = "OpenCL available through OpenCV"
+    else:
+        enabled = False
+        if mode == "gpu":
+            reason = "Requested GPU mode, but neither CUDA nor OpenCL was available"
+        elif opencl_available:
+            reason = "OpenCL detected but not enabled by OpenCV"
+    return {
+        "available": gpu_available,
+        "enabled": enabled,
+        "device_count": cuda_devices,
+        "mode": mode,
+        "backend": backend,
+        "opencl_available": opencl_available,
+        "opencl_in_use": opencl_in_use,
+        "reason": reason,
+    }
 
 
 def check_runtime(config: AppConfig, require_tesseract: bool = False, require_ffmpeg: bool = False) -> List[str]:
