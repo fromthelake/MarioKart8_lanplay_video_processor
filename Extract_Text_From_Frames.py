@@ -902,6 +902,113 @@ def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
     return best_value, confidence
 
 
+def build_consensus_rows(observations: List[Dict[str, object]], visible_rows: int, points_key: str) -> List[Dict[str, object]]:
+    rows = []
+    for row_index in range(max(visible_rows, 1)):
+        name_votes = []
+        point_votes = []
+        for observation in observations:
+            name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
+            name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
+            name_votes.append((name, max(1.0, float(name_conf))))
+            point_votes.append((parse_detected_int(observation[points_key][row_index]), 1.0))
+
+        player_name, name_confidence = weighted_vote(name_votes)
+        detected_value, point_confidence = weighted_vote(point_votes)
+        stripped_name = re.sub(r'[^a-zA-Z0-9]', '', str(player_name or ''))
+        if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+            if detected_value is None:
+                continue
+
+        rows.append(
+            {
+                "RowIndex": row_index,
+                "PlayerName": player_name or "",
+                "NameConfidence": round(name_confidence * 100, 1),
+                "DetectedValue": detected_value,
+                "DigitConfidence": round(point_confidence * 100, 1),
+            }
+        )
+    return rows
+
+
+def map_total_rows_to_race_rows(score_rows: List[Dict[str, object]], total_rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    mapped_rows = []
+    if not score_rows:
+        return mapped_rows
+    if not total_rows:
+        for score_row in score_rows:
+            mapped_rows.append(
+                {
+                    "RacePosition": len(mapped_rows) + 1,
+                    "PlayerName": score_row["PlayerName"],
+                    "DetectedRacePoints": score_row["DetectedValue"],
+                    "DetectedTotalScore": None,
+                    "NameConfidence": score_row["NameConfidence"],
+                    "DigitConsensus": score_row["DigitConfidence"],
+                    "TotalScoreMappingMethod": "missing_total_rows",
+                }
+            )
+        return mapped_rows
+
+    candidate_matches = []
+    for score_index, score_row in enumerate(score_rows):
+        score_name = str(score_row["PlayerName"] or "")
+        normalized_score_name = preprocess_name(score_name)
+        for total_index, total_row in enumerate(total_rows):
+            total_name = str(total_row["PlayerName"] or "")
+            normalized_total_name = preprocess_name(total_name)
+            if not normalized_score_name or not normalized_total_name:
+                continue
+            similarity = 1.0 if normalized_score_name == normalized_total_name else weighted_similarity(score_name, total_name)
+            confidence_floor = min(float(score_row["NameConfidence"]), float(total_row["NameConfidence"])) / 100.0
+            combined_score = (similarity * 0.8) + (confidence_floor * 0.2)
+            if similarity >= 0.72 or normalized_score_name == normalized_total_name:
+                candidate_matches.append((combined_score, similarity, score_index, total_index))
+
+    assigned_score_indices = set()
+    assigned_total_indices = set()
+    matched_totals_by_score_index: Dict[int, Tuple[int, str]] = {}
+    for _, similarity, score_index, total_index in sorted(candidate_matches, reverse=True):
+        if score_index in assigned_score_indices or total_index in assigned_total_indices:
+            continue
+        mapping_method = "name_exact" if similarity >= 0.999 else "name_fuzzy"
+        matched_totals_by_score_index[score_index] = (total_index, mapping_method)
+        assigned_score_indices.add(score_index)
+        assigned_total_indices.add(total_index)
+
+    remaining_total_indices = [index for index in range(len(total_rows)) if index not in assigned_total_indices]
+    remaining_pointer = 0
+    for score_index, score_row in enumerate(score_rows):
+        matched_total_index = None
+        mapping_method = "row_fallback"
+        if score_index in matched_totals_by_score_index:
+            matched_total_index, mapping_method = matched_totals_by_score_index[score_index]
+        elif remaining_pointer < len(remaining_total_indices):
+            matched_total_index = remaining_total_indices[remaining_pointer]
+            remaining_pointer += 1
+
+        total_score = None
+        total_digit_confidence = 0.0
+        if matched_total_index is not None:
+            total_row = total_rows[matched_total_index]
+            total_score = total_row["DetectedValue"]
+            total_digit_confidence = float(total_row["DigitConfidence"])
+
+        mapped_rows.append(
+            {
+                "RacePosition": len(mapped_rows) + 1,
+                "PlayerName": score_row["PlayerName"],
+                "DetectedRacePoints": score_row["DetectedValue"],
+                "DetectedTotalScore": total_score,
+                "NameConfidence": score_row["NameConfidence"],
+                "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
+                "TotalScoreMappingMethod": mapping_method,
+            }
+        )
+    return mapped_rows
+
+
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], annotate_path: str | None = None) -> Dict[str, object]:
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
@@ -921,42 +1028,11 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     total_visible_votes = Counter(observation["visible_rows"] for observation in total_observations if observation["visible_rows"] > 0)
     total_visible_rows = total_visible_votes.most_common(1)[0][0] if total_visible_votes else visible_rows
 
-    rows = []
-    name_confidences = []
-    digit_confidences = []
-    for row_index in range(max(visible_rows, 1)):
-        name_votes = []
-        race_point_votes = []
-        total_point_votes = []
-        for observation in score_observations:
-            name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
-            name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
-            name_votes.append((name, max(1.0, float(name_conf))))
-            race_point_votes.append((parse_detected_int(observation["race_points"][row_index]), 1.0))
-        for observation in total_observations:
-            total_point_votes.append((parse_detected_int(observation["total_points"][row_index]), 1.0))
-
-        player_name, name_confidence = weighted_vote(name_votes)
-        detected_race_points, race_point_confidence = weighted_vote(race_point_votes)
-        detected_total_score, total_point_confidence = weighted_vote(total_point_votes)
-
-        stripped_name = re.sub(r'[^a-zA-Z0-9]', '', str(player_name or ''))
-        if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
-            if detected_race_points is None and detected_total_score is None:
-                continue
-
-        rows.append(
-            {
-                "RacePosition": len(rows) + 1,
-                "PlayerName": player_name or "",
-                "DetectedRacePoints": detected_race_points,
-                "DetectedTotalScore": detected_total_score,
-                "NameConfidence": round(name_confidence * 100, 1),
-                "DigitConsensus": round(((race_point_confidence + total_point_confidence) / 2.0) * 100, 1),
-            }
-        )
-        name_confidences.append(name_confidence)
-        digit_confidences.append((race_point_confidence + total_point_confidence) / 2.0)
+    score_rows = build_consensus_rows(score_observations, visible_rows, "race_points")
+    total_rows = build_consensus_rows(total_observations, total_visible_rows, "total_points")
+    rows = map_total_rows_to_race_rows(score_rows, total_rows)
+    name_confidences = [float(row["NameConfidence"]) / 100.0 for row in rows if row.get("NameConfidence") is not None]
+    digit_confidences = [float(row["DigitConsensus"]) / 100.0 for row in rows if row.get("DigitConsensus") is not None]
 
     return {
         "rows": rows,
@@ -979,6 +1055,41 @@ def build_race_warning_messages(expected_players: int | None, race_score_players
     if row_count_confidence < 60:
         messages.append("player count could not be read with enough confidence")
     return messages
+
+
+def exact_total_score_fallback(prepared_rows: List[Dict[str, object]]) -> Dict[int, int]:
+    detected_totals = [row["detected_total"] for row in prepared_rows if row["detected_total"] is not None]
+    expected_totals = [row["session_new_total"] for row in prepared_rows]
+    if not detected_totals or len(detected_totals) != len(expected_totals):
+        return {}
+    if Counter(int(value) for value in detected_totals) != Counter(int(value) for value in expected_totals):
+        return {}
+
+    remapped = {}
+    for row in prepared_rows:
+        remapped[row["index"]] = int(row["session_new_total"])
+    return remapped
+
+
+def should_start_new_session(session_totals: Dict[str, int], detected_totals: List[int | float | str]) -> bool:
+    parsed_detected_totals = [int(value) for value in detected_totals if pd.notna(value)]
+    if not parsed_detected_totals:
+        return False
+
+    previous_totals = [int(value) for value in session_totals.values() if int(value) > 0]
+    if len(previous_totals) < max(4, len(parsed_detected_totals) // 3):
+        return False
+
+    previous_max = max(previous_totals)
+    previous_median = float(np.median(previous_totals))
+    current_max = max(parsed_detected_totals)
+    current_median = float(np.median(parsed_detected_totals))
+    low_total_count = sum(1 for value in parsed_detected_totals if value <= 20)
+
+    enough_history = previous_max >= 30 and previous_median >= 20
+    broad_drop = low_total_count >= max(3, len(parsed_detected_totals) // 2)
+    lower_than_previous = current_max <= previous_max * 0.55 and current_median <= previous_median * 0.6
+    return enough_history and broad_drop and lower_than_previous
 
 
 def process_race_group(grouped_item, text_detected_folder, metadata_index, input_videos_folder, in_memory_frame_bundles=None):
@@ -1065,6 +1176,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus["row_count_confidence"],
             race_score_players,
             total_score_players,
+            row.get("TotalScoreMappingMethod", ""),
             ";".join(review_reasons),
         ])
 
@@ -1198,7 +1310,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "NameConfidence",
-        "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount", "ReviewReason"
+        "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
+        "TotalScoreMappingMethod", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     if df.empty:
@@ -1232,24 +1345,42 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
             race_mask = (df["RaceClass"] == race_class) & (df["RaceIDNumber"] == race_id)
             race_rows = df[race_mask].sort_values("RacePosition")
             detected_totals = [value for value in race_rows["DetectedTotalScore"].tolist() if pd.notna(value)]
-            detected_race_points = [value for value in race_rows["DetectedRacePoints"].tolist() if pd.notna(value)]
-            likely_reset = False
-            if detected_totals:
-                near_zero_count = sum(1 for value in detected_totals if int(value) <= 20)
-                likely_reset = near_zero_count >= max(2, len(detected_totals) // 2)
-            if race_id != race_ids[0] and likely_reset:
+            if race_id != race_ids[0] and should_start_new_session(session_totals, detected_totals):
                 session_index += 1
                 session_totals = defaultdict(int)
 
+            prepared_rows = []
             for index, row in race_rows.iterrows():
                 player_key = row["FixPlayerName"]
                 old_total = tournament_totals[player_key]
                 session_old_total = session_totals[player_key]
                 race_points = int(row["RacePoints"])
-                new_total = old_total + race_points
-                session_new_total = session_old_total + race_points
-                detected_race = parse_detected_int(row["DetectedRacePoints"])
-                detected_total = parse_detected_int(row["DetectedTotalScore"])
+                prepared_rows.append(
+                    {
+                        "index": index,
+                        "player_key": player_key,
+                        "old_total": old_total,
+                        "session_old_total": session_old_total,
+                        "race_points": race_points,
+                        "new_total": old_total + race_points,
+                        "session_new_total": session_old_total + race_points,
+                        "detected_race": parse_detected_int(row["DetectedRacePoints"]),
+                        "detected_total": parse_detected_int(row["DetectedTotalScore"]),
+                    }
+                )
+
+            remapped_totals_by_index = exact_total_score_fallback(prepared_rows)
+
+            for prepared_row, (_, row) in zip(prepared_rows, race_rows.iterrows()):
+                index = prepared_row["index"]
+                player_key = prepared_row["player_key"]
+                old_total = prepared_row["old_total"]
+                session_old_total = prepared_row["session_old_total"]
+                race_points = prepared_row["race_points"]
+                new_total = prepared_row["new_total"]
+                session_new_total = prepared_row["session_new_total"]
+                detected_race = prepared_row["detected_race"]
+                detected_total = remapped_totals_by_index.get(index, prepared_row["detected_total"])
                 review_reasons = [reason for reason in str(row["ReviewReason"]).split(";") if reason]
                 score_status = "computed_only"
 
@@ -1284,6 +1415,10 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
                 df.at[index, "SessionNewTotalScore"] = session_new_total
                 df.at[index, "OldTotalScore"] = old_total
                 df.at[index, "NewTotalScore"] = new_total
+                if index in remapped_totals_by_index:
+                    df.at[index, "DetectedTotalScore"] = detected_total
+                    existing_mapping_method = str(df.at[index, "TotalScoreMappingMethod"]).strip()
+                    df.at[index, "TotalScoreMappingMethod"] = f"{existing_mapping_method}+score_fallback" if existing_mapping_method else "score_fallback"
                 df.at[index, "ReviewReason"] = ";".join(review_reasons)
                 df.at[index, "ReviewNeeded"] = bool(review_reasons)
                 df.at[index, "ScoreValidationStatus"] = score_status
@@ -1294,7 +1429,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     desired_order = [
         "RaceClass", "RaceIDNumber", "TrackName", "TrackID", "CupName", "RacePosition", "PlayerName",
         "FixPlayerName", "RacePoints", "DetectedRacePoints", "DetectedTotalScore",
-        "RaceScorePlayerCount", "TotalScorePlayerCount",
+        "RaceScorePlayerCount", "TotalScorePlayerCount", "TotalScoreMappingMethod",
         "SessionIndex", "SessionOldTotalScore", "SessionNewTotalScore",
         "OldTotalScore", "NewTotalScore", "NameConfidence", "DigitConsensus", "RowCountConfidence",
         "ScoreValidationStatus", "ReviewNeeded", "ReviewReason"
