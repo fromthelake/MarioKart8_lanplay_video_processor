@@ -591,6 +591,17 @@ Performance findings already tested:
 - pass-2 worker-owned race output was kept because it improved performance without changing validated output
 - pass-2 to OCR streaming per race was tested and rejected because it was not stable enough versus the baseline
 - OpenCL was tested and did not beat CPU mode on the validated machine
+- OCR worker count was benchmarked on the validated machine for `2..16`
+- all tested worker counts from `2..16` validated successfully against the current CPU baseline
+- tested OCR timings for `Divisie_1.mkv` showed a steady improvement up to `16` workers
+- current measured OCR timings were approximately:
+  - `2 workers`: `253s`
+  - `4 workers`: `139s`
+  - `8 workers`: `82s`
+  - `12 workers`: `74s`
+  - `16 workers`: `61s`
+- on the validated machine, `16` workers was the best tested setting in the range `2..16`
+- do not spend more time re-testing lower OCR worker counts on similar hardware unless Tesseract, Python, or the OCR pipeline changes substantially
 - do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
 
 Pass-one scan workers:
