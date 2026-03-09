@@ -1,6 +1,4 @@
 import os
-import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -38,26 +36,6 @@ class ResourceMonitor:
                 memory = psutil.virtual_memory()
                 snapshot.ram_used_gb = memory.used / (1024 ** 3)
                 snapshot.ram_total_gb = memory.total / (1024 ** 3)
-            except Exception:
-                pass
-
-        if shutil.which("nvidia-smi"):
-            try:
-                result = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=utilization.gpu,memory.used,memory.total",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                first_line = result.stdout.strip().splitlines()[0]
-                gpu_percent, memory_used_mb, memory_total_mb = [item.strip() for item in first_line.split(",")]
-                snapshot.gpu_percent = float(gpu_percent)
-                snapshot.vram_used_gb = float(memory_used_mb) / 1024.0
-                snapshot.vram_total_gb = float(memory_total_mb) / 1024.0
             except Exception:
                 pass
 

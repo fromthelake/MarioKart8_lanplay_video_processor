@@ -1,6 +1,8 @@
 import argparse
+import cProfile
 import glob
 import os
+import pstats
 import subprocess
 import sys
 import cv2
@@ -28,6 +30,7 @@ FRAMES_DIR = OUTPUT_DIR / "Frames"
 RESULTS_XLSX = OUTPUT_DIR / "Tournament_Results.xlsx"
 EXTRACT_SCRIPT = SCRIPT_DIR / "Extract_Frames_From_Video.py"
 OCR_SCRIPT = SCRIPT_DIR / "Extract_Text_From_Frames.py"
+PROFILE_OUTPUT = OUTPUT_DIR / "Debug" / "performance_profile.txt"
 
 
 def find_latest_results_xlsx(output_dir: Path) -> Path:
@@ -289,6 +292,42 @@ def run_all(selected_video: str | None = None) -> None:
     )
 
 
+def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: int = 80) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        handle.write("Mario Kart 8 LAN Play Video Processor\n")
+        handle.write("Whole-process profile report\n\n")
+        stats = pstats.Stats(profile, stream=handle)
+        stats.sort_stats("cumtime")
+        handle.write("Top functions by cumulative time\n")
+        stats.print_stats(limit)
+        handle.write("\n")
+        stats.sort_stats("tottime")
+        handle.write("Top functions by self time\n")
+        stats.print_stats(limit)
+        handle.write("\nCallers for selected heavy functions\n")
+        for pattern in (
+            "process_race_group",
+            "extract_scoreboard_observation",
+            "analyze_score_window_task",
+            "match_template",
+            "run_tesseract_image_to_data",
+        ):
+            handle.write(f"\nCallers matching: {pattern}\n")
+            stats.print_callers(pattern)
+
+
+def run_profiled_all(selected_video: str | None = None) -> None:
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        run_all(selected_video=selected_video)
+    finally:
+        profiler.disable()
+        write_profile_report(profiler, PROFILE_OUTPUT)
+        LOGGER.log("[Run - Profile Report]", str(PROFILE_OUTPUT), color_name="cyan")
+
+
 def print_runtime_status() -> int:
     ffmpeg_issues = check_runtime(APP_CONFIG, require_ffmpeg=True)
     tesseract_issues = check_runtime(APP_CONFIG, require_tesseract=True)
@@ -397,6 +436,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--extract", action="store_true", help="Run frame extraction only")
     parser.add_argument("--ocr", action="store_true", help="Run OCR/export only")
     parser.add_argument("--all", action="store_true", help="Run extraction and OCR/export")
+    parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     return parser.parse_args()
 
@@ -412,7 +452,10 @@ def main() -> int:
         run_ocr(selected_video=args.video)
         return 0
     if args.all:
-        run_all(selected_video=args.video)
+        if args.profile:
+            run_profiled_all(selected_video=args.video)
+        else:
+            run_all(selected_video=args.video)
         return 0
     return launch_gui()
 

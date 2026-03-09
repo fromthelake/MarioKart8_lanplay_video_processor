@@ -32,6 +32,10 @@ OCR_WORKERS = APP_CONFIG.ocr_workers
 OCR_CONSENSUS_FRAMES = APP_CONFIG.ocr_consensus_frames
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
+PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE = max(
+    0,
+    min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "85"))),
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -251,14 +255,6 @@ def crop_and_process_image(frame: np.ndarray, coordinates: List[Tuple[Tuple[int,
 def process_image(image_source) -> np.ndarray:
     """Process an image by cropping and modifying specified regions based on coordinates."""
     coordinates = {
-        "player_position": [
-            ((310, 52), (371, 96)), ((310, 104), (371, 148)),
-            ((310, 156), (371, 200)), ((310, 208), (371, 252)),
-            ((310, 260), (371, 304)), ((310, 312), (371, 356)),
-            ((310, 364), (371, 408)), ((310, 416), (371, 460)),
-            ((310, 468), (371, 512)), ((310, 520), (371, 564)),
-            ((310, 572), (371, 617)), ((310, 624), (371, 669))
-        ],
         "player_name": [
             ((428, 52), (620, 96)), ((428, 104), (620, 148)),
             ((428, 156), (620, 200)), ((428, 208), (620, 252)),
@@ -490,7 +486,7 @@ def extract_player_names_batched(
             average_confidence = 0
 
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", combined_text)
-        if average_confidence < 85 or len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+        if average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE or len(stripped_name) < 3 or len(set(stripped_name)) < 3:
             roi = image[y1:y2, x1:x2]
             fallback_data = run_tesseract_image_to_data(roi, lang, "--psm 7", "player_name_row_fallback")
             words_in_roi = []
