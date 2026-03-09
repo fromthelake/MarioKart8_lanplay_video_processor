@@ -13,6 +13,7 @@ class AppConfig:
     tesseract_cmd: Optional[str]
     ocr_workers: int
     score_analysis_workers: int
+    pass1_scan_workers: int
     write_debug_csv: bool
     write_debug_score_images: bool
     write_debug_linking_excel: bool
@@ -48,6 +49,15 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
 
     default_ocr_workers = max(1, min(16, os.cpu_count() or 1))
     default_score_workers = max(1, min(4, os.cpu_count() or 1))
+    cpu_count = os.cpu_count() or 1
+    if cpu_count >= 24:
+        default_pass1_workers = 4
+    elif cpu_count >= 16:
+        default_pass1_workers = 3
+    elif cpu_count >= 8:
+        default_pass1_workers = 2
+    else:
+        default_pass1_workers = 1
 
     tesseract_cmd = os.environ.get("MK8_TESSERACT_CMD", json_config.get("tesseract_cmd"))
     ocr_workers = _parse_int(
@@ -57,6 +67,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     score_analysis_workers = _parse_int(
         os.environ.get("MK8_SCORE_ANALYSIS_WORKERS", json_config.get("score_analysis_workers")),
         default_score_workers,
+    )
+    pass1_scan_workers = _parse_int(
+        os.environ.get("MK8_PASS1_SCAN_WORKERS", json_config.get("pass1_scan_workers")),
+        default_pass1_workers,
     )
     write_debug_csv = _parse_bool(
         os.environ.get("MK8_WRITE_DEBUG_CSV", json_config.get("write_debug_csv")),
@@ -75,6 +89,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         tesseract_cmd=tesseract_cmd,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
+        pass1_scan_workers=pass1_scan_workers,
         write_debug_csv=write_debug_csv,
         write_debug_score_images=write_debug_score_images,
         write_debug_linking_excel=write_debug_linking_excel,

@@ -189,6 +189,7 @@ def print_runtime_status() -> int:
     print(f"FFmpeg: {'OK' if not ffmpeg_issues else 'MISSING'}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
+    print(f"Pass-1 scan workers: {APP_CONFIG.pass1_scan_workers}")
     print(f"Write debug CSV: {APP_CONFIG.write_debug_csv}")
     print(f"Write debug score images: {APP_CONFIG.write_debug_score_images}")
     print(f"Write debug linking Excel: {APP_CONFIG.write_debug_linking_excel}")

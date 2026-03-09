@@ -2,6 +2,7 @@
   "tesseract_cmd": null,
   "ocr_workers": 16,
   "score_analysis_workers": 4,
+  "pass1_scan_workers": 4,
   "write_debug_csv": true,
   "write_debug_score_images": true,
   "write_debug_linking_excel": true

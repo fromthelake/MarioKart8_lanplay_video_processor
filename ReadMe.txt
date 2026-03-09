@@ -419,6 +419,7 @@ Main config keys:
 - `tesseract_cmd`
 - `ocr_workers`
 - `score_analysis_workers`
+- `pass1_scan_workers`
 - `write_debug_csv`
 - `write_debug_score_images`
 - `write_debug_linking_excel`
@@ -430,6 +431,7 @@ Example:
   "tesseract_cmd": "/usr/bin/tesseract",
   "ocr_workers": 16,
   "score_analysis_workers": 4,
+  "pass1_scan_workers": 4,
   "write_debug_csv": true,
   "write_debug_score_images": true,
   "write_debug_linking_excel": true
@@ -448,6 +450,7 @@ Environment variables:
 - `MK8_TESSERACT_CMD`
 - `MK8_OCR_WORKERS`
 - `MK8_SCORE_ANALYSIS_WORKERS`
+- `MK8_PASS1_SCAN_WORKERS`
 - `MK8_WRITE_DEBUG_CSV`
 - `MK8_WRITE_DEBUG_SCORE_IMAGES`
 - `MK8_WRITE_DEBUG_LINKING_EXCEL`
@@ -510,6 +513,18 @@ Validation policy during performance work:
 - if workbook output changes, or files are missing/unexpected, treat that as a hard failure
 - if only a very small number of exported frame images differ while workbook output stays identical, treat that as a manual review case instead of an automatic rejection
 - use `Test_3_Races.mkv` first for quick verification, then `Divisie_1.mkv` for release verification
+
+Pass-one scan workers:
+- pass-one segment scanning is only used for longer videos
+- overlapping segment scans can improve extraction time on multi-core CPUs
+- a higher worker count can change which auxiliary screenshots are exported even when workbook output is unchanged
+- practical starting points:
+  - 1 worker for small or older systems
+  - 2 workers for 8 to 15 logical cores
+  - 3 workers for 16 to 23 logical cores
+  - 4 workers for 24+ logical cores
+- for this repository's current implementation, 4 workers is a good default on high-end systems and 6 should be treated as an upper bound for experimentation
+- on a tested 24-core Windows laptop, 4 workers performed better than 6 and 8 for `Divisie_1.mkv`, so the current default of 4 is also a good tuned setting for similar high-end hardware
 
 11. Troubleshooting
 
