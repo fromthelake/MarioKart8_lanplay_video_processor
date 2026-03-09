@@ -572,12 +572,10 @@ Runtime logging:
   - run-time timestamps like `[00:23]`
   - phase starts and completions
   - progress every 5%
-  - CPU/RAM and GPU/VRAM when available
+  - CPU/RAM usage
   - per-race detection events
   - final performance summary with per-video durations
-- GPU/VRAM metrics are best-effort:
-  - NVIDIA systems usually report through `nvidia-smi`
-  - other platforms may omit GPU metrics while still running normally
+- `--check` still reports the active execution backend such as `cpu` or `opencl`
 
 Validation policy during performance work:
 - default target is exact output parity with the stored baseline
@@ -621,6 +619,18 @@ Performance findings already tested:
 - practical conclusion:
   - keep `ocr_consensus_frames: 7` as the safe default
   - if a future fast profile is added, `5` frames is the strongest candidate to test first
+- OCR player-name batching was then tested on the validated machine while keeping:
+  - `ocr_consensus_frames: 7`
+  - `ocr_workers: 16`
+- result of that experiment on `Divisie_1.mkv`:
+  - OCR runtime improved from about `60s` to about `20s`
+  - exported frames still matched the validated baseline
+  - workbook drift was limited to small raw-name/confidence metadata differences
+  - representative examples were:
+    - `Menna` -> `Menno` on raw `PlayerName`
+    - one extra `low_name_confidence` review row
+- decision:
+  - keep OCR player-name batching because the speed gain was large and the workbook drift was judged acceptable
 - do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
 
 Pass-one scan workers:

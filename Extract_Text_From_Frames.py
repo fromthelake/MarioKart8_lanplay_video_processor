@@ -15,6 +15,7 @@ import difflib
 import openpyxl
 import textdistance
 import re
+import threading
 from datetime import datetime
 from jellyfish import soundex
 from collections import defaultdict, Counter
@@ -34,6 +35,45 @@ TARGET_HEIGHT = 720
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+PLAYER_NAME_COORDS = [
+    ((428, 52), (620, 96)), ((428, 104), (620, 148)),
+    ((428, 156), (620, 200)), ((428, 208), (620, 252)),
+    ((428, 260), (620, 304)), ((428, 312), (620, 356)),
+    ((428, 364), (620, 408)), ((428, 416), (620, 460)),
+    ((428, 468), (620, 512)), ((428, 520), (620, 564)),
+    ((428, 572), (620, 617)), ((428, 624), (620, 669))
+]
+
+
+class OcrProfiler:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._stats = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
+
+    def record(self, label: str, duration_s: float) -> None:
+        with self._lock:
+            self._stats[label]["calls"] += 1
+            self._stats[label]["seconds"] += duration_s
+
+    def summary_lines(self) -> List[str]:
+        with self._lock:
+            stats = {key: value.copy() for key, value in self._stats.items()}
+        if not stats:
+            return ["Tesseract calls: none recorded"]
+        total_calls = sum(item["calls"] for item in stats.values())
+        total_seconds = sum(item["seconds"] for item in stats.values())
+        lines = [f"Tesseract calls: {total_calls} | OCR engine time: {total_seconds:.2f}s"]
+        for label, item in sorted(stats.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
+            avg_ms = (item["seconds"] / max(1, item["calls"])) * 1000.0
+            lines.append(
+                f"- {label}: {item['calls']} calls | {item['seconds']:.2f}s total | {avg_ms:.1f} ms/call"
+            )
+        return lines
+
+
+OCR_PROFILER = OcrProfiler()
 
 
 class ProgressPrinter:
@@ -365,7 +405,7 @@ def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple
         region_confidence = []
         for (x1, y1), (x2, y2) in coord_list:
             roi = image[y1:y2, x1:x2]
-            data = pytesseract.image_to_data(roi, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+            data = run_tesseract_image_to_data(roi, lang, config, f"{region_type}_roi")
 
             # Combine all words with a space
             words_in_roi = []
@@ -387,6 +427,86 @@ def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple
         confidence_scores.extend(region_confidence)
 
     return extracted_text, confidence_scores
+
+
+def run_tesseract_image_to_data(image: np.ndarray, lang: str, config: str, profile_label: str):
+    start_time = time.perf_counter()
+    data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+    OCR_PROFILER.record(profile_label, time.perf_counter() - start_time)
+    return data
+
+
+def extract_player_names_batched(
+    image: np.ndarray,
+    coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+    lang: str = "eng",
+    config: str = "--psm 6",
+) -> Tuple[List[str], List[int]]:
+    rois = []
+    widths = []
+    heights = []
+    for (x1, y1), (x2, y2) in coord_list:
+        roi = image[y1:y2, x1:x2]
+        rois.append(roi)
+        heights.append(max(1, roi.shape[0]))
+        widths.append(max(1, roi.shape[1]))
+
+    separator_height = 10
+    canvas_width = max(widths)
+    canvas_height = sum(heights) + separator_height * (len(rois) - 1)
+    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+    row_ranges = []
+    cursor = 0
+    for roi in rois:
+        height, width = roi.shape[:2]
+        canvas[cursor:cursor + height, 0:width] = roi
+        row_ranges.append((cursor, cursor + height))
+        cursor += height + separator_height
+
+    data = run_tesseract_image_to_data(canvas, lang, config, "player_name_batch")
+    texts_by_row = [[] for _ in rois]
+    confidences_by_row = [[] for _ in rois]
+    for index, raw_text in enumerate(data["text"]):
+        text = raw_text.strip()
+        conf = data["conf"][index]
+        if conf < 0 or not text:
+            continue
+        y = int(data["top"][index])
+        height = int(data["height"][index])
+        center_y = y + max(1, height // 2)
+        for row_index, (start_y, end_y) in enumerate(row_ranges):
+            if start_y <= center_y < end_y:
+                texts_by_row[row_index].append(text)
+                confidences_by_row[row_index].append(conf)
+                break
+
+    extracted_names = []
+    confidence_scores = []
+    for row_index, ((x1, y1), (x2, y2)) in enumerate(coord_list):
+        combined_text = " ".join(texts_by_row[row_index]).strip()
+        if confidences_by_row[row_index]:
+            average_confidence = int(sum(confidences_by_row[row_index]) // len(confidences_by_row[row_index]))
+        else:
+            average_confidence = 0
+
+        stripped_name = re.sub(r"[^a-zA-Z0-9]", "", combined_text)
+        if average_confidence < 85 or len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+            roi = image[y1:y2, x1:x2]
+            fallback_data = run_tesseract_image_to_data(roi, lang, "--psm 7", "player_name_row_fallback")
+            words_in_roi = []
+            confidences_in_roi = []
+            for text_index, fallback_conf in enumerate(fallback_data["conf"]):
+                fallback_text = fallback_data["text"][text_index].strip()
+                if fallback_conf >= 0 and fallback_text:
+                    words_in_roi.append(fallback_text)
+                    confidences_in_roi.append(fallback_conf)
+            combined_text = " ".join(words_in_roi).strip()
+            average_confidence = int(sum(confidences_in_roi) // len(confidences_in_roi)) if confidences_in_roi else 0
+
+        extracted_names.append(combined_text)
+        confidence_scores.append(average_confidence)
+
+    return extracted_names, confidence_scores
 
 
 tracks_list = load_track_tuples()
@@ -842,20 +962,7 @@ def extract_scoreboard_observation(frame_image: np.ndarray, annotate_path: str |
     if annotate_path:
         scaled_image_resized.save(annotate_path)
 
-    player_name_text, confidence_scores = extract_text_with_confidence(
-        annotated_image, {"player_name": [
-            ((428, 52), (620, 96)), ((428, 104), (620, 148)),
-            ((428, 156), (620, 200)), ((428, 208), (620, 252)),
-            ((428, 260), (620, 304)), ((428, 312), (620, 356)),
-            ((428, 364), (620, 408)), ((428, 416), (620, 460)),
-            ((428, 468), (620, 512)), ((428, 520), (620, 564)),
-            ((428, 572), (620, 617)), ((428, 624), (620, 669))
-        ]},
-        lang='eng',
-        config='--psm 7'
-    )
-
-    names = player_name_text["player_name"]
+    names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
     valid_rows = []
     for index, player_name in enumerate(names):
         stripped_name = re.sub(r'[^a-zA-Z0-9]', '', player_name)
@@ -1446,6 +1553,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     per_video_summary = {}
     lines = [f"Duration: {format_duration(time.time() - phase_start_time)}", f"Races processed: {race_count}"]
     lines.extend(progress.peak_lines())
+    lines.extend(["", "OCR call profile"])
+    lines.extend(OCR_PROFILER.summary_lines())
     lines.extend(["", "Per-video player count summary"])
     for race_class, race_group in df.groupby("RaceClass", sort=False):
         race_count_for_class = int(race_group["RaceIDNumber"].nunique())
