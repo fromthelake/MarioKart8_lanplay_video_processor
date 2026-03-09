@@ -276,7 +276,7 @@ def run_all(selected_video: str | None = None) -> None:
         f"[{LOGGER.elapsed_label()}] "
         f"{LOGGER.color('[RUN - COMPLETED]', 'green')} "
         f"{LOGGER.color('[ ENJOY HAVE FUN ]', 'magenta')}"
-        f"{LOGGER.color(\"[LET'S A GO!]\", 'yellow')}"
+        + LOGGER.color("[LET'S A GO!]", "yellow")
     )
 
 
