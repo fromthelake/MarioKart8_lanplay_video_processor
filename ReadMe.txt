@@ -489,7 +489,7 @@ Example:
   "execution_mode": "cpu",
   "ocr_workers": 16,
   "ocr_consensus_frames": 7,
-  "score_analysis_workers": 8,
+  "score_analysis_workers": 11,
   "pass1_scan_workers": 4,
   "pass1_segment_overlap_frames": 2100,
   "pass1_min_segment_frames": 30000,
@@ -656,12 +656,12 @@ Pass-one scan workers:
 
 Score-analysis workers:
 - the pass-two total-score-screen phase was benchmarked again after the OCR batching work
-- on the validated machine, `score_analysis_workers: 8` was faster than `4` while keeping:
+- on the validated machine, `score_analysis_workers: 11` was faster than both `8` and `4` while keeping:
   - workbook output identical
   - exported frames identical
   - annotated debug score frames identical
 - practical conclusion:
-  - keep `score_analysis_workers: 8` as the current default on the validated machine
+  - keep `score_analysis_workers: 11` as the current default on the validated machine
   - if a future machine has fewer CPU cores, benchmark again before lowering this
 
 11. Troubleshooting

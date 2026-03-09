@@ -2,7 +2,7 @@
   "tesseract_cmd": null,
   "execution_mode": "cpu",
   "ocr_workers": 16,
-  "score_analysis_workers": 8,
+  "score_analysis_workers": 11,
   "pass1_scan_workers": 4,
   "ocr_consensus_frames": 7,
   "pass1_segment_overlap_frames": 2100,
