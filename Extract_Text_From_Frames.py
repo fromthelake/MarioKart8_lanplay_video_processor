@@ -26,6 +26,33 @@ OCR_WORKERS = APP_CONFIG.ocr_workers
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+
+class ProgressPrinter:
+    """Print throttled progress updates for OCR/export stages."""
+
+    def __init__(self, label: str, total_units: int, percent_step: int = 10, min_interval_s: float = 2.0):
+        self.label = label
+        self.total_units = max(1, int(total_units))
+        self.percent_step = max(1, int(percent_step))
+        self.min_interval_s = float(min_interval_s)
+        self.last_percent = -1
+        self.last_print_time = 0.0
+
+    def update(self, completed_units: int, detail: str = "") -> None:
+        percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
+        now = time.perf_counter()
+        should_print = percent >= 100 or self.last_percent < 0
+        if not should_print and percent >= self.last_percent + self.percent_step:
+            should_print = True
+        if not should_print and now - self.last_print_time >= self.min_interval_s:
+            should_print = True
+        if not should_print:
+            return
+        detail_suffix = f" | {detail}" if detail else ""
+        print(f"[{self.label}] {percent:3d}% ({min(completed_units, self.total_units):,}/{self.total_units:,}){detail_suffix}")
+        self.last_percent = percent
+        self.last_print_time = now
+
 def apply_threshold(image: np.ndarray, threshold: int = 205) -> np.ndarray:
     """Apply a binary threshold to the image."""
     _, binary_image = cv2.threshold(image, threshold, 255, cv2.THRESH_BINARY)
@@ -408,7 +435,6 @@ def match_track_name(track_name: str, track_list: List[Tuple[int, str, str, int,
             best_match_english_name = english_name
 
     # Debugging final match
-    print(f"Best match for {track_name}: {best_match_english_name} with score {best_match_score}")
     return best_match_english_name
 
 
@@ -658,9 +684,6 @@ def process_race_group(grouped_item, text_detected_folder):
     if len(images) != 2:
         return []
 
-    base_names = [os.path.basename(image_path) for _, image_path in images]
-    print(f"Processing: {base_names}")
-
     track_name_image = None
     race_score_images = []
 
@@ -817,10 +840,20 @@ def process_images_in_folder(folder_path: str) -> None:
         grouped_images[key].append((frame_content, os.path.join(folder_path, image_file)))
 
     sorted_grouped_images = sorted(grouped_images.items(), key=lambda item: item[0])
+    print(
+        f"OCR Started - {len(sorted_grouped_images)} race groups from "
+        f"{len(image_files)} frame images using {OCR_WORKERS} worker(s)"
+    )
     results = []
+    progress = ProgressPrinter("OCR", len(sorted_grouped_images), percent_step=10, min_interval_s=2.0)
     with ThreadPoolExecutor(max_workers=OCR_WORKERS) as executor:
-        for race_results in executor.map(lambda item: process_race_group(item, text_detected_folder), sorted_grouped_images):
+        for completed_count, race_results in enumerate(
+            executor.map(lambda item: process_race_group(item, text_detected_folder), sorted_grouped_images),
+            start=1,
+        ):
             results.extend(race_results)
+            race_class, race_id_number = sorted_grouped_images[completed_count - 1][0]
+            progress.update(completed_count, f"{race_class} race {race_id_number:03}")
 
     # Create DataFrame without ConfidenceScore
     df = pd.DataFrame(results, columns=[
@@ -861,7 +894,7 @@ def process_images_in_folder(folder_path: str) -> None:
     # Save to Excel
     output_excel_path = os.path.join(folder_path, '..', "Tournament_Results.xlsx")
     df.to_excel(output_excel_path, index=False)
-    print(f'Results saved to {output_excel_path}')
+    print(f"OCR finished - results saved to {output_excel_path}")
 
 
 if __name__ == "__main__":
