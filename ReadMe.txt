@@ -149,9 +149,15 @@ What this command does:
 - runs OCR/export
 
 What you should expect:
-- console output showing detected races
+- operator-style console output showing live phase progress, resource usage, and detected races
 - screenshots created in `Output_Results/Frames`
 - final Excel created at `Output_Results/Tournament_Results.xlsx`
+
+To test a single video without moving files around:
+
+```powershell
+.\.venv\Scripts\python.exe Main_RunMe.py --all --video Test_3_Races.mkv
+```
 
 Windows GUI Mode
 
@@ -239,6 +245,12 @@ Expected result:
 - screenshots in `Output_Results/Frames`
 - Excel output in `Output_Results/Tournament_Results.xlsx`
 
+To test one video only:
+
+```bash
+.venv/bin/python Main_RunMe.py --all --video Test_3_Races.mkv
+```
+
 Linux Note
 
 If Tkinter is unavailable, that is fine. Use the CLI. The CLI is the preferred Linux path anyway.
@@ -294,6 +306,12 @@ Expected result:
 - screenshots written to `Output_Results/Frames`
 - Excel file written to `Output_Results/Tournament_Results.xlsx`
 
+To test one video only:
+
+```bash
+.venv/bin/python Main_RunMe.py --all --video Test_3_Races.mkv
+```
+
 7. Command Reference
 
 This section explains what each command does and what you should expect from it.
@@ -341,6 +359,12 @@ What you should expect:
   - `...+2RaceScore.png`
   - `...+3TotalScore.png`
 
+Optional single-video example:
+
+```powershell
+python Main_RunMe.py --extract --video Divisie_1.mkv
+```
+
 `Main_RunMe.py --ocr`
 
 Example:
@@ -358,6 +382,12 @@ What you should expect:
 - printed OCR progress
 - `Output_Results/Tournament_Results.xlsx`
 
+Optional single-video example:
+
+```powershell
+python Main_RunMe.py --ocr --video Test_3_Races.mkv
+```
+
 `Main_RunMe.py --all`
 
 Example:
@@ -372,6 +402,22 @@ What it does:
 What you should expect:
 - extracted screenshots
 - final Excel workbook
+
+Optional single-video example:
+
+```powershell
+python Main_RunMe.py --all --video Test_3_Races.mkv
+```
+
+`Main_RunMe.py --all --video <filename>`
+
+What it does:
+- limits extraction and OCR/export to one specific input video
+- useful for quick testing and benchmark iterations
+
+What you should expect:
+- only that video's race groups are processed
+- a shorter run with the same output format
 
 `Main_RunMe.py`
 
@@ -395,6 +441,7 @@ After `--extract`:
 
 After `--ocr` or `--all`:
 - `Output_Results/Tournament_Results.xlsx` appears
+- the workbook includes detected score validation fields, review flags, and session-aware score columns
 
 Optional debug output:
 - `Output_Results/Debug/debug_max_val.csv`
@@ -405,6 +452,12 @@ What success usually looks like:
 - several `png` files per race in `Output_Results/Frames`
 - one final Excel workbook
 - no missing Tesseract error
+- console output with:
+  - `[mm:ss]` runtime timestamps
+  - phase headers
+  - progress every 5%
+  - CPU/RAM and GPU/VRAM when available
+  - per-race detection events
 
 9. Configuration
 
@@ -417,9 +470,13 @@ Start from:
 
 Main config keys:
 - `tesseract_cmd`
+- `execution_mode`
 - `ocr_workers`
+- `ocr_consensus_frames`
 - `score_analysis_workers`
 - `pass1_scan_workers`
+- `pass1_segment_overlap_frames`
+- `pass1_min_segment_frames`
 - `write_debug_csv`
 - `write_debug_score_images`
 - `write_debug_linking_excel`
@@ -429,9 +486,13 @@ Example:
 ```json
 {
   "tesseract_cmd": "/usr/bin/tesseract",
+  "execution_mode": "auto",
   "ocr_workers": 16,
+  "ocr_consensus_frames": 7,
   "score_analysis_workers": 4,
   "pass1_scan_workers": 4,
+  "pass1_segment_overlap_frames": 2100,
+  "pass1_min_segment_frames": 30000,
   "write_debug_csv": true,
   "write_debug_score_images": true,
   "write_debug_linking_excel": true
@@ -448,9 +509,13 @@ Windows Tesseract example:
 
 Environment variables:
 - `MK8_TESSERACT_CMD`
+- `MK8_EXECUTION_MODE`
 - `MK8_OCR_WORKERS`
+- `MK8_OCR_CONSENSUS_FRAMES`
 - `MK8_SCORE_ANALYSIS_WORKERS`
 - `MK8_PASS1_SCAN_WORKERS`
+- `MK8_PASS1_SEGMENT_OVERLAP_FRAMES`
+- `MK8_PASS1_MIN_SEGMENT_FRAMES`
 - `MK8_WRITE_DEBUG_CSV`
 - `MK8_WRITE_DEBUG_SCORE_IMAGES`
 - `MK8_WRITE_DEBUG_LINKING_EXCEL`
@@ -492,21 +557,18 @@ Expected result:
   - `extract_seconds=...`
   - `ocr_seconds=...`
 
-Extraction profiling:
-- the extractor also prints a per-video timing summary to stdout
-- useful buckets include:
-  - `main_scan_loop_s`
-  - `score_candidate_pass_s`
-  - `score_detail_frame_prepare_s`
-  - `score_detail_crop_upscale_s`
-  - `score_detail_grayscale_s`
-  - `score_detail_score_preprocess_s`
-  - `score_detail_match_score_s`
-  - `score_detail_match_12th_s`
-  - `output_frame_capture_s`
-  - `seek_time_s`
-  - `grab_time_s`
-  - `read_time_s`
+Runtime logging:
+- the normal console output is now operator-focused rather than raw profiler output
+- it shows:
+  - run-time timestamps like `[00:23]`
+  - phase starts and completions
+  - progress every 5%
+  - CPU/RAM and GPU/VRAM when available
+  - per-race detection events
+  - final performance summary with per-video durations
+- GPU/VRAM metrics are best-effort:
+  - NVIDIA systems usually report through `nvidia-smi`
+  - other platforms may omit GPU metrics while still running normally
 
 Validation policy during performance work:
 - default target is exact output parity with the stored baseline
@@ -546,6 +608,13 @@ Problem: OCR output looks wrong
 - inspect `Output_Results/Frames`
 - inspect `Output_Results/Debug/Score_Frames`
 - low-quality or unusual input can reduce OCR quality
+
+Problem: you only want to test one video
+- use the `--video` option:
+
+```powershell
+.\.venv\Scripts\python.exe Main_RunMe.py --all --video Test_3_Races.mkv
+```
 
 Problem: GUI does not start on Linux or macOS
 - use the CLI:
