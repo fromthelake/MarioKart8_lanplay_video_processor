@@ -640,13 +640,6 @@ Performance findings already tested:
   - score columns, totals, session validation, and exported frames stayed unchanged
 - decision:
   - keep the lower fallback threshold because the OCR speed gain was real and the remaining workbook drift stayed cosmetic
-- after that, player-name fallback diagnostics were added and used to inspect the remaining hotspot
-  - most remaining row fallbacks were caused by `low_confidence`
-  - row `01` was by far the biggest recurring fallback position
-  - a small batch-layout tweak was retained:
-    - top margin `6`
-    - separator line thickness `2`
-  - that reduced fallback rows slightly while keeping the workbook exactly equal to the prior retained default
 - do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
 
 Pass-one scan workers:
