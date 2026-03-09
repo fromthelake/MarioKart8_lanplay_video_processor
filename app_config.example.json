@@ -1,6 +1,6 @@
 {
   "tesseract_cmd": null,
-  "execution_mode": "auto",
+  "execution_mode": "cpu",
   "ocr_workers": 16,
   "score_analysis_workers": 4,
   "pass1_scan_workers": 4,

@@ -486,7 +486,7 @@ Example:
 ```json
 {
   "tesseract_cmd": "/usr/bin/tesseract",
-  "execution_mode": "auto",
+  "execution_mode": "cpu",
   "ocr_workers": 16,
   "ocr_consensus_frames": 7,
   "score_analysis_workers": 4,
@@ -519,6 +519,15 @@ Environment variables:
 - `MK8_WRITE_DEBUG_CSV`
 - `MK8_WRITE_DEBUG_SCORE_IMAGES`
 - `MK8_WRITE_DEBUG_LINKING_EXCEL`
+
+Current performance defaults and decisions:
+- `execution_mode: cpu` is the practical default for this project
+- on the current validated baseline machine, OpenCL did not improve throughput versus CPU mode
+- CPU mode produced the same Excel output and visually identical screenshots, but the screenshot PNG files were not byte-for-byte identical because the image backend produced tiny per-pixel differences
+- treat OpenCL as an optional fallback or experiment path, not as the primary performance path unless new benchmarks show a real gain
+- keep `ocr_consensus_frames: 7` as the safety default
+- `ocr_consensus_frames: 4` was faster, but it changed OCR confidence and mapping metadata values
+- `ocr_consensus_frames: 3` was rejected because it introduced a real scoring validation difference on `Divisie_1`
 
 10. Benchmark And Validation Scripts
 
@@ -576,6 +585,14 @@ Validation policy during performance work:
 - if only a very small number of exported frame images differ while workbook output stays identical, treat that as a manual review case instead of an automatic rejection
 - use `Test_3_Races.mkv` first for quick verification, then `Divisie_1.mkv` for release verification
 
+Performance findings already tested:
+- ROI-only preprocessing was faster but changed output, so it was rejected
+- sequential consensus frame reading was kept because it improved performance without changing validated output
+- pass-2 worker-owned race output was kept because it improved performance without changing validated output
+- pass-2 to OCR streaming per race was tested and rejected because it was not stable enough versus the baseline
+- OpenCL was tested and did not beat CPU mode on the validated machine
+- do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
+
 Pass-one scan workers:
 - pass-one segment scanning is only used for longer videos
 - overlapping segment scans can improve extraction time on multi-core CPUs
@@ -608,6 +625,15 @@ Problem: OCR output looks wrong
 - inspect `Output_Results/Frames`
 - inspect `Output_Results/Debug/Score_Frames`
 - low-quality or unusual input can reduce OCR quality
+
+Problem: you want maximum validated performance
+- use CPU mode first
+- keep `ocr_consensus_frames` at `7`
+- run the release benchmark before changing performance settings:
+
+```powershell
+.\scripts\release_benchmark.ps1
+```
 
 Problem: you only want to test one video
 - use the `--video` option:

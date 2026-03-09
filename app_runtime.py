@@ -39,7 +39,7 @@ def _parse_int(value, default: int, minimum: int = 1) -> int:
         return default
 
 
-def _parse_execution_mode(value, default: str = "auto") -> str:
+def _parse_execution_mode(value, default: str = "cpu") -> str:
     candidate = str(value or default).strip().lower()
     if candidate in {"auto", "gpu", "cpu"}:
         return candidate
@@ -74,7 +74,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     tesseract_cmd = os.environ.get("MK8_TESSERACT_CMD", json_config.get("tesseract_cmd"))
     execution_mode = _parse_execution_mode(
         os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
-        "auto",
+        "cpu",
     )
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
