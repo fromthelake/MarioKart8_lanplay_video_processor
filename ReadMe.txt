@@ -631,6 +631,15 @@ Performance findings already tested:
     - one extra `low_name_confidence` review row
 - decision:
   - keep OCR player-name batching because the speed gain was large and the workbook drift was judged acceptable
+- the batching fallback threshold was then tuned on the same validated machine
+  - default moved from `85` to `80`
+  - OCR runtime improved further from about `19.3s` to about `17.2s` on `Divisie_1.mkv`
+  - accepted workbook drift was reduced to:
+    - 2 `NameConfidence` cells
+    - 1 raw `PlayerName` capitalization change (`bokkie` -> `Bokkie`)
+  - score columns, totals, session validation, and exported frames stayed unchanged
+- decision:
+  - keep the lower fallback threshold because the OCR speed gain was real and the remaining workbook drift stayed cosmetic
 - do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
 
 Pass-one scan workers:

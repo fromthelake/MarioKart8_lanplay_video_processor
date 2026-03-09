@@ -34,8 +34,21 @@ TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE = max(
     0,
-    min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "85"))),
+    min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "80"))),
 )
+PLAYER_NAME_BATCH_SEPARATOR_HEIGHT = max(
+    0,
+    int(os.environ.get("MK8_PLAYER_NAME_BATCH_SEPARATOR_HEIGHT", "10")),
+)
+PLAYER_NAME_BATCH_HORIZONTAL_PADDING = max(
+    0,
+    int(os.environ.get("MK8_PLAYER_NAME_BATCH_HORIZONTAL_PADDING", "0")),
+)
+PLAYER_NAME_BATCH_VERTICAL_PADDING = max(
+    0,
+    int(os.environ.get("MK8_PLAYER_NAME_BATCH_VERTICAL_PADDING", "0")),
+)
+PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm 6")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -436,7 +449,7 @@ def extract_player_names_batched(
     image: np.ndarray,
     coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
     lang: str = "eng",
-    config: str = "--psm 6",
+    config: str = PLAYER_NAME_BATCH_CONFIG,
 ) -> Tuple[List[str], List[int]]:
     rois = []
     widths = []
@@ -447,17 +460,23 @@ def extract_player_names_batched(
         heights.append(max(1, roi.shape[0]))
         widths.append(max(1, roi.shape[1]))
 
-    separator_height = 10
-    canvas_width = max(widths)
-    canvas_height = sum(heights) + separator_height * (len(rois) - 1)
+    separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
+    horizontal_padding = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
+    vertical_padding = PLAYER_NAME_BATCH_VERTICAL_PADDING
+    canvas_width = max(widths) + horizontal_padding * 2
+    canvas_height = sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
     canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
     row_ranges = []
     cursor = 0
     for roi in rois:
         height, width = roi.shape[:2]
-        canvas[cursor:cursor + height, 0:width] = roi
-        row_ranges.append((cursor, cursor + height))
-        cursor += height + separator_height
+        start_y = cursor + vertical_padding
+        end_y = start_y + height
+        start_x = horizontal_padding
+        end_x = start_x + width
+        canvas[start_y:end_y, start_x:end_x] = roi
+        row_ranges.append((start_y, end_y))
+        cursor = end_y + vertical_padding + separator_height
 
     data = run_tesseract_image_to_data(canvas, lang, config, "player_name_batch")
     texts_by_row = [[] for _ in rois]
