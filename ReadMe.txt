@@ -599,9 +599,28 @@ Performance findings already tested:
   - `4 workers`: `139s`
   - `8 workers`: `82s`
   - `12 workers`: `74s`
-  - `16 workers`: `61s`
+- `16 workers`: `61s`
 - on the validated machine, `16` workers was the best tested setting in the range `2..16`
 - do not spend more time re-testing lower OCR worker counts on similar hardware unless Tesseract, Python, or the OCR pipeline changes substantially
+- OCR consensus frames were also benchmarked on the validated machine
+- tested OCR timings for `Divisie_1.mkv` were approximately:
+  - `1 frame`: `11s`
+  - `2 frames`: `27s`
+  - `3 frames`: `28s`
+  - `4 frames`: `47s`
+  - `5 frames`: `47s`
+  - `6 frames`: `63s`
+  - `7 frames`: `61s`
+  - `8 frames`: `77s`
+  - `9 frames`: `76s`
+- interpretation of those OCR consensus tests:
+  - `1`, `2`, and `3` frames were rejected because they introduced real workbook drift
+  - `4` and `5` frames were much faster, but they were not exact baseline matches
+  - `6` and `7` frames were exact baseline matches
+  - `8` and `9` frames were slower and not exact baseline matches
+- practical conclusion:
+  - keep `ocr_consensus_frames: 7` as the safe default
+  - if a future fast profile is added, `5` frames is the strongest candidate to test first
 - do not re-run these same experiments unless hardware, OpenCV build, or acceptance criteria have changed
 
 Pass-one scan workers:
