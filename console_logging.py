@@ -139,10 +139,6 @@ class ConsoleLogger:
             parts.append(f"CPU {snapshot.cpu_percent:.0f}%")
         if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
             parts.append(f"RAM {snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB")
-        if snapshot.gpu_percent is not None:
-            parts.append(f"GPU {snapshot.gpu_percent:.0f}%")
-        if snapshot.vram_used_gb is not None and snapshot.vram_total_gb is not None:
-            parts.append(f"VRAM {snapshot.vram_used_gb:.1f}/{snapshot.vram_total_gb:.1f} GB")
         return " | ".join(parts)
 
     def peak_lines(self, snapshot: ResourceSnapshot | None = None) -> list[str]:
@@ -152,10 +148,6 @@ class ConsoleLogger:
             lines.append(f"Peak CPU: {snapshot.cpu_percent:.0f}%")
         if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
             lines.append(f"Peak RAM: {snapshot.ram_used_gb:.1f} / {snapshot.ram_total_gb:.1f} GB")
-        if snapshot.gpu_percent is not None:
-            lines.append(f"Peak GPU: {snapshot.gpu_percent:.0f}%")
-        if snapshot.vram_used_gb is not None and snapshot.vram_total_gb is not None:
-            lines.append(f"Peak VRAM: {snapshot.vram_used_gb:.1f} / {snapshot.vram_total_gb:.1f} GB")
         return lines
 
 
