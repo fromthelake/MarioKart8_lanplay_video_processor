@@ -32,6 +32,8 @@ OCR_WORKERS = APP_CONFIG.ocr_workers
 OCR_CONSENSUS_FRAMES = APP_CONFIG.ocr_consensus_frames
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
+DEBUG_OUTPUT_DIR = Path(__file__).resolve().parent / "Output_Results" / "Debug"
+PLAYER_NAME_FALLBACK_REPORT = DEBUG_OUTPUT_DIR / "player_name_fallback_report.txt"
 PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE = max(
     0,
     min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "80"))),
@@ -47,6 +49,14 @@ PLAYER_NAME_BATCH_HORIZONTAL_PADDING = max(
 PLAYER_NAME_BATCH_VERTICAL_PADDING = max(
     0,
     int(os.environ.get("MK8_PLAYER_NAME_BATCH_VERTICAL_PADDING", "0")),
+)
+PLAYER_NAME_BATCH_TOP_MARGIN = max(
+    0,
+    int(os.environ.get("MK8_PLAYER_NAME_BATCH_TOP_MARGIN", "6")),
+)
+PLAYER_NAME_BATCH_SEPARATOR_LINE_THICKNESS = max(
+    0,
+    int(os.environ.get("MK8_PLAYER_NAME_BATCH_SEPARATOR_LINE_THICKNESS", "2")),
 )
 PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm 6")
 
@@ -91,6 +101,85 @@ class OcrProfiler:
 
 
 OCR_PROFILER = OcrProfiler()
+
+
+class PlayerNameFallbackProfiler:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._reason_counts = Counter()
+        self._race_counts = Counter()
+        self._row_counts = Counter()
+        self._samples = []
+
+    def record(self, race_class: str, race_id: int, row_index: int, reasons: List[str], batch_text: str, batch_confidence: int) -> None:
+        with self._lock:
+            for reason in reasons:
+                self._reason_counts[reason] += 1
+            self._race_counts[(race_class, int(race_id))] += 1
+            self._row_counts[int(row_index) + 1] += 1
+            if len(self._samples) < 40:
+                self._samples.append(
+                    {
+                        "race_class": race_class,
+                        "race_id": int(race_id),
+                        "row_index": int(row_index) + 1,
+                        "reasons": list(reasons),
+                        "batch_text": batch_text,
+                        "batch_confidence": int(batch_confidence),
+                    }
+                )
+
+    def summary_lines(self) -> List[str]:
+        with self._lock:
+            reason_counts = self._reason_counts.copy()
+            race_counts = self._race_counts.copy()
+            row_counts = self._row_counts.copy()
+        total = sum(reason_counts.values())
+        if total <= 0:
+            return ["Player name fallbacks: none recorded"]
+        lines = [f"Player name fallbacks: {sum(race_counts.values())} rows"]
+        lines.append("Reasons:")
+        for reason, count in reason_counts.most_common():
+            lines.append(f"- {reason}: {count}")
+        lines.append("Top races:")
+        for (race_class, race_id), count in race_counts.most_common(10):
+            lines.append(f"- {race_class} race {race_id:03}: {count} fallback rows")
+        lines.append("Top row positions:")
+        for row_number, count in row_counts.most_common(12):
+            lines.append(f"- row {row_number:02}: {count}")
+        return lines
+
+    def write_report(self, path: Path) -> None:
+        with self._lock:
+            reason_counts = self._reason_counts.copy()
+            race_counts = self._race_counts.copy()
+            row_counts = self._row_counts.copy()
+            samples = list(self._samples)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            handle.write("Mario Kart 8 LAN Play Video Processor\n")
+            handle.write("Player name fallback report\n\n")
+            total_rows = sum(race_counts.values())
+            handle.write(f"Fallback rows: {total_rows}\n\n")
+            handle.write("Reasons\n")
+            for reason, count in reason_counts.most_common():
+                handle.write(f"- {reason}: {count}\n")
+            handle.write("\nTop races\n")
+            for (race_class, race_id), count in race_counts.most_common(25):
+                handle.write(f"- {race_class} race {race_id:03}: {count} fallback rows\n")
+            handle.write("\nTop row positions\n")
+            for row_number, count in row_counts.most_common(12):
+                handle.write(f"- row {row_number:02}: {count}\n")
+            handle.write("\nSample fallback rows\n")
+            for sample in samples:
+                handle.write(
+                    f"- {sample['race_class']} race {sample['race_id']:03} | row {sample['row_index']:02} | "
+                    f"confidence {sample['batch_confidence']} | reasons {','.join(sample['reasons'])} | "
+                    f"batch_text={sample['batch_text']!r}\n"
+                )
+
+
+PLAYER_NAME_FALLBACK_PROFILER = PlayerNameFallbackProfiler()
 
 
 class ProgressPrinter:
@@ -450,6 +539,8 @@ def extract_player_names_batched(
     coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
     lang: str = "eng",
     config: str = PLAYER_NAME_BATCH_CONFIG,
+    race_class: str = "",
+    race_id: int = 0,
 ) -> Tuple[List[str], List[int]]:
     rois = []
     widths = []
@@ -463,11 +554,13 @@ def extract_player_names_batched(
     separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
     horizontal_padding = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
     vertical_padding = PLAYER_NAME_BATCH_VERTICAL_PADDING
+    top_margin = PLAYER_NAME_BATCH_TOP_MARGIN
+    separator_line_thickness = PLAYER_NAME_BATCH_SEPARATOR_LINE_THICKNESS
     canvas_width = max(widths) + horizontal_padding * 2
-    canvas_height = sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
+    canvas_height = top_margin + sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
     canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
     row_ranges = []
-    cursor = 0
+    cursor = top_margin
     for roi in rois:
         height, width = roi.shape[:2]
         start_y = cursor + vertical_padding
@@ -476,6 +569,11 @@ def extract_player_names_batched(
         end_x = start_x + width
         canvas[start_y:end_y, start_x:end_x] = roi
         row_ranges.append((start_y, end_y))
+        if separator_line_thickness > 0:
+            line_start_y = min(canvas_height, end_y + vertical_padding)
+            line_end_y = min(canvas_height, line_start_y + separator_line_thickness)
+            if line_end_y > line_start_y:
+                canvas[line_start_y:line_end_y, :] = 255
         cursor = end_y + vertical_padding + separator_height
 
     data = run_tesseract_image_to_data(canvas, lang, config, "player_name_batch")
@@ -505,7 +603,23 @@ def extract_player_names_batched(
             average_confidence = 0
 
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", combined_text)
-        if average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE or len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+        fallback_reasons = []
+        if average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE:
+            fallback_reasons.append("low_confidence")
+        if len(stripped_name) < 3:
+            fallback_reasons.append("short_text")
+        elif len(set(stripped_name)) < 3:
+            fallback_reasons.append("low_character_variation")
+
+        if fallback_reasons:
+            PLAYER_NAME_FALLBACK_PROFILER.record(
+                race_class,
+                race_id,
+                row_index,
+                fallback_reasons,
+                combined_text,
+                average_confidence,
+            )
             roi = image[y1:y2, x1:x2]
             fallback_data = run_tesseract_image_to_data(roi, lang, "--psm 7", "player_name_row_fallback")
             words_in_roi = []
@@ -961,7 +1075,12 @@ def score_digit_layout(scale_factor: int = 5):
     }
 
 
-def extract_scoreboard_observation(frame_image: np.ndarray, annotate_path: str | None = None) -> Dict[str, object]:
+def extract_scoreboard_observation(
+    frame_image: np.ndarray,
+    annotate_path: str | None = None,
+    race_class: str = "",
+    race_id: int = 0,
+) -> Dict[str, object]:
     processed_img = process_image(frame_image)
     processed_img_pil = Image.fromarray(processed_img).convert('RGB')
     scale_factor = 5
@@ -977,7 +1096,12 @@ def extract_scoreboard_observation(frame_image: np.ndarray, annotate_path: str |
     if annotate_path:
         scaled_image_resized.save(annotate_path)
 
-    names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
+    names, confidence_scores = extract_player_names_batched(
+        annotated_image,
+        PLAYER_NAME_COORDS,
+        race_class=race_class,
+        race_id=race_id,
+    )
     valid_rows = []
     for index, player_name in enumerate(names):
         stripped_name = re.sub(r'[^a-zA-Z0-9]', '', player_name)
@@ -1133,16 +1257,35 @@ def map_total_rows_to_race_rows(score_rows: List[Dict[str, object]], total_rows:
     return mapped_rows
 
 
-def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], annotate_path: str | None = None) -> Dict[str, object]:
+def build_consensus_observation(
+    frames: List[np.ndarray],
+    total_frames: List[np.ndarray],
+    annotate_path: str | None = None,
+    race_class: str = "",
+    race_id: int = 0,
+) -> Dict[str, object]:
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
 
     score_observations = []
     total_observations = []
     for index, frame in enumerate(frames):
-        score_observations.append(extract_scoreboard_observation(frame, annotate_path if index == len(frames) // 2 else None))
+        score_observations.append(
+            extract_scoreboard_observation(
+                frame,
+                annotate_path if index == len(frames) // 2 else None,
+                race_class=race_class,
+                race_id=race_id,
+            )
+        )
     for frame in total_frames:
-        total_observations.append(extract_scoreboard_observation(frame))
+        total_observations.append(
+            extract_scoreboard_observation(
+                frame,
+                race_class=race_class,
+                race_id=race_id,
+            )
+        )
     if not total_observations:
         total_observations = score_observations
 
@@ -1269,7 +1412,13 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         OCR_CONSENSUS_FRAMES,
         in_memory_frames=(in_memory_frame_bundles or {}).get(total_bundle_key),
     )
-    consensus = build_consensus_observation(race_frames, total_frames, annotate_path)
+    consensus = build_consensus_observation(
+        race_frames,
+        total_frames,
+        annotate_path,
+        race_class=race_class,
+        race_id=race_id_number,
+    )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
     total_score_players = int(consensus.get("total_visible_rows", num_players))
@@ -1570,6 +1719,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     lines.extend(progress.peak_lines())
     lines.extend(["", "OCR call profile"])
     lines.extend(OCR_PROFILER.summary_lines())
+    PLAYER_NAME_FALLBACK_PROFILER.write_report(PLAYER_NAME_FALLBACK_REPORT)
+    lines.extend(["", "Player name fallback profile"])
+    lines.extend(PLAYER_NAME_FALLBACK_PROFILER.summary_lines())
     lines.extend(["", "Per-video player count summary"])
     for race_class, race_group in df.groupby("RaceClass", sort=False):
         race_count_for_class = int(race_group["RaceIDNumber"].nunique())
@@ -1604,7 +1756,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
             for race_id, track_name, messages in inconsistent_races:
                 for message in messages:
                     lines.append(f"  - Race {race_id:03} | Track: {track_name} | {message}")
-    lines.extend(["", "Output workbook:", output_excel_path])
+    lines.extend(["", "Fallback report:", str(PLAYER_NAME_FALLBACK_REPORT), "", "Output workbook:", output_excel_path])
     LOGGER.summary_block("[OCR - Phase Complete]", lines, color_name="green")
     return {
         "duration_s": time.time() - phase_start_time,
