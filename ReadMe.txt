@@ -489,7 +489,7 @@ Example:
   "execution_mode": "cpu",
   "ocr_workers": 16,
   "ocr_consensus_frames": 7,
-  "score_analysis_workers": 4,
+  "score_analysis_workers": 8,
   "pass1_scan_workers": 4,
   "pass1_segment_overlap_frames": 2100,
   "pass1_min_segment_frames": 30000,
@@ -653,6 +653,16 @@ Pass-one scan workers:
   - 4 workers for 24+ logical cores
 - for this repository's current implementation, 4 workers is a good default on high-end systems and 6 should be treated as an upper bound for experimentation
 - on a tested 24-core Windows laptop, 4 workers performed better than 6 and 8 for `Divisie_1.mkv`, so the current default of 4 is also a good tuned setting for similar high-end hardware
+
+Score-analysis workers:
+- the pass-two total-score-screen phase was benchmarked again after the OCR batching work
+- on the validated machine, `score_analysis_workers: 8` was faster than `4` while keeping:
+  - workbook output identical
+  - exported frames identical
+  - annotated debug score frames identical
+- practical conclusion:
+  - keep `score_analysis_workers: 8` as the current default on the validated machine
+  - if a future machine has fewer CPU cores, benchmark again before lowering this
 
 11. Troubleshooting
 

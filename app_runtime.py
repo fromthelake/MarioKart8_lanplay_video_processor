@@ -60,7 +60,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     json_config = _load_json_config(config_path)
 
     default_ocr_workers = max(1, min(16, os.cpu_count() or 1))
-    default_score_workers = max(1, min(4, os.cpu_count() or 1))
+    default_score_workers = max(1, min(8, os.cpu_count() or 1))
     cpu_count = os.cpu_count() or 1
     if cpu_count >= 24:
         default_pass1_workers = 4
