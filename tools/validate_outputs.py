@@ -76,6 +76,27 @@ def load_workbook_rows(xlsx_path: Path, race_class: str | None):
     return filtered
 
 
+def normalize_cell_for_compare(value: str) -> str:
+    text = "" if value is None else str(value).strip()
+    if text == "":
+        return ""
+    try:
+        numeric = float(text)
+    except ValueError:
+        return text
+    if numeric.is_integer():
+        return str(int(numeric))
+    normalized = f"{numeric:.10f}".rstrip("0").rstrip(".")
+    return normalized
+
+
+def normalize_rows_for_compare(rows):
+    normalized = []
+    for row in rows:
+        normalized.append([normalize_cell_for_compare(value) for value in row])
+    return normalized
+
+
 def align_rows_for_comparison(baseline_rows, current_rows):
     if not baseline_rows or not current_rows:
         return baseline_rows, current_rows
@@ -143,6 +164,8 @@ def main() -> int:
     baseline_rows = load_csv_rows(baseline_dir / "Tournament_Results.csv", race_class)
     current_rows = load_workbook_rows(resolve_results_workbook(current_dir), race_class)
     baseline_rows, current_rows = align_rows_for_comparison(baseline_rows, current_rows)
+    baseline_rows = normalize_rows_for_compare(baseline_rows)
+    current_rows = normalize_rows_for_compare(current_rows)
     workbook_match = baseline_rows == current_rows
     print(f"workbook_match: {workbook_match}")
     print(f"baseline_rows: {len(baseline_rows)}")

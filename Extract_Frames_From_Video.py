@@ -249,8 +249,10 @@ def collect_consensus_frames(video_path, center_frame, fps, left, top, crop_widt
 
     total_frames = int(local_cap.get(cv2.CAP_PROP_FRAME_COUNT))
     bundled_frames = []
-    for frame_number in range(max(0, center_frame - radius), min(total_frames, center_frame + radius + 1)):
-        local_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    start_frame = max(0, center_frame - radius)
+    end_frame = min(total_frames, center_frame + radius + 1)
+    local_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    for frame_number in range(start_frame, end_frame):
         ret, frame = local_cap.read()
         if not ret:
             continue
@@ -258,6 +260,44 @@ def collect_consensus_frames(video_path, center_frame, fps, left, top, crop_widt
     local_cap.release()
     if bundled_frames:
         CONSENSUS_FRAME_CACHE[cache_key] = bundled_frames
+
+
+def collect_consensus_frames_from_capture(local_cap, center_frame, left, top, crop_width, crop_height):
+    """Collect nearby upscaled frames from an already-open capture for in-memory OCR consensus."""
+    radius = max(0, APP_CONFIG.ocr_consensus_frames // 2)
+    total_frames = int(local_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    bundled_frames = []
+    start_frame = max(0, center_frame - radius)
+    end_frame = min(total_frames, center_frame + radius + 1)
+    local_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    for _frame_number in range(start_frame, end_frame):
+        ret, frame = local_cap.read()
+        if not ret:
+            continue
+        bundled_frames.append(crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT))
+    return bundled_frames
+
+
+def enhance_export_frame(upscaled_image, scale_x, scale_y):
+    if scale_x > 1.3 and scale_y >= 1.3:
+        if isinstance(upscaled_image, np.ndarray):
+            upscaled_image = Image.fromarray(upscaled_image)
+        contrast_enhancer = ImageEnhance.Contrast(upscaled_image)
+        high_contrast_image = contrast_enhancer.enhance(1.70)
+        sharpness_enhancer = ImageEnhance.Sharpness(high_contrast_image)
+        sharpened_image = sharpness_enhancer.enhance(1.23)
+        return np.array(sharpened_image)
+    return upscaled_image
+
+
+def capture_export_frame(local_cap, target_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats):
+    seek_to_frame(local_cap, target_frame, stats)
+    ret, frame = read_video_frame(local_cap, stats)
+    if not ret:
+        return None, None
+    actual_frame = actual_frame_after_read(local_cap)
+    upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
+    return actual_frame, enhance_export_frame(upscaled_image, scale_x, scale_y)
 
 
 def analyze_score_window(video_path, frame_number, fps, templates, csv_writer, scale_x, scale_y, left, top,
@@ -370,6 +410,8 @@ def analyze_score_window_task(task):
     top = task["top"]
     crop_width = task["crop_width"]
     crop_height = task["crop_height"]
+    scale_x = task["scale_x"]
+    scale_y = task["scale_y"]
 
     start_frame = frame_number - int(3 * fps)
     end_frame = frame_number + int(13 * fps)
@@ -468,37 +510,52 @@ def analyze_score_window_task(task):
 
         detail_frame_number += 1
 
+    race_score_image = None
+    total_score_image = None
+    actual_race_score_frame = None
+    actual_total_score_frame = None
+    race_consensus_frames = []
+    total_consensus_frames = []
+    if race_score_frame > 0 and total_score_frame > 0:
+        export_stage_start = time.perf_counter()
+        actual_race_score_frame, race_score_image = capture_export_frame(
+            local_cap, race_score_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+        )
+        if actual_race_score_frame is not None:
+            race_consensus_frames = collect_consensus_frames_from_capture(
+                local_cap, actual_race_score_frame, left, top, crop_width, crop_height
+            )
+        actual_total_score_frame, total_score_image = capture_export_frame(
+            local_cap, total_score_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+        )
+        if actual_total_score_frame is not None:
+            total_consensus_frames = collect_consensus_frames_from_capture(
+                local_cap, actual_total_score_frame, left, top, crop_width, crop_height
+            )
+        add_timing(stats, "output_frame_capture_s", export_stage_start)
+
     local_cap.release()
     return {
         "candidate": task,
         "race_score_frame": race_score_frame,
         "total_score_frame": total_score_frame,
+        "actual_race_score_frame": actual_race_score_frame,
+        "actual_total_score_frame": actual_total_score_frame,
+        "race_score_image": race_score_image,
+        "total_score_image": total_score_image,
+        "race_consensus_frames": race_consensus_frames,
+        "total_consensus_frames": total_consensus_frames,
         "debug_rows": debug_rows,
         "stats": stats,
     }
 
 
-def save_score_frames(video_path, race_number, race_score_frame, total_score_frame, scale_x, scale_y, left, top,
-                      crop_width, crop_height, fps, stats, metadata_writer):
-    """Save the selected race score and total score frames."""
-    stage_start = time.perf_counter()
-
-    seek_to_frame(cap, race_score_frame, stats)
-    ret, frame = read_video_frame(cap, stats)
-    if not ret:
+def save_score_frames(video_path, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
+                      actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
+                      total_consensus_frames, fps, stats, metadata_writer):
+    """Save the selected race score and total score frames from worker-prepared output."""
+    if race_score_image is None or total_score_image is None:
         return False
-    actual_race_score_frame = actual_frame_after_read(cap)
-    upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
-
-    if scale_x > 1.3 and scale_y >= 1.3:
-        if isinstance(upscaled_image, np.ndarray):
-            upscaled_image = Image.fromarray(upscaled_image)
-        contrast_enhancer = ImageEnhance.Contrast(upscaled_image)
-        high_contrast_image = contrast_enhancer.enhance(1.70)
-        sharpness_enhancer = ImageEnhance.Sharpness(high_contrast_image)
-        sharpened_image = sharpness_enhancer.enhance(1.23)
-        upscaled_image = np.array(sharpened_image)
-
     script_dir = os.path.dirname(__file__)
     output_folder = os.path.join(script_dir, 'Output_Results', 'Frames')
     os.makedirs(output_folder, exist_ok=True)
@@ -506,38 +563,24 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
         output_folder,
         f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+2RaceScore.png"
     )
-    cv2.imwrite(frame_filename, upscaled_image)
-    collect_consensus_frames(video_path, actual_race_score_frame, fps, left, top, crop_width, crop_height, (race_number, "RaceScore"))
+    cv2.imwrite(frame_filename, race_score_image)
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    if race_consensus_frames:
+        CONSENSUS_FRAME_CACHE[(video_stem, int(race_number), "RaceScore")] = list(race_consensus_frames)
     log_exported_frame(
         metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps
     )
-
-    seek_to_frame(cap, total_score_frame, stats)
-    ret, frame = read_video_frame(cap, stats)
-    if not ret:
-        return False
-    actual_total_score_frame = actual_frame_after_read(cap)
-    upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
-
-    if scale_x > 1.3 and scale_y >= 1.3:
-        if isinstance(upscaled_image, np.ndarray):
-            upscaled_image = Image.fromarray(upscaled_image)
-        contrast_enhancer = ImageEnhance.Contrast(upscaled_image)
-        high_contrast_image = contrast_enhancer.enhance(1.70)
-        sharpness_enhancer = ImageEnhance.Sharpness(high_contrast_image)
-        sharpened_image = sharpness_enhancer.enhance(1.23)
-        upscaled_image = np.array(sharpened_image)
 
     frame_filename = os.path.join(
         output_folder,
         f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+3TotalScore.png"
     )
-    cv2.imwrite(frame_filename, upscaled_image)
-    collect_consensus_frames(video_path, actual_total_score_frame, fps, left, top, crop_width, crop_height, (race_number, "TotalScore"))
+    cv2.imwrite(frame_filename, total_score_image)
+    if total_consensus_frames:
+        CONSENSUS_FRAME_CACHE[(video_stem, int(race_number), "TotalScore")] = list(total_consensus_frames)
     log_exported_frame(
         metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps
     )
-    add_timing(stats, "output_frame_capture_s", stage_start)
     return True
 
 
@@ -555,6 +598,8 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
             "frame_number": candidate["frame_number"],
             "fps": fps,
             "templates": templates,
+            "scale_x": scale_x,
+            "scale_y": scale_y,
             "left": left,
             "top": top,
             "crop_width": crop_width,
@@ -619,12 +664,12 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
             result["candidate"]["race_number"],
             result["race_score_frame"],
             result["total_score_frame"],
-            scale_x,
-            scale_y,
-            left,
-            top,
-            crop_width,
-            crop_height,
+            result.get("actual_race_score_frame"),
+            result.get("actual_total_score_frame"),
+            result.get("race_score_image"),
+            result.get("total_score_image"),
+            result.get("race_consensus_frames", []),
+            result.get("total_consensus_frames", []),
             fps,
             stats,
             metadata_writer,
@@ -1360,6 +1405,14 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
     """Main function to process videos and apply template matching."""
     phase_start_time = time.time()
     CONSENSUS_FRAME_CACHE.clear()
+    empty_summary = {
+        "duration_s": 0.0,
+        "total_source_seconds": 0.0,
+        "track_screens": 0,
+        "race_numbers": 0,
+        "total_score_screens": 0,
+        "per_video_summaries": [],
+    }
     LOGGER.log("[Extract - Phase Start]", "Extract race and score screens", color_name="cyan")
 
     script_dir = os.path.dirname(__file__)  # Directory of the script
@@ -1378,7 +1431,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
         template = cv2.imread(template_path, cv2.IMREAD_UNCHANGED)
         if template is None:
             LOGGER.log("[Extract - Phase Start]", f"Template image could not be loaded: {template_path}", color_name="red")
-            return {} if return_frame_cache else None
+            return {"frame_bundle_cache": {}, "summary": empty_summary} if return_frame_cache else {"summary": empty_summary}
         if len(template.shape) == 3 and template.shape[2] == 4:
             template_gray = cv2.cvtColor(template, cv2.COLOR_BGRA2GRAY)
             _, alpha_mask = cv2.threshold(template[:, :, 3], 0, 255, cv2.THRESH_BINARY)
@@ -1392,7 +1445,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             alpha_mask = None
         else:
             LOGGER.log("[Extract - Phase Start]", f"Template image has an unexpected number of channels: {template_path}", color_name="red")
-            return {} if return_frame_cache else None
+            return {"frame_bundle_cache": {}, "summary": empty_summary} if return_frame_cache else {"summary": empty_summary}
         templates.append((template_binary, alpha_mask))
     template_load_time_s = time.perf_counter() - template_load_start
 
@@ -1404,7 +1457,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
         video_paths = [path for path in video_paths if os.path.basename(path).lower() in selected_names]
     if not video_paths:
         LOGGER.log("[Extract - Phase Start]", "No videos found in Input_Videos", color_name="red")
-        return {} if return_frame_cache else None
+        return {"frame_bundle_cache": {}, "summary": empty_summary} if return_frame_cache else {"summary": empty_summary}
 
     if APP_CONFIG.write_debug_csv:
         os.makedirs(os.path.dirname(csv_output_path), exist_ok=True)
@@ -1741,7 +1794,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             "frame_bundle_cache": {key: value[:] for key, value in CONSENSUS_FRAME_CACHE.items()},
             "summary": extract_summary,
         }
-    return None
+    return {"summary": extract_summary}
 
 
 def main():

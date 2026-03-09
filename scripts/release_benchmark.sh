@@ -29,16 +29,18 @@ find "$PROJECT_ROOT/Input_Videos" -maxdepth 1 -type f ! -name "$VIDEO_NAME" -exe
 find "$PROJECT_ROOT/Output_Results/Frames" -maxdepth 1 -type f -delete 2>/dev/null || true
 find "$PROJECT_ROOT/Output_Results/Debug/Score_Frames" -maxdepth 1 -type f -delete 2>/dev/null || true
 rm -f "$PROJECT_ROOT/Output_Results/Debug/debug_max_val.csv"
+rm -f "$PROJECT_ROOT"/Output_Results/*_Tournament_Results.xlsx
 rm -f "$PROJECT_ROOT/Output_Results/Tournament_Results.xlsx"
+rm -f "$PROJECT_ROOT/Output_Results/~\$Tournament_Results.xlsx"
 
 "$PYTHON_BIN" Main_RunMe.py --check
 
 extract_start="$(date +%s.%N)"
-"$PYTHON_BIN" Main_RunMe.py --extract
+"$PYTHON_BIN" Main_RunMe.py --extract --video "$VIDEO_NAME"
 extract_end="$(date +%s.%N)"
 
 ocr_start="$(date +%s.%N)"
-"$PYTHON_BIN" Main_RunMe.py --ocr
+"$PYTHON_BIN" Main_RunMe.py --ocr --video "$VIDEO_NAME"
 ocr_end="$(date +%s.%N)"
 
 "$PYTHON_BIN" tools/validate_outputs.py --baseline-dir "$BASELINE_DIR" --prefix "$RACE_CLASS" --race-class "$RACE_CLASS"

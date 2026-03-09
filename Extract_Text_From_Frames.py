@@ -779,9 +779,10 @@ def load_consensus_frames(image_path: str, metadata_entry: Dict[str, int | str] 
     actual_frame = int(metadata_entry["actual_frame"])
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     sampled_frames = []
-
-    for frame_number in range(max(0, actual_frame - radius), min(total_frames, actual_frame + radius + 1)):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    start_frame = max(0, actual_frame - radius)
+    end_frame = min(total_frames, actual_frame + radius + 1)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    for frame_number in range(start_frame, end_frame):
         ret, frame = cap.read()
         if not ret:
             continue
@@ -1254,6 +1255,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     for (race_class, _race_id), _images in sorted_grouped_images:
         race_totals_by_class[race_class] = race_totals_by_class.get(race_class, 0) + 1
     progress = ProgressPrinter("[OCR]", len(sorted_grouped_images), percent_step=5, min_interval_s=2.0)
+
     with ThreadPoolExecutor(max_workers=OCR_WORKERS) as executor:
         future_map = {
             executor.submit(
