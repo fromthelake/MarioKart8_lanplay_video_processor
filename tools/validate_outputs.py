@@ -7,6 +7,16 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 
+def resolve_results_workbook(output_dir: Path) -> Path:
+    stable_path = output_dir / "Tournament_Results.xlsx"
+    if stable_path.exists():
+        return stable_path
+    timestamped = sorted(output_dir.glob("*_Tournament_Results.xlsx"))
+    if timestamped:
+        return timestamped[-1]
+    return stable_path
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -131,7 +141,7 @@ def main() -> int:
         print_list("score_frames_mismatched", score_mismatched)
 
     baseline_rows = load_csv_rows(baseline_dir / "Tournament_Results.csv", race_class)
-    current_rows = load_workbook_rows(current_dir / "Tournament_Results.xlsx", race_class)
+    current_rows = load_workbook_rows(resolve_results_workbook(current_dir), race_class)
     baseline_rows, current_rows = align_rows_for_comparison(baseline_rows, current_rows)
     workbook_match = baseline_rows == current_rows
     print(f"workbook_match: {workbook_match}")

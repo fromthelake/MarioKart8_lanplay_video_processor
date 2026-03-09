@@ -30,6 +30,13 @@ EXTRACT_SCRIPT = SCRIPT_DIR / "Extract_Frames_From_Video.py"
 OCR_SCRIPT = SCRIPT_DIR / "Extract_Text_From_Frames.py"
 
 
+def find_latest_results_xlsx(output_dir: Path) -> Path:
+    candidates = sorted(output_dir.glob("*_Tournament_Results.xlsx"))
+    if candidates:
+        return candidates[-1]
+    return output_dir / "Tournament_Results.xlsx"
+
+
 def show_info(title: str, message: str) -> None:
     if messagebox is not None:
         messagebox.showinfo(title, message)
@@ -81,9 +88,10 @@ def export_to_excel() -> None:
 
 
 def open_excel_scores() -> None:
-    if RESULTS_XLSX.exists():
+    latest_results_xlsx = find_latest_results_xlsx(OUTPUT_DIR)
+    if latest_results_xlsx.exists():
         try:
-            open_path(RESULTS_XLSX)
+            open_path(latest_results_xlsx)
         except Exception as exc:
             show_error("Error", f"Unable to open the Excel file: {exc}")
     else:
@@ -271,7 +279,8 @@ def run_all(selected_video: str | None = None) -> None:
         color_name="cyan",
     )
     LOGGER.blank_lines(2)
-    LOGGER.log("[Run - Output]", str(RESULTS_XLSX), color_name="green")
+    latest_results_xlsx = Path(ocr_result.get("output_excel_path") or find_latest_results_xlsx(OUTPUT_DIR))
+    LOGGER.log("[Run - Output]", str(latest_results_xlsx), color_name="green")
     print(
         f"[{LOGGER.elapsed_label()}] "
         f"{LOGGER.color('[RUN - COMPLETED]', 'green')} "
@@ -288,7 +297,7 @@ def print_runtime_status() -> int:
     print(f"Python executable: {sys.executable}")
     print(f"Input folder: {INPUT_DIR}")
     print(f"Frames folder: {FRAMES_DIR}")
-    print(f"Results file: {RESULTS_XLSX}")
+    print(f"Latest results file: {find_latest_results_xlsx(OUTPUT_DIR)}")
     print(f"Tesseract: {'OK' if not tesseract_issues else 'MISSING'}")
     print(f"FFmpeg: {'OK' if not ffmpeg_issues else 'MISSING'}")
     print(

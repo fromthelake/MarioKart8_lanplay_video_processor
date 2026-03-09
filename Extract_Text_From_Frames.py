@@ -15,6 +15,7 @@ import difflib
 import openpyxl
 import textdistance
 import re
+from datetime import datetime
 from jellyfish import soundex
 from collections import defaultdict, Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -1436,7 +1437,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     ]
     df = df[desired_order]
 
-    output_excel_path = os.path.normpath(os.path.join(folder_path, '..', "Tournament_Results.xlsx"))
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    output_excel_path = os.path.normpath(os.path.join(folder_path, '..', f"{timestamp}_Tournament_Results.xlsx"))
     df.to_excel(output_excel_path, index=False)
     race_count = int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0])
     per_video_summary = {}
