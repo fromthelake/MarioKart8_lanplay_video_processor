@@ -32,6 +32,8 @@ from .ocr_session_validation import apply_session_validation
 from .project_paths import PROJECT_ROOT
 from .track_metadata import load_track_tuples
 
+POSITION_TEMPLATE_COEFF_COLUMNS = [f"PositionTemplate{template_index:02}_Coeff" for template_index in range(1, 13)]
+
 # Record the start time
 start_run_time = time.time()
 APP_CONFIG = load_app_config()
@@ -484,6 +486,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             race_points_fix,
             row["DetectedRacePoints"],
             row["DetectedTotalScore"],
+            row.get("PositionAfterRace"),
+            *[row.get(column_name) for column_name in POSITION_TEMPLATE_COEFF_COLUMNS],
             row["NameConfidence"],
             row["DigitConsensus"],
             consensus["row_count_confidence"],
@@ -634,7 +638,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
 
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
-        "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "NameConfidence",
+        "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "PositionAfterRace",
+        *POSITION_TEMPLATE_COEFF_COLUMNS,
+        "NameConfidence",
         "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
         "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
         "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",

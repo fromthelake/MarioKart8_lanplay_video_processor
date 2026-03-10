@@ -6,6 +6,12 @@ from pathlib import Path
 import pandas as pd
 
 
+POSITION_TEMPLATE_COEFF_COLUMN_MAP = {
+    f"PositionTemplate{template_index:02}_Coeff": f"Position Template {template_index:02} Coeff"
+    for template_index in range(1, 13)
+}
+
+
 USER_EXPORT_COLUMN_MAP = {
     "RaceClass": "Video",
     "RaceIDNumber": "Race",
@@ -16,6 +22,7 @@ USER_EXPORT_COLUMN_MAP = {
     "RacePoints": "Race Points",
     "OldTotalScore": "Total Before Race",
     "NewTotalScore": "Total After Race",
+    "PositionAfterRace": "Position After Race",
     "ReviewNeeded": "Needs Review",
     "ReviewReason": "Review Reason",
 }
@@ -37,6 +44,8 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "SessionNewTotalScore": "Expected Total After Race",
     "OldTotalScore": "Tournament Total Before Race",
     "NewTotalScore": "Tournament Total After Race",
+    "PositionAfterRace": "Position After Race",
+    **POSITION_TEMPLATE_COEFF_COLUMN_MAP,
     "SessionIndex": "Session",
     "NameConfidence": "Name Confidence",
     "DigitConsensus": "Digit Confidence",

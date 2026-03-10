@@ -311,6 +311,10 @@ def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str,
                 "best_position_template_score": round(float(hybrid_best["coefficient"]), 3),
                 "best_position_template_iou": round(float(hybrid_best["white_iou"]), 3),
                 "best_position_template_weighted_iou": round(float(hybrid_best["weighted_white_iou"]), 3),
+                "position_template_coefficients": {
+                    f"PositionTemplate{item['template_index']:02}_Coeff": round(float(item["coefficient"]), 3)
+                    for item in template_scores
+                },
             }
         )
     return metrics
@@ -792,9 +796,16 @@ def build_consensus_rows(observations: List[Dict[str, object]], visible_rows: in
     return rows
 
 
-def map_total_rows_to_race_rows(score_rows: List[Dict[str, object]], total_rows: List[Dict[str, object]], preprocess_name, weighted_similarity) -> List[Dict[str, object]]:
+def map_total_rows_to_race_rows(
+    score_rows: List[Dict[str, object]],
+    total_rows: List[Dict[str, object]],
+    preprocess_name,
+    weighted_similarity,
+    total_row_metrics: List[Dict[str, object]] | None = None,
+) -> List[Dict[str, object]]:
     """Attach total-score rows to race-score rows, preferring same-name matches over row order."""
     mapped_rows = []
+    total_row_metrics = total_row_metrics or []
     if not score_rows:
         return mapped_rows
     if not total_rows:
@@ -802,12 +813,14 @@ def map_total_rows_to_race_rows(score_rows: List[Dict[str, object]], total_rows:
             mapped_rows.append(
                 {
                     "RacePosition": len(mapped_rows) + 1,
+                    "PositionAfterRace": None,
                     "PlayerName": score_row["PlayerName"],
                     "DetectedRacePoints": score_row["DetectedValue"],
                     "DetectedTotalScore": None,
                     "NameConfidence": score_row["NameConfidence"],
                     "DigitConsensus": score_row["DigitConfidence"],
                     "TotalScoreMappingMethod": "missing_total_rows",
+                    **{f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)},
                 }
             )
         return mapped_rows
@@ -848,20 +861,28 @@ def map_total_rows_to_race_rows(score_rows: List[Dict[str, object]], total_rows:
 
         total_score = None
         total_digit_confidence = 0.0
+        total_row_position_coefficients = {f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)}
         if matched_total_index is not None:
             total_row = total_rows[matched_total_index]
             total_score = total_row["DetectedValue"]
             total_digit_confidence = float(total_row["DigitConfidence"])
+            total_row_index = int(total_row.get("RowIndex", -1))
+            if 0 <= total_row_index < len(total_row_metrics):
+                total_row_position_coefficients.update(
+                    total_row_metrics[total_row_index].get("position_template_coefficients", {})
+                )
 
         mapped_rows.append(
             {
                 "RacePosition": len(mapped_rows) + 1,
+                "PositionAfterRace": (matched_total_index + 1) if matched_total_index is not None else None,
                 "PlayerName": score_row["PlayerName"],
                 "DetectedRacePoints": score_row["DetectedValue"],
                 "DetectedTotalScore": total_score,
                 "NameConfidence": score_row["NameConfidence"],
                 "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
                 "TotalScoreMappingMethod": mapping_method,
+                **total_row_position_coefficients,
             }
         )
     return mapped_rows
@@ -904,15 +925,22 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
     )
 
+    representative_score_observation = score_observations[len(score_observations) // 2] if score_observations else {}
+    representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
+
     # Use the position-guided count as the official row count. The older OCR-only count
     # is still returned in debug data as a legacy reference.
     score_rows = build_consensus_rows(score_observations, position_guided_visible_rows, "race_points")
     total_rows = build_consensus_rows(total_observations, total_position_guided_visible_rows, "total_points")
-    rows = map_total_rows_to_race_rows(score_rows, total_rows, preprocess_name, weighted_similarity)
+    rows = map_total_rows_to_race_rows(
+        score_rows,
+        total_rows,
+        preprocess_name,
+        weighted_similarity,
+        representative_total_observation.get("row_metrics", []),
+    )
     name_confidences = [float(row["NameConfidence"]) / 100.0 for row in rows if row.get("NameConfidence") is not None]
     digit_confidences = [float(row["DigitConsensus"]) / 100.0 for row in rows if row.get("DigitConsensus") is not None]
-    representative_score_observation = score_observations[len(score_observations) // 2] if score_observations else {}
-    representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
 
     return {
         "rows": rows,
