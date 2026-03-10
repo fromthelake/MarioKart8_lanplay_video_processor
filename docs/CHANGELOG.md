@@ -40,6 +40,13 @@ The format is intentionally simple and human-readable.
 - New console command names:
   - `mk8-local-play`
   - `mk8-local-results`
+- The application source code now lives in the `mk8_local_play/` package.
+- `main.py`, `extract_frames.py`, and `extract_text.py` now act as thin root launchers.
+- Maintainer documentation is now grouped under `docs/`.
+- Benchmark baselines are now grouped under `benchmarks/baselines/`.
+- Track metadata and reference images are now grouped under `reference_data/`.
+- Runtime path resolution, package data, benchmark scripts, and documentation were updated to match the grouped layout.
+- Tracked IDE project files were removed from the repository.
 - GUI startup now degrades more safely on systems without Tk support.
 - Child scripts launched from `main.py` now prefer the repo-local `.venv`.
 - `main.py --check` now reports both the parent Python and the child-script Python.
