@@ -1,10 +1,7 @@
-import json
 import os
 import re
-import hashlib
 from collections import Counter, defaultdict
 from functools import lru_cache
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
@@ -49,26 +46,6 @@ def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
         (shifted_x1 - POSITION_STRIP_PADDING_X, shifted_y1 - POSITION_STRIP_PADDING_Y),
         (shifted_x2 + POSITION_STRIP_PADDING_X, shifted_y2 + POSITION_STRIP_PADDING_Y),
     )
-
-
-def position_debug_enabled() -> bool:
-    return str(os.environ.get("MK8_WRITE_DEBUG_POSITION_ROIS", "")).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def position_debug_rows() -> List[int]:
-    raw_value = str(os.environ.get("MK8_DEBUG_POSITION_ROWS", "10,11,12"))
-    rows = []
-    for part in raw_value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            row_number = int(part)
-        except ValueError:
-            continue
-        if 1 <= row_number <= 12:
-            rows.append(row_number)
-    return rows or [10, 11, 12]
 
 
 def normalize_binary_foreground(binary_image: np.ndarray) -> np.ndarray:
@@ -174,25 +151,6 @@ def load_position_row_templates() -> List[np.ndarray]:
         raise FileNotFoundError(f"Position template image not found: {template_path}")
     _, template_binary = cv2.threshold(template_image, 180, 255, cv2.THRESH_BINARY)
     return slice_position_templates(template_binary)
-
-
-def export_position_row_templates_once(output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    marker_file = output_dir / "_templates_written.txt"
-    template_path = resolve_asset_file("templates", POSITION_TEMPLATE_FILENAME)
-    template_hash = hashlib.sha256(template_path.read_bytes()).hexdigest()
-    marker_text = (
-        f"{POSITION_TEMPLATE_FILENAME}\n"
-        f"{template_hash}\n"
-        f"width={POSITION_TEMPLATE_WIDTH}\n"
-        f"height={POSITION_TEMPLATE_HEIGHT}\n"
-        f"starts={','.join(str(value) for value in POSITION_TEMPLATE_ROW_STARTS)}\n"
-    )
-    if marker_file.exists() and marker_file.read_text(encoding="utf-8") == marker_text:
-        return
-    for row_index, template in enumerate(load_position_row_templates(), start=1):
-        cv2.imwrite(str(output_dir / f"template_row_{row_index:02}.png"), template)
-    marker_file.write_text(marker_text, encoding="utf-8")
 
 
 def _template_match_score(source_image: np.ndarray, template_image: np.ndarray) -> float:
@@ -328,54 +286,6 @@ def build_normalized_position_strip(processed_image: np.ndarray) -> np.ndarray:
         position_strip = cv2.cvtColor(position_strip, cv2.COLOR_BGR2GRAY)
     _, position_strip = cv2.threshold(position_strip, 180, 255, cv2.THRESH_BINARY)
     return combine_position_rows(normalize_position_rows(position_strip))
-
-
-def write_position_roi_debug_bundle(output_dir: Path, base_name: str, raw_strip: np.ndarray, processed_strip: np.ndarray,
-                                    row_metrics: List[Dict[str, object]], match_row_crops: List[np.ndarray] | None = None) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    export_position_row_templates_once(output_dir / "templates")
-
-    cv2.imwrite(str(output_dir / f"{base_name}_position_strip_raw.png"), raw_strip)
-    cv2.imwrite(str(output_dir / f"{base_name}_position_strip_processed.png"), processed_strip)
-
-    row_windows = position_template_row_windows()
-    for row_number in position_debug_rows():
-        row_index = row_number - 1
-        start_y, end_y = row_windows[row_index]
-        raw_crop = raw_strip[start_y:end_y, :]
-        processed_crop = processed_strip[start_y:end_y, :]
-        cv2.imwrite(str(output_dir / f"{base_name}_row_{row_number:02}_raw.png"), raw_crop)
-        cv2.imwrite(str(output_dir / f"{base_name}_row_{row_number:02}_processed.png"), processed_crop)
-        if match_row_crops and row_index < len(match_row_crops):
-            cv2.imwrite(
-                str(output_dir / f"{base_name}_row_{row_number:02}_match_processed.png"),
-                match_row_crops[row_index],
-            )
-
-        metadata = {
-            "base_name": base_name,
-            "roi": {
-                "x1": int(position_strip_roi()[0][0]),
-                "y1": int(position_strip_roi()[0][1]),
-                "x2": int(position_strip_roi()[1][0]),
-                "y2": int(position_strip_roi()[1][1]),
-                "offset_x": int(POSITION_STRIP_OFFSET_X),
-                "offset_y": int(POSITION_STRIP_OFFSET_Y),
-                "padding_x": int(POSITION_STRIP_PADDING_X),
-                "padding_y": int(POSITION_STRIP_PADDING_Y),
-                "row_padding_x": int(POSITION_ROW_PADDING_X),
-                "row_padding_top": int(POSITION_ROW_PADDING_TOP),
-                "row_padding_bottom": int(POSITION_ROW_PADDING_BOTTOM),
-            },
-            "row_number": row_number,
-            "row_y_start": start_y,
-            "row_y_end": end_y,
-            "metrics": row_metrics[row_index],
-        }
-        (output_dir / f"{base_name}_row_{row_number:02}_meta.json").write_text(
-            json.dumps(metadata, indent=2),
-            encoding="utf-8",
-        )
 
 
 def build_row_presence_metrics(names: List[str], confidence_scores: List[int], race_points: List[str], total_points: List[str]) -> List[Dict[str, object]]:

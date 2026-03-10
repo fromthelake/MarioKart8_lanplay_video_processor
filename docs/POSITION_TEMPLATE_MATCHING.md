@@ -145,17 +145,3 @@ The current 10-player reference video now validates cleanly with this rule set:
 
 - all 11 races resolve to `10 / 10`
 - the player-count summary is fully consistent
-
-## Debug tools
-
-Use the generated HTML report here:
-
-- `Output_Results/Debug/Position_ROI_Checks/reports/position_template_diagnostics.html`
-
-The report lets you:
-
-- switch highlight mode between `Coeff`, `White IoU`, and `Weighted White IoU`
-- inspect the winning template per row
-- manually move a template inside the row ROI
-- see `Coeff`, `White IoU`, and `Weighted White IoU` live
-- inspect the overlap visualization and counts
