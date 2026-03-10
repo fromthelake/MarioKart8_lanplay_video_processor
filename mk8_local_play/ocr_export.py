@@ -1,4 +1,3 @@
-import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -79,7 +78,7 @@ def build_debug_export_df(df):
 
 
 def write_results_workbooks(df, folder_path):
-    """Write a clean user workbook and a full debug workbook, both timestamped and stable."""
+    """Write a clean user workbook and a full debug workbook, both timestamped."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(folder_path).resolve().parent
 
@@ -87,23 +86,17 @@ def write_results_workbooks(df, folder_path):
     debug_df = build_debug_export_df(df)
 
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
-    stable_output_excel_path = output_dir / "Tournament_Results.xlsx"
     debug_output_excel_path = output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
-    stable_debug_output_excel_path = output_dir / "Tournament_Results_Debug.xlsx"
 
     with pd.ExcelWriter(output_excel_path) as writer:
         user_df.to_excel(writer, index=False, sheet_name="Results")
     with pd.ExcelWriter(debug_output_excel_path) as writer:
         debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
-    shutil.copy2(output_excel_path, stable_output_excel_path)
-    shutil.copy2(debug_output_excel_path, stable_debug_output_excel_path)
     return {
         "user_df": user_df,
         "debug_df": debug_df,
         "output_excel_path": output_excel_path,
-        "stable_output_excel_path": stable_output_excel_path,
         "debug_output_excel_path": debug_output_excel_path,
-        "stable_debug_output_excel_path": stable_debug_output_excel_path,
     }
 
 
@@ -175,9 +168,7 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
             "",
             "Output workbooks:",
             str(workbook_payload["output_excel_path"]),
-            str(workbook_payload["stable_output_excel_path"]),
             str(workbook_payload["debug_output_excel_path"]),
-            str(workbook_payload["stable_debug_output_excel_path"]),
         ]
     )
 
@@ -186,9 +177,7 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
         "debug_df": workbook_payload["debug_df"],
         "lines": lines,
         "output_excel_path": str(workbook_payload["output_excel_path"]),
-        "stable_output_excel_path": str(workbook_payload["stable_output_excel_path"]),
         "debug_output_excel_path": str(workbook_payload["debug_output_excel_path"]),
-        "stable_debug_output_excel_path": str(workbook_payload["stable_debug_output_excel_path"]),
         "race_count": race_count,
         "per_video_summary": per_video_summary,
         "per_video_durations": dict(per_video_durations),

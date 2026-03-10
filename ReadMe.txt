@@ -23,7 +23,7 @@ What this project does:
 - you put Mario Kart videos into the `Input_Videos` folder
 - the tool finds the race result screens
 - the tool reads names and scores
-- the tool writes the result to `Output_Results/Tournament_Results.xlsx`
+- the tool writes a timestamped result workbook to `Output_Results`
 
 Beginner note:
 - when a guide shows a command, copy it exactly

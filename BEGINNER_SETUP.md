@@ -275,13 +275,13 @@ Copy and paste this into PowerShell:
 Expected output:
 - progress messages for extraction
 - progress messages for OCR
-- at the end, a path to `Tournament_Results.xlsx`
+- at the end, a path to a timestamped `*_Tournament_Results.xlsx` file
 
 ### Step 12. Open the result
 
-The main result file is:
+The main result file is the newest timestamped workbook in:
 
-- `Output_Results\Tournament_Results.xlsx`
+- `Output_Results`
 
 Open the output folder with:
 

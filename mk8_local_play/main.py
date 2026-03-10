@@ -29,7 +29,6 @@ SCRIPT_DIR = PROJECT_ROOT
 INPUT_DIR = SCRIPT_DIR / "Input_Videos"
 OUTPUT_DIR = SCRIPT_DIR / "Output_Results"
 FRAMES_DIR = OUTPUT_DIR / "Frames"
-RESULTS_XLSX = OUTPUT_DIR / "Tournament_Results.xlsx"
 EXTRACT_MODULE = "mk8_local_play.extract_frames"
 OCR_MODULE = "mk8_local_play.extract_text"
 PROFILE_OUTPUT = OUTPUT_DIR / "Debug" / "performance_profile.txt"
@@ -51,7 +50,7 @@ def find_latest_results_xlsx(output_dir: Path) -> Path:
     candidates = sorted(output_dir.glob("*_Tournament_Results.xlsx"))
     if candidates:
         return candidates[-1]
-    return output_dir / "Tournament_Results.xlsx"
+    return output_dir / "No_Tournament_Results_Found.xlsx"
 
 
 def show_info(title: str, message: str) -> None:

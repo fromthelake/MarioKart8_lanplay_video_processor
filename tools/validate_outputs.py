@@ -8,13 +8,10 @@ from openpyxl import load_workbook
 
 
 def resolve_results_workbook(output_dir: Path) -> Path:
-    stable_path = output_dir / "Tournament_Results.xlsx"
-    if stable_path.exists():
-        return stable_path
     timestamped = sorted(output_dir.glob("*_Tournament_Results.xlsx"))
     if timestamped:
         return timestamped[-1]
-    return stable_path
+    return output_dir / "No_Tournament_Results_Found.xlsx"
 
 
 def sha256_file(path: Path) -> str:

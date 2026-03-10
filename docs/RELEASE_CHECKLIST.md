@@ -11,7 +11,7 @@ Use this checklist before calling the repo release-ready.
 
 ## Output
 
-- Confirm `Output_Results/Tournament_Results.xlsx` is created
+- Confirm a timestamped `Output_Results/*_Tournament_Results.xlsx` is created
 - Confirm extracted screenshots in `Output_Results/Frames/` look correct
 - If output logic changed, compare against a curated baseline
 

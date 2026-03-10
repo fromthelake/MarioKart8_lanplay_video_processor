@@ -94,8 +94,8 @@ The project has two main phases:
   - extracted screenshots
 - `Output_Results/Debug/`
   - optional debug output
-- `Output_Results/Tournament_Results.xlsx`
-  - latest stable Excel output
+- `Output_Results/*_Tournament_Results.xlsx`
+  - timestamped Excel outputs
 
 ## Scripts And Tools
 

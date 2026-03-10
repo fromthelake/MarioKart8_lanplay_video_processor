@@ -6,7 +6,7 @@ In plain language:
 - you place one or more recorded match videos in `Input_Videos/`
 - the tool finds the important result screens
 - the tool reads track names, player names, race points, and total scores
-- the tool writes everything to `Output_Results/Tournament_Results.xlsx`
+- the tool writes timestamped Excel files to `Output_Results/`
 
 The project is designed for hobby use from a Git clone and supports:
 - Windows
@@ -259,10 +259,9 @@ Less reliable inputs:
 ## Output
 
 Main output:
-- `Output_Results/Tournament_Results.xlsx`
+- the newest timestamped workbook in `Output_Results/*_Tournament_Results.xlsx`
 
 Additional outputs:
-- timestamped workbook archives in `Output_Results/*_Tournament_Results.xlsx`
 - extracted frame screenshots in `Output_Results/Frames/`
 - optional debug artifacts in `Output_Results/Debug/`
 

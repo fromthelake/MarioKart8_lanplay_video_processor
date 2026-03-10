@@ -54,9 +54,7 @@ The format is intentionally simple and human-readable.
 - Assets are grouped under `assets/`.
 - Naming moved toward clearer, human-readable module and function names.
 - Internal extraction naming now prefers descriptive terms like `initial scan` instead of vague phase labels.
-- OCR output writes both:
-  - a timestamped workbook
-  - `Output_Results/Tournament_Results.xlsx`
+- OCR output writes timestamped workbooks to `Output_Results/`
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
