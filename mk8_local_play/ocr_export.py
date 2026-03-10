@@ -81,12 +81,14 @@ def write_results_workbooks(df, folder_path):
     """Write a clean user workbook and a full debug workbook, both timestamped."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(folder_path).resolve().parent
+    debug_output_dir = output_dir / "Debug"
+    debug_output_dir.mkdir(parents=True, exist_ok=True)
 
     user_df = build_user_export_df(df)
     debug_df = build_debug_export_df(df)
 
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
-    debug_output_excel_path = output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
+    debug_output_excel_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
 
     with pd.ExcelWriter(output_excel_path) as writer:
         user_df.to_excel(writer, index=False, sheet_name="Results")

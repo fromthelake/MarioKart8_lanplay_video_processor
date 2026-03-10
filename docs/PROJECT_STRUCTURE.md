@@ -96,6 +96,8 @@ The project has two main phases:
   - optional debug output
 - `Output_Results/*_Tournament_Results.xlsx`
   - timestamped Excel outputs
+- `Output_Results/Debug/*_Tournament_Results_Debug.xlsx`
+  - timestamped debug Excel outputs
 
 ## Scripts And Tools
 

@@ -262,6 +262,7 @@ Main output:
 - the newest timestamped workbook in `Output_Results/*_Tournament_Results.xlsx`
 
 Additional outputs:
+- timestamped debug workbooks in `Output_Results/Debug/*_Tournament_Results_Debug.xlsx`
 - extracted frame screenshots in `Output_Results/Frames/`
 - optional debug artifacts in `Output_Results/Debug/`
 
