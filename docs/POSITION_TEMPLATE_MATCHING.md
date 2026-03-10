@@ -85,10 +85,24 @@ That is why the foreground-based IoU scores are more useful than plain accuracy 
 
 ## Official method
 
-After testing the current 10-player and 12-player reference cases, the official template-ranking method is:
+After testing the current 10-player and 12-player reference cases, the official method now has two separate steps:
 
-1. shortlist the top 3 templates by `Coeff`
-2. choose the best of those 3 by `Weighted White IoU`
+1. row presence gate
+2. template choice inside a present row
+
+### Step 1. Row presence gate
+
+The row is treated as present only when:
+
+- `Coeff >= 0.60`
+
+Anything below that threshold is treated as empty.
+
+This is intentionally simple and strict. It prevents weak OCR noise on the lower rows from keeping those rows alive.
+
+### Step 2. Template choice inside a present row
+
+Once a row passed the presence gate, the official template-ranking method is:
 
 1. shortlist the top 3 templates by `Coeff`
 2. choose the best of those 3 by `Weighted White IoU`
@@ -111,6 +125,11 @@ position method is consistent with the corrected expectation.
 
 The position-template method is now the official row-count guide, with the older OCR-only
 count retained only as a legacy debug reference.
+
+The current 10-player reference video now validates cleanly with this rule set:
+
+- all 11 races resolve to `10 / 10`
+- the player-count summary is fully consistent
 
 ## Debug tools
 

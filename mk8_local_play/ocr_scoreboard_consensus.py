@@ -35,6 +35,7 @@ POSITION_TEMPLATE_WIDTH = 56
 POSITION_TEMPLATE_HEIGHT = 36
 POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
+POSITION_PRESENT_COEFF_THRESHOLD = 0.60
 
 
 def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
@@ -433,34 +434,28 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
     - OCR/name/points evidence says whether a row looks occupied
     - position templates confirm that a real rank number is visible
     - the chosen rank sequence may stay equal or increase as the table goes down
+
+    The position presence gate is intentionally hard now:
+    - `Coeff >= 0.60` means the row is visually present
+    - below that threshold the row is treated as empty
+
+    This keeps noisy lower rows from surviving on weak OCR evidence alone.
     """
     visible_rows = 0
     last_confirmed_rank = None
     for metric in row_metrics:
-        occupancy_score = float(metric["occupancy_score"])
         best_position_score = float(metric.get("best_position_score", 0.0))
-        best_position_iou = float(metric.get("best_position_iou", 0.0))
-        position_margin = float(metric.get("position_margin", 0.0))
         best_rank = int(metric.get("best_position_template", 0))
 
-        # A real position glyph should beat the other 11 candidates by a visible margin.
-        strong_position_presence = (
-            best_position_score >= 0.35
-            and best_position_iou >= 0.25
-            and float(metric.get("best_position_weighted_iou", 0.0)) >= 0.2
-            and position_margin >= 0.05
-        )
-        row_supported = occupancy_score >= occupancy_threshold or strong_position_presence
+        row_supported = best_position_score >= POSITION_PRESENT_COEFF_THRESHOLD
 
-        # Ranking rows should never decrease as the table goes downward. We only use this
-        # as a veto when the row otherwise looks weak, so ties still work naturally.
-        if strong_position_presence and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
-            row_supported = occupancy_score >= 2.5
+        # Ranking rows should never decrease as the table goes downward. Ties remain valid.
+        if row_supported and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
+            row_supported = False
 
         if not row_supported:
             break
-        if strong_position_presence:
-            last_confirmed_rank = best_rank
+        last_confirmed_rank = best_rank
         visible_rows = int(metric["row_number"])
     return visible_rows
 
