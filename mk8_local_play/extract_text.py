@@ -458,6 +458,10 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             track_name_text,
             race_position,
             row["PlayerName"],
+            row.get("Character", ""),
+            row.get("CharacterIndex"),
+            row.get("CharacterMatchConfidence", 0.0),
+            row.get("CharacterMatchMethod", ""),
             race_points_fix,
             row["DetectedRacePoints"],
             row["DetectedTotalScore"],
@@ -477,6 +481,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus.get("legacy_total_count_votes", ""),
             consensus.get("score_row_metrics_summary", ""),
             consensus.get("total_row_metrics_summary", ""),
+            consensus.get("race_score_recovery_used", False),
+            consensus.get("race_score_recovery_source", ""),
+            consensus.get("race_score_recovery_count", race_score_players),
             row.get("TotalScoreMappingMethod", ""),
             ";".join(review_reasons),
         ])
@@ -613,6 +620,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
 
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
+        "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
         "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "PositionAfterRace",
         *POSITION_TEMPLATE_COEFF_COLUMNS,
         "NameConfidence",
@@ -620,6 +628,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
         "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
         "RaceScoreRowSignals", "TotalScoreRowSignals",
+        "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
         "TotalScoreMappingMethod", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)

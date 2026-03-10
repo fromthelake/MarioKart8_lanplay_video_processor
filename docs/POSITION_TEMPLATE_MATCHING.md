@@ -145,3 +145,16 @@ The current 10-player reference video now validates cleanly with this rule set:
 
 - all 11 races resolve to `10 / 10`
 - the player-count summary is fully consistent
+
+## Late-frame recovery
+
+Some `2RaceScore` frames briefly hide the last row behind the black "results are in" banner.
+
+When the selected RaceScore frame looks suspicious, the OCR layer now:
+
+1. keeps the normal position-template count as the first pass
+2. checks a slightly later RaceScore frame, usually `+3`
+3. accepts that later count only when it is clearly better
+
+This recovery only changes the RaceScore player-count decision. It does not replace the
+whole OCR payload for the race.

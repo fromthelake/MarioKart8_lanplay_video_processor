@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from .data_paths import resolve_asset_file
+from .game_catalog import load_game_catalog
 
 
 PLAYER_NAME_COORDS = [
@@ -33,6 +34,12 @@ POSITION_TEMPLATE_HEIGHT = 36
 POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
 POSITION_PRESENT_COEFF_THRESHOLD = 0.60
+CHARACTER_ROI_LEFT = 377
+CHARACTER_TEMPLATE_SIZE = 51
+CHARACTER_ROW_START = 49
+CHARACTER_ROW_STEP = 52
+CHARACTER_ROW_PADDING_TOP = 2
+CHARACTER_ROW_PADDING_BOTTOM = 2
 
 
 def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
@@ -45,6 +52,14 @@ def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
     return (
         (shifted_x1 - POSITION_STRIP_PADDING_X, shifted_y1 - POSITION_STRIP_PADDING_Y),
         (shifted_x2 + POSITION_STRIP_PADDING_X, shifted_y2 + POSITION_STRIP_PADDING_Y),
+    )
+
+
+def character_row_roi(row_index: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    row_top = CHARACTER_ROW_START + (row_index * CHARACTER_ROW_STEP)
+    return (
+        (CHARACTER_ROI_LEFT, row_top - CHARACTER_ROW_PADDING_TOP),
+        (CHARACTER_ROI_LEFT + CHARACTER_TEMPLATE_SIZE, row_top + CHARACTER_TEMPLATE_SIZE + CHARACTER_ROW_PADDING_BOTTOM),
     )
 
 
@@ -151,6 +166,33 @@ def load_position_row_templates() -> List[np.ndarray]:
         raise FileNotFoundError(f"Position template image not found: {template_path}")
     _, template_binary = cv2.threshold(template_image, 180, 255, cv2.THRESH_BINARY)
     return slice_position_templates(template_binary)
+
+
+@lru_cache(maxsize=1)
+def load_character_templates() -> List[Dict[str, object]]:
+    """Load full-color character icon templates from the catalog-backed asset folder."""
+    catalog = load_game_catalog()
+    templates = []
+    for character in catalog.characters:
+        template_path = resolve_asset_file("character", f"{character.character_index}.png")
+        if not template_path.exists():
+            continue
+        template_image = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+        if template_image is None:
+            continue
+        resized_template = cv2.resize(
+            template_image,
+            (CHARACTER_TEMPLATE_SIZE, CHARACTER_TEMPLATE_SIZE),
+            interpolation=cv2.INTER_LINEAR,
+        )
+        templates.append(
+            {
+                "character_index": int(character.character_index),
+                "character_name": str(character.name_uk),
+                "template_image": resized_template,
+            }
+        )
+    return templates
 
 
 def _template_match_score(source_image: np.ndarray, template_image: np.ndarray) -> float:
@@ -286,6 +328,61 @@ def build_normalized_position_strip(processed_image: np.ndarray) -> np.ndarray:
         position_strip = cv2.cvtColor(position_strip, cv2.COLOR_BGR2GRAY)
     _, position_strip = cv2.threshold(position_strip, 180, 255, cv2.THRESH_BINARY)
     return combine_position_rows(normalize_position_rows(position_strip))
+
+
+def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, object]]:
+    """Template-match the full-color character icons for each scoreboard row."""
+    templates = load_character_templates()
+    if not templates:
+        return [
+            {
+                "Character": "",
+                "CharacterIndex": None,
+                "CharacterMatchConfidence": 0.0,
+                "CharacterMatchMethod": "missing_templates",
+            }
+            for _ in range(12)
+        ]
+
+    image_height, image_width = frame_image.shape[:2]
+    metrics = []
+    for row_index in range(12):
+        (x1, y1), (x2, y2) = character_row_roi(row_index)
+        crop_x1 = max(0, min(image_width, x1))
+        crop_x2 = max(crop_x1, min(image_width, x2))
+        crop_y1 = max(0, min(image_height, y1))
+        crop_y2 = max(crop_y1, min(image_height, y2))
+        row_roi = frame_image[crop_y1:crop_y2, crop_x1:crop_x2]
+        if row_roi.size == 0:
+            metrics.append(
+                {
+                    "Character": "",
+                    "CharacterIndex": None,
+                    "CharacterMatchConfidence": 0.0,
+                    "CharacterMatchMethod": "empty_roi",
+                }
+            )
+            continue
+
+        best_match = None
+        for template in templates:
+            result = cv2.matchTemplate(row_roi, template["template_image"], cv2.TM_CCOEFF_NORMED)
+            _, max_value, _, _ = cv2.minMaxLoc(result)
+            candidate = {
+                "Character": template["character_name"],
+                "CharacterIndex": template["character_index"],
+                "CharacterMatchConfidence": round(float(max_value) * 100.0, 1),
+                "CharacterMatchMethod": "color_template_local_search",
+            }
+            if best_match is None or candidate["CharacterMatchConfidence"] > best_match["CharacterMatchConfidence"]:
+                best_match = candidate
+        metrics.append(best_match or {
+            "Character": "",
+            "CharacterIndex": None,
+            "CharacterMatchConfidence": 0.0,
+            "CharacterMatchMethod": "no_match",
+        })
+    return metrics
 
 
 def build_row_presence_metrics(names: List[str], confidence_scores: List[int], race_points: List[str], total_points: List[str]) -> List[Dict[str, object]]:
@@ -603,6 +700,7 @@ def score_digit_layout(scale_factor: int = 5):
 def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names_batched, annotate_path: str | None = None) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
     processed_img = process_image(frame_image)
+    character_metrics = build_character_match_metrics(frame_image)
     (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi()
     raw_position_strip = frame_image[position_y1:position_y2, position_x1:position_x2].copy()
     normalized_position_strip = build_normalized_position_strip(processed_img)
@@ -644,6 +742,7 @@ def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names
         "name_confidences": confidence_scores,
         "race_points": race_points,
         "total_points": total_points,
+        "character_metrics": character_metrics,
         "raw_position_strip": raw_position_strip,
         "processed_position_strip": processed_position_strip,
         "position_match_row_crops": match_row_crops,
@@ -681,18 +780,39 @@ def build_consensus_rows(observations: List[Dict[str, object]], visible_rows: in
     for row_index in range(max(visible_rows, 1)):
         name_votes = []
         point_votes = []
+        character_votes = []
         for observation in observations:
             name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
             name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
             name_votes.append((name, max(1.0, float(name_conf))))
             point_votes.append((parse_detected_int(observation[points_key][row_index]), 1.0))
+            if row_index < len(observation.get("character_metrics", [])):
+                character_match = observation["character_metrics"][row_index]
+                if character_match.get("CharacterIndex") is not None:
+                    character_votes.append(
+                        (
+                            (
+                                int(character_match["CharacterIndex"]),
+                                str(character_match.get("Character", "")),
+                                str(character_match.get("CharacterMatchMethod", "")),
+                            ),
+                            max(1.0, float(character_match.get("CharacterMatchConfidence", 0.0))),
+                        )
+                    )
 
         player_name, name_confidence = weighted_vote(name_votes)
         detected_value, point_confidence = weighted_vote(point_votes)
+        character_vote, character_vote_confidence = weighted_vote(character_votes)
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
         if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
             if detected_value is None:
                 continue
+
+        character_index = None
+        character_name = ""
+        character_method = ""
+        if character_vote is not None:
+            character_index, character_name, character_method = character_vote
 
         rows.append(
             {
@@ -701,6 +821,10 @@ def build_consensus_rows(observations: List[Dict[str, object]], visible_rows: in
                 "NameConfidence": round(name_confidence * 100, 1),
                 "DetectedValue": detected_value,
                 "DigitConfidence": round(point_confidence * 100, 1),
+                "Character": character_name,
+                "CharacterIndex": character_index,
+                "CharacterMatchConfidence": round(character_vote_confidence * 100, 1),
+                "CharacterMatchMethod": character_method or "",
             }
         )
     return rows
@@ -725,6 +849,10 @@ def map_total_rows_to_race_rows(
                     "RacePosition": len(mapped_rows) + 1,
                     "PositionAfterRace": None,
                     "PlayerName": score_row["PlayerName"],
+                    "Character": score_row.get("Character", ""),
+                    "CharacterIndex": score_row.get("CharacterIndex"),
+                    "CharacterMatchConfidence": score_row.get("CharacterMatchConfidence", 0.0),
+                    "CharacterMatchMethod": score_row.get("CharacterMatchMethod", ""),
                     "DetectedRacePoints": score_row["DetectedValue"],
                     "DetectedTotalScore": None,
                     "NameConfidence": score_row["NameConfidence"],
@@ -744,7 +872,15 @@ def map_total_rows_to_race_rows(
                 continue
             similarity = 1.0 if normalized_score_name == normalized_total_name else weighted_similarity(score_row["PlayerName"], total_row["PlayerName"])
             confidence_floor = min(float(score_row["NameConfidence"]), float(total_row["NameConfidence"])) / 100.0
-            combined_score = (similarity * 0.8) + (confidence_floor * 0.2)
+            score_character = score_row.get("CharacterIndex")
+            total_character = total_row.get("CharacterIndex")
+            if score_character is not None and total_character is not None:
+                character_score = 1.0 if int(score_character) == int(total_character) else -0.25
+            elif score_character is None and total_character is None:
+                character_score = 0.0
+            else:
+                character_score = 0.1
+            combined_score = (similarity * 0.65) + (confidence_floor * 0.15) + (character_score * 0.20)
             if similarity >= 0.72 or normalized_score_name == normalized_total_name:
                 candidate_matches.append((combined_score, similarity, score_index, total_index))
 
@@ -771,11 +907,20 @@ def map_total_rows_to_race_rows(
 
         total_score = None
         total_digit_confidence = 0.0
+        mapped_character = score_row.get("Character", "")
+        mapped_character_index = score_row.get("CharacterIndex")
+        mapped_character_confidence = score_row.get("CharacterMatchConfidence", 0.0)
+        mapped_character_method = score_row.get("CharacterMatchMethod", "")
         total_row_position_coefficients = {f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)}
         if matched_total_index is not None:
             total_row = total_rows[matched_total_index]
             total_score = total_row["DetectedValue"]
             total_digit_confidence = float(total_row["DigitConfidence"])
+            if total_row.get("CharacterIndex") is not None:
+                mapped_character = total_row.get("Character", mapped_character)
+                mapped_character_index = total_row.get("CharacterIndex")
+                mapped_character_confidence = total_row.get("CharacterMatchConfidence", mapped_character_confidence)
+                mapped_character_method = total_row.get("CharacterMatchMethod", mapped_character_method)
             total_row_index = int(total_row.get("RowIndex", -1))
             if 0 <= total_row_index < len(total_row_metrics):
                 total_row_position_coefficients.update(
@@ -787,6 +932,10 @@ def map_total_rows_to_race_rows(
                 "RacePosition": len(mapped_rows) + 1,
                 "PositionAfterRace": (matched_total_index + 1) if matched_total_index is not None else None,
                 "PlayerName": score_row["PlayerName"],
+                "Character": mapped_character,
+                "CharacterIndex": mapped_character_index,
+                "CharacterMatchConfidence": mapped_character_confidence,
+                "CharacterMatchMethod": mapped_character_method,
                 "DetectedRacePoints": score_row["DetectedValue"],
                 "DetectedTotalScore": total_score,
                 "NameConfidence": score_row["NameConfidence"],
@@ -796,6 +945,52 @@ def map_total_rows_to_race_rows(
             }
         )
     return mapped_rows
+
+
+def select_race_score_recovery(
+    score_observations: List[Dict[str, object]],
+    *,
+    current_score_rows: int,
+    current_confidence: float,
+    total_score_rows: int,
+) -> Dict[str, object]:
+    """Try a slightly later RaceScore frame when the chosen frame is obscured by the black results bar."""
+    if not score_observations:
+        return {"used": False, "source": "", "count": current_score_rows}
+
+    suspicious = (
+        current_confidence < 60.0
+        or (total_score_rows and current_score_rows < total_score_rows)
+    )
+    if not suspicious:
+        return {"used": False, "source": "", "count": current_score_rows}
+
+    center_index = len(score_observations) // 2
+    candidate_indices = [index for index in range(center_index + 3, len(score_observations))]
+    if not candidate_indices:
+        candidate_indices = [index for index in range(center_index + 1, len(score_observations))]
+
+    best_candidate = None
+    for candidate_index in candidate_indices:
+        candidate_observation = score_observations[candidate_index]
+        candidate_count = int(candidate_observation.get("position_guided_visible_rows", 0))
+        candidate_strength = float(candidate_observation.get("template_row_confidence", 0.0))
+        if candidate_count <= 0:
+            continue
+        if best_candidate is None or (candidate_count, candidate_strength) > (best_candidate["count"], best_candidate["strength"]):
+            best_candidate = {
+                "used": candidate_count > current_score_rows or (
+                    candidate_count == current_score_rows and candidate_strength > (current_confidence / 100.0)
+                ),
+                "source": f"late_frame_plus_{candidate_index - center_index}",
+                "count": candidate_count,
+                "strength": candidate_strength,
+                "index": candidate_index,
+            }
+
+    if best_candidate and best_candidate["used"]:
+        return best_candidate
+    return {"used": False, "source": "", "count": current_score_rows}
 
 
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
@@ -835,12 +1030,26 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
     )
 
+    recovery = select_race_score_recovery(
+        score_observations,
+        current_score_rows=position_guided_visible_rows,
+        current_confidence=round(position_guided_row_count_confidence * 100, 1),
+        total_score_rows=total_position_guided_visible_rows,
+    )
+    if recovery["used"]:
+        position_guided_visible_rows = int(recovery["count"])
+        recovery_start_index = int(recovery["index"])
+        recovery_observations = score_observations[recovery_start_index:]
+        position_guided_row_count_confidence = max(position_guided_row_count_confidence, 0.85)
+    else:
+        recovery_observations = score_observations
+
     representative_score_observation = score_observations[len(score_observations) // 2] if score_observations else {}
     representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
 
     # Use the position-guided count as the official row count. The older OCR-only count
     # is still returned in debug data as a legacy reference.
-    score_rows = build_consensus_rows(score_observations, position_guided_visible_rows, "race_points")
+    score_rows = build_consensus_rows(recovery_observations, position_guided_visible_rows, "race_points")
     total_rows = build_consensus_rows(total_observations, total_position_guided_visible_rows, "total_points")
     rows = map_total_rows_to_race_rows(
         score_rows,
@@ -869,6 +1078,9 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "total_row_metrics_summary": representative_total_observation.get("row_metrics_summary", ""),
         "representative_score_observation": representative_score_observation,
         "representative_total_observation": representative_total_observation,
+        "race_score_recovery_used": bool(recovery["used"]),
+        "race_score_recovery_source": str(recovery.get("source", "")),
+        "race_score_recovery_count": int(recovery.get("count", position_guided_visible_rows)),
         "name_confidence": round((sum(name_confidences) / len(name_confidences)) * 100, 1) if name_confidences else 0.0,
         "digit_consensus": round((sum(digit_confidences) / len(digit_confidences)) * 100, 1) if digit_confidences else 0.0,
     }

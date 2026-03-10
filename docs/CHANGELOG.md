@@ -56,11 +56,17 @@ The format is intentionally simple and human-readable.
 - Internal extraction naming now prefers descriptive terms like `initial scan` instead of vague phase labels.
 - OCR output writes timestamped workbooks to `Output_Results/`
 - Track, cup, and character metadata now derive from a compact `reference_data/game_catalog.json` built from `database/firestore-export.json`.
+- User workbooks now include `Character` and `Position After Race`.
+- Debug workbooks now include explicit session rebase/reset flags, RaceScore recovery fields, identity labels, and character match details.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
 - OCR/export no longer failed when `main.py` was started from the wrong Python interpreter while `.venv` existed.
 - Several cross-platform path and setup issues affecting Windows, Linux, and macOS were cleaned up.
+- The first visible race in a partially recorded video can now rebase the running totals instead of causing mismatch cascades.
+- Later connection-reset races now keep the authoritative tournament totals running while clearly flagging the OCR reset rows.
+- RaceScore player counts now recover from later frames when the black results banner hides the last row.
+- Duplicate exact player names can now be split with character-aware identity tracking, producing stable names such as `Name_1` and `Name_2`.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.

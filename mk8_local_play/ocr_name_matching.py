@@ -45,212 +45,193 @@ def weighted_similarity(name1, name2):
     )
 
 
-def match_names(previous_names_with_indices, current_names):
-    """Map the current race names onto prior rows so the same player stays on one row."""
-    matches = {}
-    used_previous_names = set()
-    used_current_names = set()
-    exact_match_rows = set()
-
-    previous_names = [name for name, _ in previous_names_with_indices]
-
-    for curr_name in current_names:
-        if curr_name in previous_names:
-            idx = previous_names.index(curr_name)
-            row_idx = previous_names_with_indices[idx][1]
-            matches[curr_name] = (curr_name, row_idx)
-            used_previous_names.add(curr_name)
-            used_current_names.add(curr_name)
-            exact_match_rows.add(row_idx)
-
-    similarity_scores = []
-    for curr_name in current_names:
-        if curr_name in used_current_names:
-            continue
-        for prev_name, prev_idx in previous_names_with_indices:
-            if prev_name in used_previous_names or prev_idx in exact_match_rows:
-                continue
-            score = weighted_similarity(prev_name, curr_name)
-            similarity_scores.append((score, prev_name, curr_name, prev_idx))
-
-    similarity_scores.sort(reverse=True, key=lambda item: item[0])
-    for _score, prev_name, curr_name, prev_idx in similarity_scores:
-        if curr_name not in used_current_names and prev_name not in used_previous_names:
-            matches[curr_name] = (prev_name, prev_idx)
-            used_current_names.add(curr_name)
-            used_previous_names.add(prev_name)
-
-    remaining_current_names = [name for name in current_names if name not in used_current_names]
-    remaining_previous_names = [name for name, _idx in previous_names_with_indices if name not in used_previous_names]
-
-    for curr_name, prev_name in zip(remaining_current_names, remaining_previous_names):
-        prev_idx = previous_names.index(prev_name)
-        matches[curr_name] = (prev_name, prev_idx)
-
-    for curr_name in remaining_current_names[len(remaining_previous_names):]:
-        matches[curr_name] = (curr_name, None)
-
-    return matches
-
-
-def build_name_links(df, output_folder, write_debug_linking_excel=False):
-    """Build per-race-class row histories so later races can inherit stable player rows."""
-    name_links = defaultdict(list)
-    all_player_names_df = {}
-
-    for race_class, group in df.groupby("RaceClass"):
-        races = sorted(group["RaceIDNumber"].unique())
-        num_races = len(races)
-        max_players = group.groupby("RaceIDNumber").size().max()
-        player_names_df = pd.DataFrame(index=range(max_players), columns=range(num_races))
-
-        initial_race_id = races[0]
-        initial_names = group[group["RaceIDNumber"] == initial_race_id]["PlayerName"].tolist()
-        player_names_df[0] = initial_names + [None] * (len(player_names_df) - len(initial_names))
-
-        if num_races < 2:
-            single_race_df = group[["PlayerName", "RaceIDNumber"]].copy()
-            single_race_df.columns = ["PlayerName", 0]
-            single_race_df = single_race_df.set_index("PlayerName").T
-            all_player_names_df[race_class] = single_race_df
-            continue
-
-        for col_idx, race_id in enumerate(races[1:], start=1):
-            current_race_names = group[group["RaceIDNumber"] == race_id]["PlayerName"].tolist()
-            all_previous_names_with_indices = [
-                (player_names_df.at[row_idx, prev_col], row_idx)
-                for prev_col in range(col_idx)
-                for row_idx in range(max_players)
-                if pd.notna(player_names_df.at[row_idx, prev_col])
-            ]
-            matches = match_names(all_previous_names_with_indices, current_race_names)
-
-            used_rows_exact = set()
-            used_rows_similarity = set()
-
-            for curr_name in current_race_names:
-                if curr_name not in matches:
-                    continue
-                _matched_name, row_idx = matches[curr_name]
-                if row_idx is not None and row_idx not in used_rows_exact:
-                    player_names_df.at[row_idx, col_idx] = curr_name
-                    used_rows_exact.add(row_idx)
-
-            for curr_name in current_race_names:
-                if curr_name not in matches or curr_name in player_names_df.iloc[:, col_idx].dropna().values:
-                    continue
-                _matched_name, row_idx = matches[curr_name]
-                if row_idx is not None and row_idx not in used_rows_exact and row_idx not in used_rows_similarity:
-                    for candidate_row in range(max_players):
-                        if candidate_row not in used_rows_exact and candidate_row not in used_rows_similarity and pd.isna(player_names_df.at[candidate_row, col_idx]):
-                            player_names_df.at[candidate_row, col_idx] = curr_name
-                            used_rows_similarity.add(candidate_row)
-                            break
-
-            used_names = set(player_names_df.iloc[:, col_idx].dropna().values)
-            for name in current_race_names:
-                if name in used_names:
-                    continue
-                for candidate_row in range(max_players):
-                    if candidate_row not in used_rows_exact and candidate_row not in used_rows_similarity and pd.isna(player_names_df.at[candidate_row, col_idx]):
-                        player_names_df.at[candidate_row, col_idx] = name
-                        used_names.add(name)
-                        used_rows_similarity.add(candidate_row)
-                        break
-
-        for idx in range(max_players):
-            name_link = player_names_df.loc[idx].dropna().tolist()
-            if name_link:
-                most_common_name = Counter(name_link).most_common(1)[0][0]
-                for name in name_link:
-                    name_links[name].append(most_common_name)
-
-        if write_debug_linking_excel:
-            output_path = f"{output_folder}/linking_{race_class}.xlsx"
-            player_names_df.to_excel(output_path, index=False)
-
-        all_player_names_df[race_class] = player_names_df
-
-    return name_links, all_player_names_df
-
-
 def normalize_name_for_vote(name: str) -> str:
     text = "" if name is None else str(name)
     return re.sub(r"\s+", " ", text.strip())
 
 
-def choose_canonical_name(name_link, group):
-    """Choose the final spelling for one linked player row using all OCR evidence."""
-    candidates = [normalize_name_for_vote(name) for name in name_link if normalize_name_for_vote(name)]
+def choose_canonical_name(name_history):
+    """Choose the cleanest spelling seen for one tracked identity."""
+    candidates = [normalize_name_for_vote(name) for name in name_history if normalize_name_for_vote(name)]
     if not candidates:
         return ""
 
-    candidate_counts = Counter(candidates)
-    confidence_lookup = defaultdict(list)
-    for candidate in candidates:
-        matching_rows = group[group["PlayerName"] == candidate]
-        if not matching_rows.empty:
-            confidence_lookup[candidate].extend(matching_rows["NameConfidence"].tolist())
-
+    counts = Counter(candidates)
     best_name = candidates[0]
     best_score = float("-inf")
-    for candidate in sorted(candidate_counts):
+    for candidate, count in counts.items():
+        quality = len(set(re.sub(r"[^a-zA-Z0-9]", "", candidate)))
         support_score = 0.0
         for observed_name in candidates:
-            observed_confidences = confidence_lookup.get(observed_name, [])
-            average_confidence = sum(observed_confidences) / max(1, len(observed_confidences))
-            weight = 1.0 + average_confidence / 100.0
-            support_score += weighted_similarity(candidate, observed_name) * weight
-        quality = len(set(re.sub(r"[^a-zA-Z0-9]", "", candidate)))
-        confidence_bonus = sum(confidence_lookup.get(candidate, [0])) / max(1, len(confidence_lookup.get(candidate, [])))
-        score = support_score + candidate_counts[candidate] * 2.5 + quality * 0.3 + confidence_bonus / 100.0
+            support_score += weighted_similarity(candidate, observed_name)
+        score = (count * 3.0) + support_score + (quality * 0.25)
         if score > best_score:
             best_score = score
             best_name = candidate
     return best_name
 
 
-def standardize_names(player_names_df, group):
-    """Pick one canonical spelling per linked row."""
-    name_mapping = {}
-    standardized_names = {}
+def _character_similarity(identity_character_index, row_character_index):
+    if pd.isna(identity_character_index) and pd.isna(row_character_index):
+        return 0.0
+    if pd.isna(identity_character_index) or pd.isna(row_character_index):
+        return 0.05
+    return 1.0 if int(identity_character_index) == int(row_character_index) else -0.4
 
-    for idx in range(len(player_names_df)):
-        name_link = player_names_df.loc[idx].dropna().tolist()
-        if not name_link:
+
+def _detected_total_similarity(identity_last_total, row_detected_total):
+    if pd.isna(identity_last_total) or pd.isna(row_detected_total):
+        return 0.0
+    total_gap = abs(int(row_detected_total) - int(identity_last_total))
+    if total_gap <= 2:
+        return 1.0
+    if total_gap <= 8:
+        return 0.7
+    if total_gap <= 20:
+        return 0.3
+    return -0.2
+
+
+def _build_match_candidates(identity_state, race_rows):
+    candidates = []
+    for row_position, (row_index, row) in enumerate(race_rows, start=1):
+        row_name = str(row["PlayerName"] or "")
+        row_character_index = row.get("CharacterIndex")
+        row_detected_total = row.get("DetectedTotalScore")
+        for identity_id, identity in identity_state.items():
+            name_similarity = weighted_similarity(identity["canonical_name"], row_name)
+            character_similarity = _character_similarity(identity["character_index"], row_character_index)
+            total_similarity = _detected_total_similarity(identity["last_detected_total"], row_detected_total)
+            combined_score = (name_similarity * 0.55) + (character_similarity * 0.30) + (total_similarity * 0.15)
+            if name_similarity >= 0.72 or preprocess_name(identity["canonical_name"]) == preprocess_name(row_name):
+                candidates.append((combined_score, name_similarity, identity_id, row_position, row_index))
+    return sorted(candidates, reverse=True)
+
+
+def _next_identity_id(identity_state):
+    return max(identity_state.keys(), default=0) + 1
+
+
+def _assign_identity_labels(identity_state):
+    identities_by_base_name = defaultdict(list)
+    for identity_id, identity in identity_state.items():
+        base_name = choose_canonical_name(identity["name_history"])
+        identity["canonical_name"] = base_name
+        identities_by_base_name[base_name].append(identity_id)
+
+    identity_labels = {}
+    for base_name, identity_ids in identities_by_base_name.items():
+        if len(identity_ids) == 1:
+            identity_labels[identity_ids[0]] = base_name
             continue
-        canonical_name = choose_canonical_name(name_link, group)
-        for name in name_link:
-            name_mapping[name] = (canonical_name, idx)
-            standardized_names[idx] = canonical_name
+        ordered_identities = sorted(
+            identity_ids,
+            key=lambda identity_id: (
+                int(identity_state[identity_id]["character_index"])
+                if pd.notna(identity_state[identity_id]["character_index"]) else 9999,
+                int(identity_state[identity_id]["first_race"]),
+                identity_id,
+            ),
+        )
+        for suffix, identity_id in enumerate(ordered_identities, start=1):
+            identity_labels[identity_id] = f"{base_name}_{suffix}"
+    return identity_labels
 
-    return name_mapping, standardized_names
+
+def _write_identity_debug_excel(output_folder, race_class, identity_rows):
+    debug_df = pd.DataFrame(identity_rows)
+    debug_df.to_excel(f"{output_folder}/identity_linking_{race_class}.xlsx", index=False)
 
 
 def standardize_player_names(df, output_folder, write_debug_linking_excel=False):
-    """Rewrite noisy OCR player names into stable names within each video/race class."""
-    standardized_names = pd.DataFrame()
-    standardized_names_dict = {}
-    _name_links, all_player_names_df = build_name_links(df, output_folder, write_debug_linking_excel)
+    """Assign stable player identities per video using name, character, and total-score hints."""
+    standardized_frames = []
 
-    for race_class, player_names_df in all_player_names_df.items():
-        if player_names_df.shape[1] < 2:
-            group = df[df["RaceClass"] == race_class].copy()
-            group.loc[:, "FixPlayerName"] = group["PlayerName"]
-            standardized_names = pd.concat([standardized_names, group], ignore_index=True)
-            continue
+    for race_class, group in df.groupby("RaceClass", sort=False):
+        group = group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable").copy()
+        identity_state = {}
+        row_identity_assignments = {}
+        identity_debug_rows = []
 
-        group = df[df["RaceClass"] == race_class].copy()
-        local_name_mapping, local_standardized_names_dict = standardize_names(player_names_df, group)
-        standardized_names_dict.update(local_standardized_names_dict)
+        for race_id, race_rows_df in group.groupby("RaceIDNumber", sort=True):
+            race_rows = list(race_rows_df.iterrows())
+            candidates = _build_match_candidates(identity_state, race_rows)
+            used_identity_ids = set()
+            used_row_indices = set()
 
-        def get_standardized_name(row):
-            player_name = row["PlayerName"]
-            if player_name in local_name_mapping:
-                return standardized_names_dict[local_name_mapping[player_name][1]]
-            return player_name
+            for combined_score, name_similarity, identity_id, _row_position, row_index in candidates:
+                if identity_id in used_identity_ids or row_index in used_row_indices:
+                    continue
+                row = group.loc[row_index]
+                resolution_method = "name_only"
+                if pd.notna(row.get("CharacterIndex")) and pd.notna(identity_state[identity_id]["character_index"]):
+                    resolution_method = "name+character"
+                elif pd.notna(row.get("DetectedTotalScore")) and pd.notna(identity_state[identity_id]["last_detected_total"]):
+                    resolution_method = "name+total_hint"
+                row_identity_assignments[row_index] = {
+                    "identity_id": identity_id,
+                    "resolution_method": resolution_method,
+                    "match_score": round(float(combined_score), 3),
+                }
+                used_identity_ids.add(identity_id)
+                used_row_indices.add(row_index)
 
-        group.loc[:, "FixPlayerName"] = group.apply(get_standardized_name, axis=1)
-        standardized_names = pd.concat([standardized_names, group], ignore_index=True)
+            for row_index, row in race_rows:
+                if row_index in row_identity_assignments:
+                    identity_id = row_identity_assignments[row_index]["identity_id"]
+                else:
+                    identity_id = _next_identity_id(identity_state)
+                    row_identity_assignments[row_index] = {
+                        "identity_id": identity_id,
+                        "resolution_method": "new_identity",
+                        "match_score": None,
+                    }
+                    identity_state[identity_id] = {
+                        "canonical_name": str(row["PlayerName"] or ""),
+                        "name_history": [],
+                        "character_index": row.get("CharacterIndex"),
+                        "first_race": int(race_id),
+                        "last_detected_total": row.get("DetectedTotalScore"),
+                    }
 
-    return standardized_names
+                identity = identity_state.setdefault(
+                    identity_id,
+                    {
+                        "canonical_name": str(row["PlayerName"] or ""),
+                        "name_history": [],
+                        "character_index": row.get("CharacterIndex"),
+                        "first_race": int(race_id),
+                        "last_detected_total": row.get("DetectedTotalScore"),
+                    },
+                )
+                identity["name_history"].append(str(row["PlayerName"] or ""))
+                if pd.notna(row.get("CharacterIndex")):
+                    identity["character_index"] = row.get("CharacterIndex")
+                if pd.notna(row.get("DetectedTotalScore")):
+                    identity["last_detected_total"] = row.get("DetectedTotalScore")
+                identity["canonical_name"] = choose_canonical_name(identity["name_history"])
+
+                identity_debug_rows.append(
+                    {
+                        "Race": int(race_id),
+                        "Race Position": int(row["RacePosition"]),
+                        "Raw Player OCR": str(row["PlayerName"] or ""),
+                        "Character": str(row.get("Character") or ""),
+                        "Character Index": row.get("CharacterIndex"),
+                        "Detected Total Score": row.get("DetectedTotalScore"),
+                        "Identity ID": identity_id,
+                        "Resolution Method": row_identity_assignments[row_index]["resolution_method"],
+                        "Match Score": row_identity_assignments[row_index]["match_score"],
+                    }
+                )
+
+        identity_labels = _assign_identity_labels(identity_state)
+        group["FixPlayerName"] = group.index.map(lambda idx: identity_labels[row_identity_assignments[idx]["identity_id"]])
+        group["IdentityLabel"] = group["FixPlayerName"]
+        group["IdentityResolutionMethod"] = group.index.map(lambda idx: row_identity_assignments[idx]["resolution_method"])
+        standardized_frames.append(group)
+
+        if write_debug_linking_excel:
+            _write_identity_debug_excel(output_folder, race_class, identity_debug_rows)
+
+    return pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()

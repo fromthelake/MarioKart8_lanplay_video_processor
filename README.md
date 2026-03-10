@@ -61,7 +61,11 @@ The processing pipeline has two major stages.
 - reads the exported screenshots
 - combines nearby frames to reduce OCR mistakes
 - matches fuzzy player names across races
+- splits duplicate exact names with character-aware identity tracking when needed
 - checks race points and running totals
+- rebases the first visible race when earlier footage is missing
+- keeps tournament totals running through later connection resets while flagging the affected rows
+- rescues RaceScore player counts from a slightly later frame when the black results banner hides the bottom row
 - resolves tracks, cups, and future character metadata from one compact game catalog
 - writes an Excel workbook
 
@@ -265,6 +269,7 @@ Less reliable inputs:
 
 Main output:
 - the newest timestamped workbook in `Output_Results/*_Tournament_Results.xlsx`
+- includes the resolved `Character` and `Position After Race` columns
 
 Additional outputs:
 - timestamped debug workbooks in `Output_Results/Debug/*_Tournament_Results_Debug.xlsx`
@@ -397,6 +402,11 @@ Check:
 - the video layout matches the expected local-play format
 - overlays are not covering names or points
 - the extracted screenshots in `Output_Results/Frames/` look correct
+
+Validation notes:
+- if the first recorded race is already mid-session, the tool now marks that race as a session rebase and uses its OCR totals as the baseline for later races
+- if totals later drop together because of a connection reset, the tool keeps the tournament totals running and flags those rows instead of resetting the standings
+- if two players share the same name, the tool now tries to split them with character-icon matching and outputs names such as `Pieter_1` and `Pieter_2`
 
 ## Extra Documentation
 
