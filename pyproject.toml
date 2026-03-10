@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mario-kart-local-play-video-processor"
+version = "0.1.0"
+description = "Extract Mario Kart 8 local-play result screens from videos and export tournament results to Excel."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Project Maintainer" }
+]
+dependencies = [
+  "et_xmlfile==2.0.0",
+  "jellyfish==1.1.3",
+  "numpy==2.2.1",
+  "opencv-python==4.10.0.84",
+  "openpyxl==3.1.5",
+  "packaging==24.2",
+  "pandas==2.2.3",
+  "pillow==11.0.0",
+  "psutil==7.2.1",
+  "pytesseract==0.3.10",
+  "python-dateutil==2.9.0.post0",
+  "pytz==2024.2",
+  "six==1.17.0",
+  "textdistance==4.6.2",
+  "tzdata==2024.2",
+]
+
+[project.scripts]
+mk8-local-play = "main:main"
+mk8-local-results = "main:main"
+
+[tool.setuptools]
+py-modules = [
+  "main",
+  "data_paths",
+  "extract_frames",
+  "extract_initial_scan",
+  "extract_common",
+  "extract_score_screen_selection",
+  "extract_video_io",
+  "extract_text",
+  "ocr_common",
+  "ocr_name_matching",
+  "ocr_scoreboard_consensus",
+  "ocr_session_validation",
+  "ocr_export",
+  "app_runtime",
+  "console_logging",
+  "track_metadata",
+]
+
+[tool.setuptools.packages.find]
+include = ["mk8_local_play_data"]
+
+[tool.setuptools.package-data]
+mk8_local_play_data = [
+  "track_metadata.json",
+  "assets/gui/*.jpg",
+  "assets/templates/*.png",
+]

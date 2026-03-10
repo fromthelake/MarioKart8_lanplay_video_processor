@@ -30,10 +30,10 @@ try {
     Remove-Item "Output_Results\Tournament_Results.xlsx" -Force -ErrorAction SilentlyContinue
     Remove-Item "Output_Results\~`$Tournament_Results.xlsx" -Force -ErrorAction SilentlyContinue
 
-    & $python Main_RunMe.py --check
+    & $python main.py --check
 
-    $extract = Measure-Command { & $python Main_RunMe.py --extract --video $VideoName }
-    $ocr = Measure-Command { & $python Main_RunMe.py --ocr --video $VideoName }
+    $extract = Measure-Command { & $python main.py --extract --video $VideoName }
+    $ocr = Measure-Command { & $python main.py --ocr --video $VideoName }
 
     & $python tools\validate_outputs.py --baseline-dir $BaselineDir
 

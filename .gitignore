@@ -1,4 +1,5 @@
 .venv/
+.codex_tmp/
 __pycache__/
 .idea/
 app_config.json
@@ -7,6 +8,7 @@ file_list.txt
 # Local input videos, except the small demo clip kept in the repo
 Input_Videos/*
 !Input_Videos/Demo_CaptureCard_Race.mp4
+!Input_Videos/.gitkeep
 
 # Generated outputs
 Output_Results/Frames/*
@@ -16,13 +18,18 @@ Output_Results/Debug/*
 Output_Results/Debug/Score_Frames/*
 !Output_Results/Debug/Score_Frames/.gitkeep
 Output_Results/Tournament_Results.xlsx
+Output_Results/*_Tournament_Results.xlsx
+Output_Results/_temp_*.xlsx
 
 # Local debug artifacts
 Output_Results/Debug/debug_max_val.csv
+Output_Results/Debug/exported_frame_metadata.csv
 Output_Results/Debug/linking_*.xlsx
+ocr_profile_run.txt
 
 # Local benchmark baselines
 baselines/quick/
-baselines/2026-03-08_current_output_baseline/Frames/
-baselines/2026-03-08_current_output_baseline/Debug/
-baselines/2026-03-08_current_output_baseline/Tournament_Results.xlsx
+baselines/local/
+baselines/*_current/
+baselines/*_baseline/
+!baselines/.gitkeep

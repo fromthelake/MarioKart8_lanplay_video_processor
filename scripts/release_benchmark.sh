@@ -7,8 +7,11 @@ RACE_CLASS="${3:-Divisie_1}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-PYTHON_BIN="$PROJECT_ROOT/.venv/Scripts/python.exe"
-if [[ ! -x "$PYTHON_BIN" ]]; then
+if [[ -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
+  PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+elif [[ -x "$PROJECT_ROOT/.venv/Scripts/python.exe" ]]; then
+  PYTHON_BIN="$PROJECT_ROOT/.venv/Scripts/python.exe"
+else
   PYTHON_BIN="${PYTHON_BIN_FALLBACK:-python3}"
 fi
 
@@ -33,14 +36,14 @@ rm -f "$PROJECT_ROOT"/Output_Results/*_Tournament_Results.xlsx
 rm -f "$PROJECT_ROOT/Output_Results/Tournament_Results.xlsx"
 rm -f "$PROJECT_ROOT/Output_Results/~\$Tournament_Results.xlsx"
 
-"$PYTHON_BIN" Main_RunMe.py --check
+"$PYTHON_BIN" main.py --check
 
 extract_start="$(date +%s.%N)"
-"$PYTHON_BIN" Main_RunMe.py --extract --video "$VIDEO_NAME"
+"$PYTHON_BIN" main.py --extract --video "$VIDEO_NAME"
 extract_end="$(date +%s.%N)"
 
 ocr_start="$(date +%s.%N)"
-"$PYTHON_BIN" Main_RunMe.py --ocr --video "$VIDEO_NAME"
+"$PYTHON_BIN" main.py --ocr --video "$VIDEO_NAME"
 ocr_end="$(date +%s.%N)"
 
 "$PYTHON_BIN" tools/validate_outputs.py --baseline-dir "$BASELINE_DIR" --prefix "$RACE_CLASS" --race-class "$RACE_CLASS"

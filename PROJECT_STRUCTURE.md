@@ -1,0 +1,128 @@
+# Project Structure
+
+This document explains the code layout in human terms.
+
+## Big Picture
+
+The project has two main phases:
+
+1. Find the right screenshots inside the video
+2. Read those screenshots and turn them into structured results
+
+## Entry Points
+
+- `main.py`
+  - main CLI and GUI entrypoint
+  - launches extraction, OCR, merge, runtime checks, and profile runs
+- `Main_RunMe.py`
+  - compatibility wrapper for the old filename
+
+## Extraction Modules
+
+- `extract_frames.py`
+  - extraction orchestrator
+  - loads videos, scales the image, coordinates detection, and writes extracted frames
+- `extract_initial_scan.py`
+  - fast first scan over the video
+  - looks for three anchor screens:
+    - score screen
+    - track-name screen
+    - race-number screen
+- `extract_score_screen_selection.py`
+  - takes rough score detections and chooses the best race-score and total-score frames
+- `extract_video_io.py`
+  - shared helpers for frame reads, seeks, and export metadata
+- `extract_common.py`
+  - shared extraction utilities such as scaling, cropping, template matching, and GPU/runtime helpers
+
+Compatibility wrappers:
+- `Extract_Frames_From_Video.py`
+
+## OCR Modules
+
+- `extract_text.py`
+  - OCR/export orchestrator
+  - groups screenshots into races and coordinates the OCR pipeline
+- `ocr_scoreboard_consensus.py`
+  - reads several nearby score frames
+  - combines them into one best guess
+  - maps race-score rows to total-score rows
+- `ocr_name_matching.py`
+  - fuzzy matching for noisy OCR player names across races
+  - chooses a canonical player spelling for each row history
+- `ocr_session_validation.py`
+  - computes running totals
+  - detects likely new sessions inside one source video
+  - flags rows that need manual review
+- `ocr_export.py`
+  - writes the final workbook
+  - builds the user-facing OCR completion summary
+- `ocr_common.py`
+  - shared OCR frame and metadata helpers
+
+Compatibility wrappers:
+- `Extract_Text_From_Frames.py`
+
+## Runtime And Configuration
+
+- `app_runtime.py`
+  - loads `app_config.json`
+  - resolves Tesseract
+  - checks runtime dependencies
+  - detects OpenCV GPU/OpenCL availability
+- `app_config.example.json`
+  - example config for local overrides
+- `console_logging.py`
+  - consistent operator-style logging and resource reporting
+
+## Track Metadata
+
+- `track_metadata.json`
+  - source of truth for track IDs and cup names
+- `track_metadata.py`
+  - small loader around the JSON file
+- `TrackNames/`
+  - reference assets kept in-repo for manual checking and hobby use
+
+## Assets And User Data
+
+- `assets/templates/`
+  - detection templates used during extraction
+- `assets/gui/`
+  - GUI background image
+- `Input_Videos/`
+  - user-provided source videos
+- `Output_Results/Frames/`
+  - extracted screenshots
+- `Output_Results/Debug/`
+  - optional debug output
+- `Output_Results/Tournament_Results.xlsx`
+  - latest stable Excel output
+
+## Scripts And Tools
+
+- `scripts/setup_windows.ps1`
+  - first-time Windows setup
+- `scripts/setup_unix.sh`
+  - first-time Linux/macOS setup
+- `scripts/quick_benchmark.*`
+  - lightweight benchmarking helpers
+- `scripts/release_benchmark.*`
+  - fuller benchmark flow for optimization passes
+- `tools/validate_outputs.py`
+  - compare a current run against a saved baseline
+
+## Naming Rules Used In The Codebase
+
+The project now tries to follow these rules:
+
+- file names describe what the file does
+- module names describe a domain, not an implementation accident
+- terms like `initial scan` are preferred over vague labels like `pass1`
+- comments explain intent and tradeoffs, not obvious syntax
+
+That means a junior developer should be able to answer:
+- what phase is this file responsible for
+- what inputs it reads
+- what outputs it produces
+- why the logic exists

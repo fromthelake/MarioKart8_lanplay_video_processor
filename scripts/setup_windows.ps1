@@ -6,24 +6,41 @@ $ErrorActionPreference = "Stop"
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $projectRoot
 
+function Resolve-PythonBootstrap {
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        return @("py", "-3")
+    }
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return @("python")
+    }
+    throw "No Python launcher was found. Install Python 3.10+ first."
+}
+
 if ($CreateVenv -or -not (Test-Path ".venv\Scripts\python.exe")) {
-    py -3 -m venv .venv
+    $bootstrap = Resolve-PythonBootstrap
+    if ($bootstrap.Length -gt 1) {
+        & $bootstrap[0] $bootstrap[1] -m venv .venv
+    } else {
+        & $bootstrap[0] -m venv .venv
+    }
 }
 
 $python = ".\.venv\Scripts\python.exe"
+Write-Host "Using Python interpreter: $python"
 & $python -m pip install --upgrade pip
-& $python -m pip install -r requirements.txt
+& $python -m pip install -e .
 
 if (-not (Test-Path "app_config.json")) {
     Copy-Item "app_config.example.json" "app_config.json"
     Write-Host "Created app_config.json from app_config.example.json"
 }
 
-& $python Main_RunMe.py --check
+& ".\.venv\Scripts\mk8-local-play.exe" --check
 
 Write-Host ""
 Write-Host "Setup finished."
 Write-Host "Next steps:"
 Write-Host "1. Install Tesseract if --check reports it missing."
 Write-Host "2. Put videos into Input_Videos."
-Write-Host "3. Run .\.venv\Scripts\python.exe Main_RunMe.py --all"
+Write-Host "3. Run .\.venv\Scripts\mk8-local-play.exe --all"
+Write-Host "   or run .\.venv\Scripts\python.exe main.py --all"

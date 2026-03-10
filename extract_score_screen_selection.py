@@ -1,0 +1,229 @@
+import os
+import time
+
+import cv2
+import numpy as np
+
+from extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, crop_to_gray_and_upscale_image, match_template, preprocess_roi
+from extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
+
+
+def enhance_export_frame(upscaled_image, scale_x, scale_y):
+    if scale_x > 1.3 and scale_y >= 1.3:
+        from PIL import Image, ImageEnhance
+
+        if isinstance(upscaled_image, np.ndarray):
+            upscaled_image = Image.fromarray(upscaled_image)
+        contrast_enhancer = ImageEnhance.Contrast(upscaled_image)
+        high_contrast_image = contrast_enhancer.enhance(1.70)
+        sharpness_enhancer = ImageEnhance.Sharpness(high_contrast_image)
+        sharpened_image = sharpness_enhancer.enhance(1.23)
+        return np.array(sharpened_image)
+    return upscaled_image
+
+
+def capture_export_frame(capture, target_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats):
+    seek_to_frame(capture, target_frame, stats)
+    ret, frame = read_video_frame(capture, stats)
+    if not ret:
+        return None, None
+    actual_frame = actual_frame_after_read(capture)
+    upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
+    return actual_frame, enhance_export_frame(upscaled_image, scale_x, scale_y)
+
+
+def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_roi, frame_to_timecode):
+    """Analyze one score candidate window and decide which frames to export."""
+    video_path = task["video_path"]
+    frame_number = task["frame_number"]
+    fps = task["fps"]
+    templates = task["templates"]
+    left = task["left"]
+    top = task["top"]
+    crop_width = task["crop_width"]
+    crop_height = task["crop_height"]
+    scale_x = task["scale_x"]
+    scale_y = task["scale_y"]
+
+    start_frame = frame_number - int(3 * fps)
+    end_frame = frame_number + int(13 * fps)
+    race_score_frame = 0
+    total_score_frame = 0
+    player12 = 0
+    check_player_12 = 0
+    debug_rows = []
+    stats = {}
+    from collections import defaultdict
+
+    stats = defaultdict(float)
+
+    local_cap = cv2.VideoCapture(video_path)
+    if not local_cap.isOpened():
+        return {"candidate": task, "race_score_frame": 0, "total_score_frame": 0, "debug_rows": [], "stats": stats}
+
+    detail_frame_number = start_frame
+    seek_to_frame(local_cap, detail_frame_number, stats)
+    template_binary, alpha_mask = templates[0]
+
+    while detail_frame_number < end_frame:
+        ret, frame = read_video_frame(local_cap, stats)
+        if not ret:
+            break
+
+        frame_prepare_start = time.perf_counter()
+        gray_image, crop_upscale_time, grayscale_time = crop_to_gray_and_upscale_image(
+            frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+        )
+        stats["score_detail_crop_upscale_s"] += crop_upscale_time
+        stats["score_detail_grayscale_s"] += grayscale_time
+
+        stage_start = time.perf_counter()
+        roi_x, roi_y, roi_width, roi_height = scoreboard_points_roi
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        add_timing(stats, "score_detail_score_roi_extract_s", stage_start)
+
+        stage_start = time.perf_counter()
+        processed_roi = preprocess_roi(roi, 0)
+        add_timing(stats, "score_detail_score_preprocess_s", stage_start)
+        add_timing(stats, "score_detail_frame_prepare_s", frame_prepare_start)
+
+        black_pixel_percentage = np.mean(processed_roi == 0)
+        if black_pixel_percentage >= 0.97:
+            detail_frame_number += 1
+            timecode = frame_to_timecode(detail_frame_number, fps)
+            debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, 0, timecode])
+            if race_score_frame != 0:
+                total_score_frame = detail_frame_number - int(2.7 * fps)
+                break
+            continue
+
+        stage_start = time.perf_counter()
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        add_timing(stats, "score_detail_match_score_s", stage_start)
+        timecode = frame_to_timecode(detail_frame_number, fps)
+        debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, max_val, timecode])
+
+        if max_val > 0.3 and not np.isinf(max_val) and race_score_frame == 0:
+            race_score_frame = detail_frame_number + int(0.6 * fps)
+            check_player_12 = 1
+            continue
+
+        if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
+            stage_start = time.perf_counter()
+            roi_x2, roi_y2, roi_width2, roi_height2 = twelfth_place_check_roi
+            roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
+            add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
+
+            stage_start = time.perf_counter()
+            processed_roi2 = preprocess_roi(roi2, 0)
+            add_timing(stats, "score_detail_12th_preprocess_s", stage_start)
+            template_binary2, alpha_mask2 = templates[3]
+
+            stage_start = time.perf_counter()
+            max_val2 = match_template(processed_roi2, template_binary2, alpha_mask2)
+            add_timing(stats, "score_detail_match_12th_s", stage_start)
+
+            if max_val2 > 0.4 and not np.isinf(max_val2):
+                player12 = 1
+
+            if player12 == 1 and max_val2 < 0.1:
+                race_score_frame = detail_frame_number + int(16)
+                detail_frame_number += int(3.9 * fps)
+                seek_to_frame(local_cap, detail_frame_number, stats)
+                check_player_12 = 2
+                continue
+
+        if max_val <= 0 and race_score_frame != 0:
+            total_score_frame = detail_frame_number - int(2.7 * fps)
+            break
+
+        detail_frame_number += 1
+
+    race_score_image = None
+    total_score_image = None
+    actual_race_score_frame = None
+    actual_total_score_frame = None
+    race_consensus_frames = []
+    total_consensus_frames = []
+    if race_score_frame > 0 and total_score_frame > 0:
+        export_stage_start = time.perf_counter()
+        actual_race_score_frame, race_score_image = capture_export_frame(
+            local_cap, race_score_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+        )
+        if actual_race_score_frame is not None:
+            race_consensus_frames = collect_consensus_frames_from_capture(
+                local_cap, actual_race_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"]
+            )
+        actual_total_score_frame, total_score_image = capture_export_frame(
+            local_cap, total_score_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+        )
+        if actual_total_score_frame is not None:
+            total_consensus_frames = collect_consensus_frames_from_capture(
+                local_cap, actual_total_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"]
+            )
+        add_timing(stats, "output_frame_capture_s", export_stage_start)
+
+    local_cap.release()
+    return {
+        "candidate": task,
+        "race_score_frame": race_score_frame,
+        "total_score_frame": total_score_frame,
+        "actual_race_score_frame": actual_race_score_frame,
+        "actual_total_score_frame": actual_total_score_frame,
+        "race_score_image": race_score_image,
+        "total_score_image": total_score_image,
+        "race_consensus_frames": race_consensus_frames,
+        "total_consensus_frames": total_consensus_frames,
+        "debug_rows": debug_rows,
+        "stats": stats,
+    }
+
+
+def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop_width, crop_height, consensus_frame_count):
+    """Collect neighbouring upscaled frames for OCR voting from an open capture."""
+    radius = max(0, consensus_frame_count // 2)
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    bundled_frames = []
+    start_frame = max(0, center_frame - radius)
+    end_frame = min(total_frames, center_frame + radius + 1)
+    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    for _frame_number in range(start_frame, end_frame):
+        ret, frame = capture.read()
+        if not ret:
+            continue
+        bundled_frames.append(crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT))
+    return bundled_frames
+
+
+def save_score_frames(video_path, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
+                      actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
+                      total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode):
+    """Persist the chosen race-score and total-score screenshots for one race."""
+    if race_score_image is None or total_score_image is None:
+        return False
+    script_dir = os.path.dirname(__file__)
+    output_folder = os.path.join(script_dir, 'Output_Results', 'Frames')
+    os.makedirs(output_folder, exist_ok=True)
+    frame_filename = os.path.join(
+        output_folder,
+        f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+2RaceScore.png"
+    )
+    cv2.imwrite(frame_filename, race_score_image)
+    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    if race_consensus_frames:
+        consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = list(race_consensus_frames)
+    log_exported_frame(
+        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode
+    )
+
+    frame_filename = os.path.join(
+        output_folder,
+        f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+3TotalScore.png"
+    )
+    cv2.imwrite(frame_filename, total_score_image)
+    if total_consensus_frames:
+        consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = list(total_consensus_frames)
+    log_exported_frame(
+        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode
+    )
+    return True

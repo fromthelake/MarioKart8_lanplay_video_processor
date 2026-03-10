@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
+from data_paths import resolve_track_metadata_file
 
 
 @dataclass(frozen=True)
@@ -17,8 +18,7 @@ class TrackMetadata:
 
 
 def load_track_metadata(base_dir: Path | None = None) -> List[TrackMetadata]:
-    base_dir = Path(base_dir or Path(__file__).resolve().parent)
-    metadata_path = base_dir / "track_metadata.json"
+    metadata_path = Path(base_dir) / "track_metadata.json" if base_dir else resolve_track_metadata_file()
     with metadata_path.open("r", encoding="utf-8") as handle:
         raw_data = json.load(handle)
     return [
