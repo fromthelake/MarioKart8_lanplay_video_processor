@@ -666,7 +666,20 @@ def scale_pixel_positions(pixels, scale_factor):
 def parse_detected_int(value: str) -> int | None:
     if value is None:
         return None
-    stripped = re.sub(r"[^0-9]", "", str(value))
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        if np.isnan(value):
+            return None
+        return int(round(float(value)))
+
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    if re.fullmatch(r"[+-]?\d+(?:\.0+)?", text):
+        return int(float(text))
+
+    stripped = re.sub(r"[^0-9]", "", text)
     if not stripped:
         return None
     return int(stripped)

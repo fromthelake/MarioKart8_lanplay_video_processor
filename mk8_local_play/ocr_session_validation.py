@@ -209,7 +209,11 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 session_new_total = prepared_row["session_new_total"]
                 detected_race = prepared_row["detected_race"]
                 detected_total = remapped_totals_by_index.get(index, prepared_row["detected_total"])
-                review_reasons = [reason for reason in str(row["ReviewReason"]).split(";") if reason]
+                existing_review_reason = row["ReviewReason"]
+                if pd.isna(existing_review_reason):
+                    review_reasons = []
+                else:
+                    review_reasons = [reason for reason in str(existing_review_reason).split(";") if reason and reason.lower() != "nan"]
                 score_status = "computed_only"
 
                 if session_rebased:
