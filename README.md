@@ -114,7 +114,7 @@ These scripts:
 - create `.venv` if needed
 - install the project in editable mode with its dependencies
 - create `app_config.json` from `app_config.example.json` if needed
-- run `main.py --check`
+- run the installed command with `--check`
 
 ### 3. Install Tesseract OCR
 
@@ -157,11 +157,27 @@ Place your recordings in:
 
 ### Run the full pipeline
 
+Windows:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --all
+```
+
+Linux/macOS:
+
 ```bash
 .venv/bin/mk8-local-play --all
 ```
 
 ### Run only extraction
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --extract
+```
+
+Linux/macOS:
 
 ```bash
 .venv/bin/mk8-local-play --extract
@@ -169,11 +185,27 @@ Place your recordings in:
 
 ### Run only OCR/export
 
+Windows:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --ocr
+```
+
+Linux/macOS:
+
 ```bash
 .venv/bin/mk8-local-play --ocr
 ```
 
 ### Run only one video
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --all --video Demo_CaptureCard_Race.mp4
+```
+
+Linux/macOS:
 
 ```bash
 .venv/bin/mk8-local-play --all --video Demo_CaptureCard_Race.mp4
@@ -187,6 +219,14 @@ GUI support:
 - macOS: supported when Tk is available in the Python build
 
 Start the GUI with:
+
+Windows:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe
+```
+
+Linux/macOS:
 
 ```bash
 .venv/bin/mk8-local-play
@@ -285,12 +325,24 @@ The editable install mainly improves the hobbyist experience:
 
 Recommended update flow from a Git checkout:
 
-```bash
+Windows:
+
+```powershell
 git pull
-python -m pip install -e .
+.\scripts\setup_windows.ps1
 ```
 
-Or simply rerun the setup script for your platform.
+Linux/macOS:
+
+```bash
+git pull
+./scripts/setup_unix.sh
+```
+
+If you prefer to reinstall manually instead of rerunning the setup script:
+
+- Windows: `.\.venv\Scripts\python.exe -m pip install -e .`
+- Linux/macOS: `.venv/bin/python -m pip install -e .`
 
 The primary command names are:
 - `mk8-local-play`
