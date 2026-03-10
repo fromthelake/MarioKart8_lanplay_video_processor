@@ -25,6 +25,8 @@ from .ocr_scoreboard_consensus import (
     build_race_warning_messages,
     exact_total_score_fallback,
     parse_detected_int,
+    position_debug_enabled,
+    write_position_roi_debug_bundle,
 )
 from .ocr_session_validation import apply_session_validation
 from .project_paths import PROJECT_ROOT
@@ -439,6 +441,28 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     race_score_players = int(consensus.get("score_visible_rows", num_players))
     total_score_players = int(consensus.get("total_visible_rows", num_players))
     race_warning_messages = build_race_warning_messages(None, race_score_players, total_score_players, consensus["row_count_confidence"])
+    if position_debug_enabled():
+        position_debug_dir = Path(PROJECT_ROOT) / "Output_Results" / "Debug" / "Position_ROI_Checks"
+        representative_score_observation = consensus.get("representative_score_observation") or {}
+        representative_total_observation = consensus.get("representative_total_observation") or {}
+        if representative_score_observation.get("raw_position_strip") is not None:
+            write_position_roi_debug_bundle(
+                position_debug_dir,
+                f"{race_class}_Race_{race_id_number:03}_RaceScore",
+                representative_score_observation["raw_position_strip"],
+                representative_score_observation["processed_position_strip"],
+                representative_score_observation["row_metrics"],
+                representative_score_observation.get("position_match_row_crops"),
+            )
+        if representative_total_observation.get("raw_position_strip") is not None:
+            write_position_roi_debug_bundle(
+                position_debug_dir,
+                f"{race_class}_Race_{race_id_number:03}_TotalScore",
+                representative_total_observation["raw_position_strip"],
+                representative_total_observation["processed_position_strip"],
+                representative_total_observation["row_metrics"],
+                representative_total_observation.get("position_match_row_crops"),
+            )
 
     for row in consensus["rows"]:
         race_position = row["RacePosition"]
@@ -465,6 +489,15 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus["row_count_confidence"],
             race_score_players,
             total_score_players,
+            consensus.get("legacy_score_visible_rows", race_score_players),
+            consensus.get("legacy_total_visible_rows", total_score_players),
+            consensus.get("legacy_row_count_confidence", consensus["row_count_confidence"]),
+            consensus.get("score_count_votes", ""),
+            consensus.get("total_count_votes", ""),
+            consensus.get("legacy_score_count_votes", ""),
+            consensus.get("legacy_total_count_votes", ""),
+            consensus.get("score_row_metrics_summary", ""),
+            consensus.get("total_row_metrics_summary", ""),
             row.get("TotalScoreMappingMethod", ""),
             ";".join(review_reasons),
         ])
@@ -603,6 +636,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "NameConfidence",
         "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
+        "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
+        "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
+        "RaceScoreRowSignals", "TotalScoreRowSignals",
         "TotalScoreMappingMethod", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)

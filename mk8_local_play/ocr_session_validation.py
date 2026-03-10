@@ -4,6 +4,62 @@ import numpy as np
 import pandas as pd
 
 
+VALIDATION_STATUS_LABELS = {
+    "computed_only": "Computed only",
+    "race_points_match": "Race points matched OCR",
+    "validated": "Validated against OCR total score",
+    "race_points_mismatch": "Race points mismatch",
+    "total_score_mismatch": "Total score mismatch",
+}
+
+
+def format_validation_status(status_code: str) -> str:
+    return VALIDATION_STATUS_LABELS.get(str(status_code), str(status_code).replace("_", " ").capitalize())
+
+
+def build_review_reason_messages(
+    review_reason_codes,
+    *,
+    race_points,
+    detected_race,
+    expected_session_total,
+    detected_total,
+    name_confidence,
+    digit_consensus,
+    row_count_confidence,
+    expected_players,
+    race_score_players,
+    total_score_players,
+):
+    messages = []
+    for code in review_reason_codes:
+        if code == "race_points_mismatch":
+            messages.append(
+                f"Race points should be {race_points}, but OCR read {detected_race if detected_race is not None else 'nothing'}."
+            )
+        elif code == "total_score_mismatch":
+            messages.append(
+                f"Expected total after race is {expected_session_total}, but OCR total score read {detected_total if detected_total is not None else 'nothing'}."
+            )
+        elif code == "low_name_confidence":
+            messages.append(f"Player name confidence is low ({name_confidence:.0f}%).")
+        elif code == "low_digit_consensus":
+            messages.append(f"Digit confidence is low ({digit_consensus:.0f}%).")
+        elif code == "unstable_row_count":
+            messages.append(f"Player count confidence is low ({row_count_confidence:.0f}%).")
+        elif code == "player_count_mismatch":
+            messages.append(
+                f"Race score screen shows {race_score_players} players, expected {expected_players}."
+            )
+        elif code == "race_total_player_count_mismatch":
+            messages.append(
+                f"Race score screen shows {race_score_players} players, but total score screen shows {total_score_players}."
+            )
+        else:
+            messages.append(str(code).replace("_", " ").capitalize())
+    return messages
+
+
 def should_start_new_session(session_totals, detected_totals) -> bool:
     """Detect when a recording likely restarted a fresh tournament session."""
     parsed_detected_totals = [int(value) for value in detected_totals if pd.notna(value)]
@@ -115,6 +171,19 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     review_reasons.append("race_total_player_count_mismatch")
 
                 review_reasons = sorted(set(review_reasons))
+                review_reason_messages = build_review_reason_messages(
+                    review_reasons,
+                    race_points=race_points,
+                    detected_race=detected_race,
+                    expected_session_total=session_new_total,
+                    detected_total=detected_total,
+                    name_confidence=float(row["NameConfidence"]),
+                    digit_consensus=float(row["DigitConsensus"]),
+                    row_count_confidence=float(row["RowCountConfidence"]),
+                    expected_players=expected_players,
+                    race_score_players=int(row["RaceScorePlayerCount"]),
+                    total_score_players=int(row["TotalScorePlayerCount"]),
+                )
                 df.at[index, "SessionIndex"] = session_index
                 df.at[index, "SessionOldTotalScore"] = session_old_total
                 df.at[index, "SessionNewTotalScore"] = session_new_total
@@ -126,9 +195,9 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     df.at[index, "TotalScoreMappingMethod"] = (
                         f"{existing_mapping_method}+score_fallback" if existing_mapping_method else "score_fallback"
                     )
-                df.at[index, "ReviewReason"] = ";".join(review_reasons)
+                df.at[index, "ReviewReason"] = " | ".join(review_reason_messages)
                 df.at[index, "ReviewNeeded"] = bool(review_reasons)
-                df.at[index, "ScoreValidationStatus"] = score_status
+                df.at[index, "ScoreValidationStatus"] = format_validation_status(score_status)
 
                 tournament_totals[player_key] = new_total
                 session_totals[player_key] = session_new_total

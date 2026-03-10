@@ -2,6 +2,7 @@
 .codex_tmp/
 __pycache__/
 .idea/
+*.egg-info/
 app_config.json
 file_list.txt
 
@@ -19,6 +20,8 @@ Output_Results/Debug/Score_Frames/*
 !Output_Results/Debug/Score_Frames/.gitkeep
 Output_Results/Tournament_Results.xlsx
 Output_Results/*_Tournament_Results.xlsx
+Output_Results/Tournament_Results_Debug.xlsx
+Output_Results/*_Tournament_Results_Debug.xlsx
 Output_Results/_temp_*.xlsx
 
 # Local debug artifacts

@@ -1,10 +1,17 @@
+import json
+import os
 import re
+import hashlib
 from collections import Counter, defaultdict
+from functools import lru_cache
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw
+
+from .data_paths import resolve_asset_file
 
 
 PLAYER_NAME_COORDS = [
@@ -15,6 +22,471 @@ PLAYER_NAME_COORDS = [
     ((428, 468), (620, 512)), ((428, 520), (620, 564)),
     ((428, 572), (620, 617)), ((428, 624), (620, 669)),
 ]
+BASE_POSITION_STRIP_ROI = ((315, 57), (367, 667))
+POSITION_STRIP_OFFSET_X = -2
+POSITION_STRIP_OFFSET_Y = -2
+POSITION_STRIP_PADDING_X = 2
+POSITION_STRIP_PADDING_Y = 2
+POSITION_ROW_PADDING_X = 1
+POSITION_ROW_PADDING_TOP = 1
+POSITION_ROW_PADDING_BOTTOM = 4
+POSITION_TEMPLATE_FILENAME = "Score_template_fix.png"
+POSITION_TEMPLATE_WIDTH = 56
+POSITION_TEMPLATE_HEIGHT = 36
+POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
+POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
+
+
+def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Return the adjusted position-strip ROI after applying the current offset and padding."""
+    (base_x1, base_y1), (base_x2, base_y2) = BASE_POSITION_STRIP_ROI
+    shifted_x1 = base_x1 + POSITION_STRIP_OFFSET_X
+    shifted_y1 = base_y1 + POSITION_STRIP_OFFSET_Y
+    shifted_x2 = base_x2 + POSITION_STRIP_OFFSET_X
+    shifted_y2 = base_y2 + POSITION_STRIP_OFFSET_Y
+    return (
+        (shifted_x1 - POSITION_STRIP_PADDING_X, shifted_y1 - POSITION_STRIP_PADDING_Y),
+        (shifted_x2 + POSITION_STRIP_PADDING_X, shifted_y2 + POSITION_STRIP_PADDING_Y),
+    )
+
+
+def position_debug_enabled() -> bool:
+    return str(os.environ.get("MK8_WRITE_DEBUG_POSITION_ROIS", "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def position_debug_rows() -> List[int]:
+    raw_value = str(os.environ.get("MK8_DEBUG_POSITION_ROWS", "10,11,12"))
+    rows = []
+    for part in raw_value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            row_number = int(part)
+        except ValueError:
+            continue
+        if 1 <= row_number <= 12:
+            rows.append(row_number)
+    return rows or [10, 11, 12]
+
+
+def normalize_binary_foreground(binary_image: np.ndarray) -> np.ndarray:
+    """Keep the foreground polarity consistent across OCR regions and template matching."""
+    black_pixels = int(np.count_nonzero(binary_image == 0))
+    white_pixels = int(np.count_nonzero(binary_image == 255))
+    if white_pixels > black_pixels:
+        return cv2.bitwise_not(binary_image)
+    return binary_image
+
+
+def position_template_row_windows() -> List[Tuple[int, int]]:
+    """Return the fixed row windows used by the template strip itself."""
+    return [(start_y, start_y + POSITION_TEMPLATE_HEIGHT) for start_y in POSITION_TEMPLATE_ROW_STARTS]
+
+
+def split_strip_into_rows(strip_image: np.ndarray) -> List[np.ndarray]:
+    """Split a position strip using the same row windows as the position templates."""
+    row_images = []
+    strip_height = strip_image.shape[0]
+    for start_y, end_y in position_template_row_windows():
+        clipped_start = max(0, min(strip_height, start_y))
+        clipped_end = max(clipped_start, min(strip_height, end_y))
+        row_images.append(strip_image[clipped_start:clipped_end, :])
+    return row_images
+
+
+def normalize_position_rows(strip_image: np.ndarray) -> List[np.ndarray]:
+    """Normalize foreground polarity per scoreboard row instead of per full strip.
+
+    This mirrors how player names and score cells are handled: each ROI decides its own
+    inversion based on its own black/white balance. Empty bottom rows should not be able
+    to inherit the polarity choice from busy rows above them.
+    """
+    return [normalize_binary_foreground(row_image) for row_image in split_strip_into_rows(strip_image)]
+
+
+def slice_position_templates(template_binary: np.ndarray) -> List[np.ndarray]:
+    """Slice the template strip using fixed designer-approved row windows.
+
+    Each template row keeps the full 56 px width and a fixed 36 px height.
+    The top positions come from the manually tuned row starts provided for
+    Score_template_fix.png: 0, 50, 102, 154, ... with 52 px spacing after row 1.
+    """
+    template_rows = []
+    image_height, image_width = template_binary.shape[:2]
+    crop_width = min(POSITION_TEMPLATE_WIDTH, image_width)
+    for start_y in POSITION_TEMPLATE_ROW_STARTS:
+        end_y = min(image_height, start_y + POSITION_TEMPLATE_HEIGHT)
+        row_crop = template_binary[start_y:end_y, :crop_width]
+        template_rows.append(normalize_binary_foreground(row_crop))
+    return template_rows
+
+
+def combine_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
+    """Rebuild the full strip after per-row normalization using the template row windows."""
+    if not row_images:
+        return np.zeros((0, 0), dtype=np.uint8)
+    strip_width = row_images[0].shape[1]
+    strip_height = position_strip_roi()[1][1] - position_strip_roi()[0][1]
+    combined = np.zeros((strip_height, strip_width), dtype=np.uint8)
+    for row_image, (start_y, end_y) in zip(row_images, position_template_row_windows()):
+        clipped_start = max(0, min(strip_height, start_y))
+        clipped_end = max(clipped_start, min(strip_height, end_y))
+        height = min(row_image.shape[0], clipped_end - clipped_start)
+        combined[clipped_start:clipped_start + height, :] = row_image[:height, :]
+    return combined
+
+
+def extract_position_row_match_crops(processed_image: np.ndarray) -> List[np.ndarray]:
+    """Extract per-row position ROIs based on the template row windows.
+
+    The core template area is 56x36. We keep just 1 px padding around it so the
+    matcher can adjust slightly inside a tight 58x38 ROI.
+    """
+    (x1, y1), (x2, y2) = position_strip_roi()
+    image_height, image_width = processed_image.shape[:2]
+    if len(processed_image.shape) == 3:
+        grayscale_image = cv2.cvtColor(processed_image, cv2.COLOR_BGR2GRAY)
+    else:
+        grayscale_image = processed_image
+
+    row_crops = []
+    for row_start_offset, row_end_offset in position_template_row_windows():
+        row_start = y1 + int(row_start_offset)
+        row_end = y1 + int(row_end_offset)
+        crop_x1 = max(0, x1 - POSITION_ROW_PADDING_X)
+        crop_y1 = max(0, row_start - POSITION_ROW_PADDING_TOP)
+        crop_x2 = min(image_width, x2 + POSITION_ROW_PADDING_X)
+        crop_y2 = min(image_height, row_end + POSITION_ROW_PADDING_BOTTOM)
+        row_crop = grayscale_image[crop_y1:crop_y2, crop_x1:crop_x2]
+        _, row_crop = cv2.threshold(row_crop, 180, 255, cv2.THRESH_BINARY)
+        row_crops.append(normalize_binary_foreground(row_crop))
+    return row_crops
+
+
+@lru_cache(maxsize=1)
+def load_position_row_templates() -> List[np.ndarray]:
+    """Slice the score-screen position strip template into 12 fixed row templates."""
+    template_path = resolve_asset_file("templates", POSITION_TEMPLATE_FILENAME)
+    template_image = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
+    if template_image is None:
+        raise FileNotFoundError(f"Position template image not found: {template_path}")
+    _, template_binary = cv2.threshold(template_image, 180, 255, cv2.THRESH_BINARY)
+    return slice_position_templates(template_binary)
+
+
+def export_position_row_templates_once(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    marker_file = output_dir / "_templates_written.txt"
+    template_path = resolve_asset_file("templates", POSITION_TEMPLATE_FILENAME)
+    template_hash = hashlib.sha256(template_path.read_bytes()).hexdigest()
+    marker_text = (
+        f"{POSITION_TEMPLATE_FILENAME}\n"
+        f"{template_hash}\n"
+        f"width={POSITION_TEMPLATE_WIDTH}\n"
+        f"height={POSITION_TEMPLATE_HEIGHT}\n"
+        f"starts={','.join(str(value) for value in POSITION_TEMPLATE_ROW_STARTS)}\n"
+    )
+    if marker_file.exists() and marker_file.read_text(encoding="utf-8") == marker_text:
+        return
+    for row_index, template in enumerate(load_position_row_templates(), start=1):
+        cv2.imwrite(str(output_dir / f"template_row_{row_index:02}.png"), template)
+    marker_file.write_text(marker_text, encoding="utf-8")
+
+
+def _template_match_score(source_image: np.ndarray, template_image: np.ndarray) -> float:
+    source_height, source_width = source_image.shape[:2]
+    template_height, template_width = template_image.shape[:2]
+    if source_height < template_height or source_width < template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_NEAREST)
+    result = cv2.matchTemplate(source_image, template_image, cv2.TM_CCOEFF_NORMED)
+    _, max_value, _, _ = cv2.minMaxLoc(result)
+    return float(max_value)
+
+
+def _best_template_overlap_metrics(source_image: np.ndarray, template_image: np.ndarray) -> Dict[str, float]:
+    """Measure binary overlap quality for the best template placement inside the ROI.
+
+    White IoU is intentionally foreground-centric:
+    - template white over ROI white: good
+    - template white over ROI black: bad
+    - template black over ROI white: bad
+    - template black over ROI black: ignored for the main overlap score
+
+    This keeps empty rows from scoring artificially high just because most of the
+    background is black.
+    """
+    source_height, source_width = source_image.shape[:2]
+    template_height, template_width = template_image.shape[:2]
+    if source_height < template_height or source_width < template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_NEAREST)
+        source_height, source_width = source_image.shape[:2]
+
+    template_white = template_image > 200
+    best_metrics = None
+    for offset_y in range(source_height - template_height + 1):
+        for offset_x in range(source_width - template_width + 1):
+            window = source_image[offset_y:offset_y + template_height, offset_x:offset_x + template_width]
+            row_white = window > 200
+            true_positive = int(np.count_nonzero(template_white & row_white))
+            false_positive = int(np.count_nonzero((~template_white) & row_white))
+            false_negative = int(np.count_nonzero(template_white & (~row_white)))
+            union = true_positive + false_positive + false_negative
+            weighted_union = true_positive + false_positive + (POSITION_FALSE_NEGATIVE_WEIGHT * false_negative)
+            white_iou = true_positive / union if union else 0.0
+            weighted_white_iou = true_positive / weighted_union if weighted_union else 0.0
+            white_f1 = (2 * true_positive) / (2 * true_positive + false_positive + false_negative) if (2 * true_positive + false_positive + false_negative) else 0.0
+            metrics = {
+                "white_iou": float(white_iou),
+                "weighted_white_iou": float(weighted_white_iou),
+                "white_f1": float(white_f1),
+                "tp": int(true_positive),
+                "fp": int(false_positive),
+                "fn": int(false_negative),
+                "offset_x": int(offset_x),
+                "offset_y": int(offset_y),
+            }
+            if best_metrics is None or metrics["weighted_white_iou"] > best_metrics["weighted_white_iou"]:
+                best_metrics = metrics
+
+    if best_metrics is None:
+        return {
+            "white_iou": 0.0,
+            "weighted_white_iou": 0.0,
+            "white_f1": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 0,
+            "offset_x": 0,
+            "offset_y": 0,
+        }
+    return best_metrics
+
+
+def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str, float]]:
+    """Measure whether each row still shows a position number in the fixed left strip."""
+    position_rows = extract_position_row_match_crops(processed_image)
+    templates = load_position_row_templates()
+    metrics = []
+    for row_index, row_image in enumerate(position_rows):
+        template_scores = []
+        for template_index, template in enumerate(templates, start=1):
+            coefficient = _template_match_score(row_image, template)
+            overlap_metrics = _best_template_overlap_metrics(row_image, template)
+            template_scores.append(
+                {
+                    "template_index": template_index,
+                    "coefficient": float(coefficient),
+                    "white_iou": float(overlap_metrics["white_iou"]),
+                    "weighted_white_iou": float(overlap_metrics["weighted_white_iou"]),
+                    "white_f1": float(overlap_metrics["white_f1"]),
+                }
+            )
+
+        coeff_sorted = sorted(template_scores, key=lambda item: item["coefficient"], reverse=True)
+        coeff_best = coeff_sorted[0] if coeff_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
+        coeff_second = coeff_sorted[1] if len(coeff_sorted) > 1 else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
+        iou_sorted = sorted(template_scores, key=lambda item: item["weighted_white_iou"], reverse=True)
+        iou_best = iou_sorted[0] if iou_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
+
+        shortlist = coeff_sorted[:3] if len(coeff_sorted) >= 3 else coeff_sorted
+        hybrid_best = max(shortlist, key=lambda item: (item["weighted_white_iou"], item["coefficient"])) if shortlist else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
+        expected_score = template_scores[row_index] if row_index < len(template_scores) else {"coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
+        metrics.append(
+            {
+                "expected_position_score": round(float(expected_score["coefficient"]), 3),
+                "expected_position_iou": round(float(expected_score["white_iou"]), 3),
+                "expected_position_weighted_iou": round(float(expected_score["weighted_white_iou"]), 3),
+                "best_position_score": round(float(coeff_best["coefficient"]), 3),
+                "second_best_position_score": round(float(coeff_second["coefficient"]), 3),
+                "position_margin": round(float(coeff_best["coefficient"]) - float(coeff_second["coefficient"]), 3),
+                "any_position_score": round(float(coeff_best["coefficient"]), 3),
+                "best_position_template": int(hybrid_best["template_index"]),
+                "best_position_coeff_template": int(coeff_best["template_index"]),
+                "best_position_iou_template": int(iou_best["template_index"]),
+                "best_position_iou": round(float(iou_best["white_iou"]), 3),
+                "best_position_weighted_iou": round(float(iou_best["weighted_white_iou"]), 3),
+                "best_position_template_score": round(float(hybrid_best["coefficient"]), 3),
+                "best_position_template_iou": round(float(hybrid_best["white_iou"]), 3),
+                "best_position_template_weighted_iou": round(float(hybrid_best["weighted_white_iou"]), 3),
+            }
+        )
+    return metrics
+
+
+def build_normalized_position_strip(processed_image: np.ndarray) -> np.ndarray:
+    """Return the position strip with the same binary polarity normalization used for matching."""
+    (x1, y1), (x2, y2) = position_strip_roi()
+    position_strip = processed_image[y1:y2, x1:x2]
+    if len(position_strip.shape) == 3:
+        position_strip = cv2.cvtColor(position_strip, cv2.COLOR_BGR2GRAY)
+    _, position_strip = cv2.threshold(position_strip, 180, 255, cv2.THRESH_BINARY)
+    return combine_position_rows(normalize_position_rows(position_strip))
+
+
+def write_position_roi_debug_bundle(output_dir: Path, base_name: str, raw_strip: np.ndarray, processed_strip: np.ndarray,
+                                    row_metrics: List[Dict[str, object]], match_row_crops: List[np.ndarray] | None = None) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    export_position_row_templates_once(output_dir / "templates")
+
+    cv2.imwrite(str(output_dir / f"{base_name}_position_strip_raw.png"), raw_strip)
+    cv2.imwrite(str(output_dir / f"{base_name}_position_strip_processed.png"), processed_strip)
+
+    row_windows = position_template_row_windows()
+    for row_number in position_debug_rows():
+        row_index = row_number - 1
+        start_y, end_y = row_windows[row_index]
+        raw_crop = raw_strip[start_y:end_y, :]
+        processed_crop = processed_strip[start_y:end_y, :]
+        cv2.imwrite(str(output_dir / f"{base_name}_row_{row_number:02}_raw.png"), raw_crop)
+        cv2.imwrite(str(output_dir / f"{base_name}_row_{row_number:02}_processed.png"), processed_crop)
+        if match_row_crops and row_index < len(match_row_crops):
+            cv2.imwrite(
+                str(output_dir / f"{base_name}_row_{row_number:02}_match_processed.png"),
+                match_row_crops[row_index],
+            )
+
+        metadata = {
+            "base_name": base_name,
+            "roi": {
+                "x1": int(position_strip_roi()[0][0]),
+                "y1": int(position_strip_roi()[0][1]),
+                "x2": int(position_strip_roi()[1][0]),
+                "y2": int(position_strip_roi()[1][1]),
+                "offset_x": int(POSITION_STRIP_OFFSET_X),
+                "offset_y": int(POSITION_STRIP_OFFSET_Y),
+                "padding_x": int(POSITION_STRIP_PADDING_X),
+                "padding_y": int(POSITION_STRIP_PADDING_Y),
+                "row_padding_x": int(POSITION_ROW_PADDING_X),
+                "row_padding_top": int(POSITION_ROW_PADDING_TOP),
+                "row_padding_bottom": int(POSITION_ROW_PADDING_BOTTOM),
+            },
+            "row_number": row_number,
+            "row_y_start": start_y,
+            "row_y_end": end_y,
+            "metrics": row_metrics[row_index],
+        }
+        (output_dir / f"{base_name}_row_{row_number:02}_meta.json").write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+
+
+def build_row_presence_metrics(names: List[str], confidence_scores: List[int], race_points: List[str], total_points: List[str]) -> List[Dict[str, object]]:
+    """Describe how strongly each of the 12 scoreboard rows looks occupied."""
+    metrics = []
+    for index, player_name in enumerate(names):
+        stripped_name = re.sub(r"[^a-zA-Z0-9]", "", player_name or "")
+        confidence = float(confidence_scores[index] if index < len(confidence_scores) else 0)
+        has_strong_name = len(stripped_name) >= 3 and len(set(stripped_name)) >= 3
+        has_any_name = bool(stripped_name)
+        has_race_points = bool(race_points[index]) if index < len(race_points) else False
+        has_total_points = bool(total_points[index]) if index < len(total_points) else False
+        legacy_row_present = bool(
+            has_strong_name
+            or has_race_points
+            or has_total_points
+            or confidence >= 35
+        )
+
+        occupancy_score = 0.0
+        if has_strong_name:
+            occupancy_score += 1.5
+        elif has_any_name:
+            occupancy_score += 0.4
+        if has_race_points:
+            occupancy_score += 1.0
+        if has_total_points:
+            occupancy_score += 1.0
+        if confidence >= 70:
+            occupancy_score += 0.5
+        elif confidence >= 35:
+            occupancy_score += 0.2
+
+        evidence_parts = []
+        if has_strong_name:
+            evidence_parts.append("strong_name")
+        elif has_any_name:
+            evidence_parts.append("weak_name")
+        if has_race_points:
+            evidence_parts.append("race_points")
+        if has_total_points:
+            evidence_parts.append("total_points")
+        if confidence >= 35:
+            evidence_parts.append(f"conf={int(round(confidence))}")
+
+        metrics.append(
+            {
+                "row_number": index + 1,
+                "legacy_row_present": legacy_row_present,
+                "occupancy_score": round(occupancy_score, 2),
+                "evidence": ",".join(evidence_parts) if evidence_parts else "empty",
+            }
+        )
+    return metrics
+
+
+def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]], occupancy_threshold: float = 1.0) -> int:
+    """Count visible rows using occupancy plus the position-number templates.
+
+    This is now the preferred player-count method:
+    - OCR/name/points evidence says whether a row looks occupied
+    - position templates confirm that a real rank number is visible
+    - the chosen rank sequence may stay equal or increase as the table goes down
+    """
+    visible_rows = 0
+    last_confirmed_rank = None
+    for metric in row_metrics:
+        occupancy_score = float(metric["occupancy_score"])
+        best_position_score = float(metric.get("best_position_score", 0.0))
+        best_position_iou = float(metric.get("best_position_iou", 0.0))
+        position_margin = float(metric.get("position_margin", 0.0))
+        best_rank = int(metric.get("best_position_template", 0))
+
+        # A real position glyph should beat the other 11 candidates by a visible margin.
+        strong_position_presence = (
+            best_position_score >= 0.35
+            and best_position_iou >= 0.25
+            and float(metric.get("best_position_weighted_iou", 0.0)) >= 0.2
+            and position_margin >= 0.05
+        )
+        row_supported = occupancy_score >= occupancy_threshold or strong_position_presence
+
+        # Ranking rows should never decrease as the table goes downward. We only use this
+        # as a veto when the row otherwise looks weak, so ties still work naturally.
+        if strong_position_presence and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
+            row_supported = occupancy_score >= 2.5
+
+        if not row_supported:
+            break
+        if strong_position_presence:
+            last_confirmed_rank = best_rank
+        visible_rows = int(metric["row_number"])
+    return visible_rows
+
+
+def summarize_row_metrics(row_metrics: List[Dict[str, object]]) -> str:
+    parts = []
+    for metric in row_metrics:
+        parts.append(
+            f"{int(metric['row_number']):02}:{float(metric['occupancy_score']):.2f}"
+            f"[{metric['evidence']};pos={float(metric.get('expected_position_score', 0.0)):.2f}/{float(metric.get('best_position_score', 0.0)):.2f}"
+            f"/{float(metric.get('second_best_position_score', 0.0)):.2f}"
+            f"/iou{float(metric.get('best_position_iou', 0.0)):.2f}"
+            f"/wiou{float(metric.get('best_position_weighted_iou', 0.0)):.2f}"
+            f"/m{float(metric.get('position_margin', 0.0)):.2f}"
+            f"#h{int(metric.get('best_position_template', 0))}"
+            f"/c{int(metric.get('best_position_coeff_template', 0))}"
+            f"/i{int(metric.get('best_position_iou_template', 0))}]"
+        )
+    return " | ".join(parts)
+
+
+def summarize_count_votes(observations: List[Dict[str, object]], key: str) -> str:
+    count_votes = Counter(int(observation.get(key, 0)) for observation in observations if int(observation.get(key, 0)) > 0)
+    if not count_votes:
+        return ""
+    return ", ".join(f"{count}x{votes}" for count, votes in count_votes.most_common())
 
 
 def apply_threshold(image: np.ndarray, threshold: int = 205) -> np.ndarray:
@@ -213,6 +685,11 @@ def score_digit_layout(scale_factor: int = 5):
 def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names_batched, annotate_path: str | None = None) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
     processed_img = process_image(frame_image)
+    (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi()
+    raw_position_strip = frame_image[position_y1:position_y2, position_x1:position_x2].copy()
+    normalized_position_strip = build_normalized_position_strip(processed_img)
+    processed_img[position_y1:position_y2, position_x1:position_x2] = cv2.cvtColor(normalized_position_strip, cv2.COLOR_GRAY2BGR)
+    match_row_crops = extract_position_row_match_crops(processed_img)
     processed_img_pil = Image.fromarray(processed_img).convert("RGB")
     scale_factor = 5
     scaled_image = processed_img_pil.resize(
@@ -229,21 +706,19 @@ def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names
         scaled_image_resized.save(annotate_path)
 
     names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
-    valid_rows = []
-    for index, player_name in enumerate(names):
-        stripped_name = re.sub(r"[^a-zA-Z0-9]", "", player_name)
-        confidence = confidence_scores[index] if index < len(confidence_scores) else 0
-        valid_rows.append(
-            len(stripped_name) >= 3 and len(set(stripped_name)) >= 3
-            or bool(race_points[index])
-            or bool(total_points[index])
-            or confidence >= 35
-        )
+    row_metrics = build_row_presence_metrics(names, confidence_scores, race_points, total_points)
+    position_metrics = build_position_signal_metrics(processed_img)
+    for row_metric, position_metric in zip(row_metrics, position_metrics):
+        row_metric.update(position_metric)
+    processed_position_strip = processed_img[position_y1:position_y2, position_x1:position_x2].copy()
+    valid_rows = [bool(metric["legacy_row_present"]) for metric in row_metrics]
 
     visible_rows = 0
     for index, row_present in enumerate(valid_rows, start=1):
         if row_present:
             visible_rows = index
+
+    position_guided_visible_rows = determine_position_guided_visible_rows(row_metrics)
 
     template_row_confidence = max(0.0, min(1.0, visible_rows / 12.0))
     return {
@@ -251,7 +726,13 @@ def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names
         "name_confidences": confidence_scores,
         "race_points": race_points,
         "total_points": total_points,
+        "raw_position_strip": raw_position_strip,
+        "processed_position_strip": processed_position_strip,
+        "position_match_row_crops": match_row_crops,
+        "row_metrics": row_metrics,
+        "row_metrics_summary": summarize_row_metrics(row_metrics),
         "visible_rows": visible_rows,
+        "position_guided_visible_rows": position_guided_visible_rows,
         "template_row_confidence": template_row_confidence,
     }
 
@@ -402,21 +883,50 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     visible_votes = Counter(observation["visible_rows"] for observation in score_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
     row_count_confidence = (visible_votes[visible_rows] / len(score_observations)) if visible_rows and score_observations else 0.0
+    position_guided_visible_votes = Counter(
+        observation["position_guided_visible_rows"] for observation in score_observations if observation["position_guided_visible_rows"] > 0
+    )
+    position_guided_visible_rows = position_guided_visible_votes.most_common(1)[0][0] if position_guided_visible_votes else 0
+    position_guided_row_count_confidence = (
+        position_guided_visible_votes[position_guided_visible_rows] / len(score_observations)
+        if position_guided_visible_rows and score_observations else 0.0
+    )
     total_visible_votes = Counter(observation["visible_rows"] for observation in total_observations if observation["visible_rows"] > 0)
     total_visible_rows = total_visible_votes.most_common(1)[0][0] if total_visible_votes else visible_rows
+    total_position_guided_visible_votes = Counter(
+        observation["position_guided_visible_rows"] for observation in total_observations if observation["position_guided_visible_rows"] > 0
+    )
+    total_position_guided_visible_rows = (
+        total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
+    )
 
-    score_rows = build_consensus_rows(score_observations, visible_rows, "race_points")
-    total_rows = build_consensus_rows(total_observations, total_visible_rows, "total_points")
+    # Use the position-guided count as the official row count. The older OCR-only count
+    # is still returned in debug data as a legacy reference.
+    score_rows = build_consensus_rows(score_observations, position_guided_visible_rows, "race_points")
+    total_rows = build_consensus_rows(total_observations, total_position_guided_visible_rows, "total_points")
     rows = map_total_rows_to_race_rows(score_rows, total_rows, preprocess_name, weighted_similarity)
     name_confidences = [float(row["NameConfidence"]) / 100.0 for row in rows if row.get("NameConfidence") is not None]
     digit_confidences = [float(row["DigitConsensus"]) / 100.0 for row in rows if row.get("DigitConsensus") is not None]
+    representative_score_observation = score_observations[len(score_observations) // 2] if score_observations else {}
+    representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
 
     return {
         "rows": rows,
         "visible_rows": len(rows),
-        "score_visible_rows": visible_rows,
-        "total_visible_rows": total_visible_rows,
-        "row_count_confidence": round(row_count_confidence * 100, 1),
+        "score_visible_rows": position_guided_visible_rows,
+        "total_visible_rows": total_position_guided_visible_rows,
+        "legacy_score_visible_rows": visible_rows,
+        "legacy_total_visible_rows": total_visible_rows,
+        "row_count_confidence": round(position_guided_row_count_confidence * 100, 1),
+        "legacy_row_count_confidence": round(row_count_confidence * 100, 1),
+        "score_count_votes": summarize_count_votes(score_observations, "position_guided_visible_rows"),
+        "total_count_votes": summarize_count_votes(total_observations, "position_guided_visible_rows"),
+        "legacy_score_count_votes": summarize_count_votes(score_observations, "visible_rows"),
+        "legacy_total_count_votes": summarize_count_votes(total_observations, "visible_rows"),
+        "score_row_metrics_summary": representative_score_observation.get("row_metrics_summary", ""),
+        "total_row_metrics_summary": representative_total_observation.get("row_metrics_summary", ""),
+        "representative_score_observation": representative_score_observation,
+        "representative_total_observation": representative_total_observation,
         "name_confidence": round((sum(name_confidences) / len(name_confidences)) * 100, 1) if name_confidences else 0.0,
         "digit_consensus": round((sum(digit_confidences) / len(digit_confidences)) * 100, 1) if digit_confidences else 0.0,
     }

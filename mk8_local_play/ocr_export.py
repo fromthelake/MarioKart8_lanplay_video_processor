@@ -3,31 +3,99 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-
-DESIRED_EXPORT_COLUMNS = [
-    "RaceClass", "RaceIDNumber", "TrackName", "TrackID", "CupName", "RacePosition", "PlayerName",
-    "FixPlayerName", "RacePoints", "DetectedRacePoints", "DetectedTotalScore",
-    "RaceScorePlayerCount", "TotalScorePlayerCount", "TotalScoreMappingMethod",
-    "SessionIndex", "SessionOldTotalScore", "SessionNewTotalScore",
-    "OldTotalScore", "NewTotalScore", "NameConfidence", "DigitConsensus", "RowCountConfidence",
-    "ScoreValidationStatus", "ReviewNeeded", "ReviewReason",
-]
+import pandas as pd
 
 
-def reorder_export_columns(df):
-    """Keep the workbook column order stable so downstream review stays predictable."""
-    return df[DESIRED_EXPORT_COLUMNS]
+USER_EXPORT_COLUMN_MAP = {
+    "RaceClass": "Video",
+    "RaceIDNumber": "Race",
+    "TrackName": "Track",
+    "CupName": "Cup",
+    "RacePosition": "Position",
+    "FixPlayerName": "Player",
+    "RacePoints": "Race Points",
+    "OldTotalScore": "Total Before Race",
+    "NewTotalScore": "Total After Race",
+    "ReviewNeeded": "Needs Review",
+    "ReviewReason": "Review Reason",
+}
+
+
+DEBUG_EXPORT_COLUMN_MAP = {
+    "RaceClass": "Video",
+    "RaceIDNumber": "Race",
+    "TrackName": "Track",
+    "TrackID": "Track ID",
+    "CupName": "Cup",
+    "RacePosition": "Position",
+    "PlayerName": "Raw Player OCR",
+    "FixPlayerName": "Standardized Player",
+    "RacePoints": "Race Points",
+    "DetectedRacePoints": "OCR Race Points",
+    "DetectedTotalScore": "OCR Total Score",
+    "SessionOldTotalScore": "Session Total Before Race",
+    "SessionNewTotalScore": "Expected Total After Race",
+    "OldTotalScore": "Tournament Total Before Race",
+    "NewTotalScore": "Tournament Total After Race",
+    "SessionIndex": "Session",
+    "NameConfidence": "Name Confidence",
+    "DigitConsensus": "Digit Confidence",
+    "RowCountConfidence": "Player Count Confidence",
+    "RaceScorePlayerCount": "Players On Race Score Screen",
+    "TotalScorePlayerCount": "Players On Total Score Screen",
+    "LegacyRaceScorePlayerCount": "Legacy Players On Race Score Screen",
+    "LegacyTotalScorePlayerCount": "Legacy Players On Total Score Screen",
+    "LegacyRowCountConfidence": "Legacy Player Count Confidence",
+    "RaceScoreCountVotes": "Race Score Count Votes",
+    "TotalScoreCountVotes": "Total Score Count Votes",
+    "LegacyRaceScoreCountVotes": "Legacy Race Score Count Votes",
+    "LegacyTotalScoreCountVotes": "Legacy Total Score Count Votes",
+    "RaceScoreRowSignals": "Race Score Row Signals",
+    "TotalScoreRowSignals": "Total Score Row Signals",
+    "TotalScoreMappingMethod": "Total Score Match Method",
+    "ScoreValidationStatus": "Validation Status",
+    "ReviewNeeded": "Needs Review",
+    "ReviewReason": "Review Reason",
+}
+
+
+def build_user_export_df(df):
+    ordered_df = df[list(USER_EXPORT_COLUMN_MAP.keys())].copy()
+    return ordered_df.rename(columns=USER_EXPORT_COLUMN_MAP)
+
+
+def build_debug_export_df(df):
+    ordered_df = df[list(DEBUG_EXPORT_COLUMN_MAP.keys())].copy()
+    return ordered_df.rename(columns=DEBUG_EXPORT_COLUMN_MAP)
 
 
 def write_results_workbooks(df, folder_path):
-    """Write both a timestamped workbook and a stable latest-results workbook."""
+    """Write a clean user workbook and a full debug workbook, both timestamped and stable."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(folder_path).resolve().parent
+
+    user_df = build_user_export_df(df)
+    debug_df = build_debug_export_df(df)
+
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
     stable_output_excel_path = output_dir / "Tournament_Results.xlsx"
-    df.to_excel(output_excel_path, index=False)
+    debug_output_excel_path = output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
+    stable_debug_output_excel_path = output_dir / "Tournament_Results_Debug.xlsx"
+
+    with pd.ExcelWriter(output_excel_path) as writer:
+        user_df.to_excel(writer, index=False, sheet_name="Results")
+    with pd.ExcelWriter(debug_output_excel_path) as writer:
+        debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
     shutil.copy2(output_excel_path, stable_output_excel_path)
-    return output_excel_path, stable_output_excel_path
+    shutil.copy2(debug_output_excel_path, stable_debug_output_excel_path)
+    return {
+        "user_df": user_df,
+        "debug_df": debug_df,
+        "output_excel_path": output_excel_path,
+        "stable_output_excel_path": stable_output_excel_path,
+        "debug_output_excel_path": debug_output_excel_path,
+        "stable_debug_output_excel_path": stable_debug_output_excel_path,
+    }
 
 
 def build_player_count_summary_lines(df, build_race_warning_messages, pluralize):
@@ -84,8 +152,7 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
 def build_completion_payload(df, folder_path, phase_start_time, progress_peak_lines, ocr_profiler_lines,
                              per_video_durations, build_race_warning_messages, pluralize, format_duration):
     """Prepare workbook output and the final OCR summary payload in one place."""
-    df = reorder_export_columns(df)
-    output_excel_path, stable_output_excel_path = write_results_workbooks(df, folder_path)
+    workbook_payload = write_results_workbooks(df, folder_path)
     race_count = int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0])
 
     lines = [f"Duration: {format_duration(time.time() - phase_start_time)}", f"Races processed: {race_count}"]
@@ -94,13 +161,25 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
     lines.extend(ocr_profiler_lines)
     summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     lines.extend(summary_lines)
-    lines.extend(["", "Output workbooks:", str(output_excel_path), str(stable_output_excel_path)])
+    lines.extend(
+        [
+            "",
+            "Output workbooks:",
+            str(workbook_payload["output_excel_path"]),
+            str(workbook_payload["stable_output_excel_path"]),
+            str(workbook_payload["debug_output_excel_path"]),
+            str(workbook_payload["stable_debug_output_excel_path"]),
+        ]
+    )
 
     return {
-        "df": df,
+        "user_df": workbook_payload["user_df"],
+        "debug_df": workbook_payload["debug_df"],
         "lines": lines,
-        "output_excel_path": str(output_excel_path),
-        "stable_output_excel_path": str(stable_output_excel_path),
+        "output_excel_path": str(workbook_payload["output_excel_path"]),
+        "stable_output_excel_path": str(workbook_payload["stable_output_excel_path"]),
+        "debug_output_excel_path": str(workbook_payload["debug_output_excel_path"]),
+        "stable_debug_output_excel_path": str(workbook_payload["stable_debug_output_excel_path"]),
         "race_count": race_count,
         "per_video_summary": per_video_summary,
         "per_video_durations": dict(per_video_durations),
