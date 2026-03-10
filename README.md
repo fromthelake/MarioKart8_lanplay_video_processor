@@ -269,31 +269,26 @@ Additional outputs:
 ## Repository Layout
 
 - `main.py`
-  - primary CLI and GUI entrypoint
+  - thin root launcher for the main CLI and GUI
 - `extract_frames.py`
-  - extraction orchestrator
-- `extract_initial_scan.py`
-  - fast first-stage detection scan
-- `extract_score_screen_selection.py`
-  - chooses the best race-score and total-score frames
+  - thin root launcher for extraction-only runs
 - `extract_text.py`
-  - OCR/export orchestrator
-- `ocr_scoreboard_consensus.py`
-  - multi-frame score reading and row mapping
-- `ocr_name_matching.py`
-  - fuzzy player-name matching and standardization
-- `ocr_session_validation.py`
-  - running totals, session boundaries, validation flags
-- `ocr_export.py`
-  - workbook export and OCR completion summary
+  - thin root launcher for OCR-only runs
+- `mk8_local_play/`
+  - real application package
+  - contains the extraction, OCR, runtime, and orchestration modules
 - `assets/`
   - GUI images and detection templates
 - `scripts/`
   - setup and benchmark helpers
+- `benchmarks/baselines/`
+  - curated comparison baselines for performance and regression checks
+- `reference_data/`
+  - track metadata and manual reference images kept with the repo
 - `tools/validate_outputs.py`
   - compare current outputs against a baseline
-- `track_metadata.json`
-  - track IDs, English names, Dutch names, and cup names
+- `docs/`
+  - maintainer-facing project documentation
 
 ## Configuration
 
@@ -368,7 +363,7 @@ Useful scripts:
 Validation tool:
 
 ```bash
-python tools/validate_outputs.py --baseline-dir baselines/<your-baseline>
+python tools/validate_outputs.py --baseline-dir benchmarks/baselines/<your-baseline>
 ```
 
 ## Troubleshooting
@@ -402,10 +397,10 @@ Check:
 
 - [ReadMe.txt](./ReadMe.txt): plain-text pointer to the main documentation
 - [BEGINNER_SETUP.md](./BEGINNER_SETUP.md): step-by-step beginner installation guide for Windows, Linux, and macOS
-- [CONTRIBUTING.md](./CONTRIBUTING.md): development and repo hygiene notes
-- [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md): what each module does
-- [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md): pre-release sanity checklist
-- [CHANGELOG.md](./CHANGELOG.md): notable project changes
+- [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md): development and repo hygiene notes
+- [docs/PROJECT_STRUCTURE.md](./docs/PROJECT_STRUCTURE.md): what each module does
+- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md): pre-release sanity checklist
+- [docs/CHANGELOG.md](./docs/CHANGELOG.md): notable project changes
 - [LICENSE](./LICENSE): hobby/private-use license and liability disclaimer
 
 ## Legal Note

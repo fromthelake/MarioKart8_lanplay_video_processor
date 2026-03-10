@@ -1,6 +1,6 @@
 param(
     [string]$VideoName = "Test_3_Races.mkv",
-    [string]$BaselineDir = "baselines/quick/Test_3_Races"
+    [string]$BaselineDir = "benchmarks/baselines/quick/Test_3_Races"
 )
 
 $ErrorActionPreference = "Stop"

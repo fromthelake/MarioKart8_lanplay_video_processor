@@ -672,7 +672,7 @@ First try these checks:
 
 Then read:
 - [README.md](./README.md)
-- [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)
+- [docs/PROJECT_STRUCTURE.md](./docs/PROJECT_STRUCTURE.md)
 
 If you still get stuck, collect:
 - the command you ran

@@ -30,35 +30,15 @@ dependencies = [
 ]
 
 [project.scripts]
-mk8-local-play = "main:main"
-mk8-local-results = "main:main"
-
-[tool.setuptools]
-py-modules = [
-  "main",
-  "data_paths",
-  "extract_frames",
-  "extract_initial_scan",
-  "extract_common",
-  "extract_score_screen_selection",
-  "extract_video_io",
-  "extract_text",
-  "ocr_common",
-  "ocr_name_matching",
-  "ocr_scoreboard_consensus",
-  "ocr_session_validation",
-  "ocr_export",
-  "app_runtime",
-  "console_logging",
-  "track_metadata",
-]
+mk8-local-play = "mk8_local_play.main:main"
+mk8-local-results = "mk8_local_play.main:main"
 
 [tool.setuptools.packages.find]
-include = ["mk8_local_play_data"]
+include = ["mk8_local_play", "mk8_local_play_data"]
 
 [tool.setuptools.package-data]
 mk8_local_play_data = [
-  "track_metadata.json",
+  "reference_data/track_metadata.json",
   "assets/gui/*.jpg",
   "assets/templates/*.png",
 ]

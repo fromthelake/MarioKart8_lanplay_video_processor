@@ -1,6 +1,8 @@
 from importlib.resources import files
 from pathlib import Path
 
+from .project_paths import PROJECT_ROOT
+
 
 def _package_root():
     return files("mk8_local_play_data")
@@ -8,8 +10,7 @@ def _package_root():
 
 def resolve_data_file(*relative_parts: str) -> Path:
     """Resolve data from the repo checkout first, then from installed package data."""
-    project_root = Path(__file__).resolve().parent
-    local_candidate = project_root.joinpath(*relative_parts)
+    local_candidate = PROJECT_ROOT.joinpath(*relative_parts)
     if local_candidate.exists():
         return local_candidate
 
@@ -21,5 +22,9 @@ def resolve_asset_file(*relative_parts: str) -> Path:
     return resolve_data_file("assets", *relative_parts)
 
 
+def resolve_reference_file(*relative_parts: str) -> Path:
+    return resolve_data_file("reference_data", *relative_parts)
+
+
 def resolve_track_metadata_file() -> Path:
-    return resolve_data_file("track_metadata.json")
+    return resolve_reference_file("track_metadata.json")

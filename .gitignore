@@ -28,8 +28,8 @@ Output_Results/Debug/linking_*.xlsx
 ocr_profile_run.txt
 
 # Local benchmark baselines
-baselines/quick/
-baselines/local/
-baselines/*_current/
-baselines/*_baseline/
-!baselines/.gitkeep
+benchmarks/baselines/quick/
+benchmarks/baselines/local/
+benchmarks/baselines/*_current/
+benchmarks/baselines/*_baseline/
+!benchmarks/baselines/.gitkeep

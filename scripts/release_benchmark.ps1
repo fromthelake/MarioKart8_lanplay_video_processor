@@ -1,6 +1,6 @@
 param(
     [string]$VideoName = "Divisie_1.mkv",
-    [string]$BaselineDir = "baselines/2026-03-08_current_output_baseline",
+    [string]$BaselineDir = "benchmarks/baselines/2026-03-08_current_output_baseline",
     [string]$RaceClass = "Divisie_1"
 )
 

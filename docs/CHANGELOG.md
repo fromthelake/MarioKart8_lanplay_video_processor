@@ -26,13 +26,13 @@ The format is intentionally simple and human-readable.
 - New documentation:
   - `README.md`
   - `ReadMe.txt`
-  - `PROJECT_STRUCTURE.md`
-  - `CONTRIBUTING.md`
+  - `docs/PROJECT_STRUCTURE.md`
+  - `docs/CONTRIBUTING.md`
 - New release history file:
-  - `CHANGELOG.md`
+  - `docs/CHANGELOG.md`
 - Repo placeholder files for cleaner fresh clones:
   - `Input_Videos/.gitkeep`
-  - `baselines/.gitkeep`
+  - `benchmarks/baselines/.gitkeep`
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed

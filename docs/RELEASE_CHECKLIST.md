@@ -25,9 +25,9 @@ Use this checklist before calling the repo release-ready.
 ## Documentation
 
 - `README.md` is up to date
-- `PROJECT_STRUCTURE.md` is up to date
-- `CONTRIBUTING.md` is up to date
-- `CHANGELOG.md` includes the latest user-visible changes
+- `docs/PROJECT_STRUCTURE.md` is up to date
+- `docs/CONTRIBUTING.md` is up to date
+- `docs/CHANGELOG.md` includes the latest user-visible changes
 
 ## Repo Hygiene
 

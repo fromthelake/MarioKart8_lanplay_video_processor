@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VIDEO_NAME="${1:-Test_3_Races.mkv}"
-BASELINE_DIR="${2:-baselines/quick/Test_3_Races}"
+BASELINE_DIR="${2:-benchmarks/baselines/quick/Test_3_Races}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from .project_paths import PROJECT_ROOT
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -55,7 +57,7 @@ def _load_json_config(config_path: Path) -> dict:
 
 
 def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
-    base_dir = Path(base_dir or Path(__file__).resolve().parent)
+    base_dir = Path(base_dir or PROJECT_ROOT)
     config_path = base_dir / "app_config.json"
     json_config = _load_json_config(config_path)
 

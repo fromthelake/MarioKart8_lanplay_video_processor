@@ -12,68 +12,74 @@ The project has two main phases:
 ## Entry Points
 
 - `main.py`
-  - main CLI and GUI entrypoint
-  - launches extraction, OCR, merge, runtime checks, and profile runs
+  - thin root launcher for the packaged CLI and GUI
+- `extract_frames.py`
+  - thin root launcher for extraction-only runs
+- `extract_text.py`
+  - thin root launcher for OCR-only runs
+- `mk8_local_play/`
+  - real application package
+  - contains the implementation modules that power the root launchers
 
 ## Extraction Modules
 
-- `extract_frames.py`
+- `mk8_local_play/extract_frames.py`
   - extraction orchestrator
   - loads videos, scales the image, coordinates detection, and writes extracted frames
-- `extract_initial_scan.py`
+- `mk8_local_play/extract_initial_scan.py`
   - fast first scan over the video
   - looks for three anchor screens:
     - score screen
     - track-name screen
     - race-number screen
-- `extract_score_screen_selection.py`
+- `mk8_local_play/extract_score_screen_selection.py`
   - takes rough score detections and chooses the best race-score and total-score frames
-- `extract_video_io.py`
+- `mk8_local_play/extract_video_io.py`
   - shared helpers for frame reads, seeks, and export metadata
-- `extract_common.py`
+- `mk8_local_play/extract_common.py`
   - shared extraction utilities such as scaling, cropping, template matching, and GPU/runtime helpers
 
 ## OCR Modules
 
-- `extract_text.py`
+- `mk8_local_play/extract_text.py`
   - OCR/export orchestrator
   - groups screenshots into races and coordinates the OCR pipeline
-- `ocr_scoreboard_consensus.py`
+- `mk8_local_play/ocr_scoreboard_consensus.py`
   - reads several nearby score frames
   - combines them into one best guess
   - maps race-score rows to total-score rows
-- `ocr_name_matching.py`
+- `mk8_local_play/ocr_name_matching.py`
   - fuzzy matching for noisy OCR player names across races
   - chooses a canonical player spelling for each row history
-- `ocr_session_validation.py`
+- `mk8_local_play/ocr_session_validation.py`
   - computes running totals
   - detects likely new sessions inside one source video
   - flags rows that need manual review
-- `ocr_export.py`
+- `mk8_local_play/ocr_export.py`
   - writes the final workbook
   - builds the user-facing OCR completion summary
-- `ocr_common.py`
+- `mk8_local_play/ocr_common.py`
   - shared OCR frame and metadata helpers
 
 ## Runtime And Configuration
 
-- `app_runtime.py`
+- `mk8_local_play/app_runtime.py`
   - loads `app_config.json`
   - resolves Tesseract
   - checks runtime dependencies
   - detects OpenCV GPU/OpenCL availability
 - `app_config.example.json`
   - example config for local overrides
-- `console_logging.py`
+- `mk8_local_play/console_logging.py`
   - consistent operator-style logging and resource reporting
 
 ## Track Metadata
 
-- `track_metadata.json`
+- `reference_data/track_metadata.json`
   - source of truth for track IDs and cup names
-- `track_metadata.py`
+- `mk8_local_play/track_metadata.py`
   - small loader around the JSON file
-- `TrackNames/`
+- `reference_data/track_reference_images/`
   - reference assets kept in-repo for manual checking and hobby use
 
 ## Assets And User Data

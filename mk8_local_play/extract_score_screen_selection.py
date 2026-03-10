@@ -4,8 +4,9 @@ import time
 import cv2
 import numpy as np
 
-from extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, crop_to_gray_and_upscale_image, match_template, preprocess_roi
-from extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
+from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, crop_to_gray_and_upscale_image, match_template, preprocess_roi
+from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
+from .project_paths import PROJECT_ROOT
 
 
 def enhance_export_frame(upscaled_image, scale_x, scale_y):
@@ -201,8 +202,7 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
-    script_dir = os.path.dirname(__file__)
-    output_folder = os.path.join(script_dir, 'Output_Results', 'Frames')
+    output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     os.makedirs(output_folder, exist_ok=True)
     frame_filename = os.path.join(
         output_folder,

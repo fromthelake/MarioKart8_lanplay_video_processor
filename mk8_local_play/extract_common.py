@@ -5,7 +5,8 @@ from glob import glob
 import cv2
 import numpy as np
 
-from app_runtime import detect_gpu_runtime, load_app_config
+from .app_runtime import detect_gpu_runtime, load_app_config
+from .project_paths import PROJECT_ROOT
 
 APP_CONFIG = load_app_config()
 TARGET_WIDTH = 1280
@@ -130,8 +131,7 @@ def load_videos_from_folder(folder_path):
 
 def count_exported_detection_files(video_path):
     """Count exported frame types for one source video."""
-    script_dir = os.path.dirname(__file__)
-    output_folder = os.path.join(script_dir, 'Output_Results', 'Frames')
+    output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     video_stem = os.path.splitext(os.path.basename(video_path))[0]
     return {
         "track": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+0TrackName.png"))),

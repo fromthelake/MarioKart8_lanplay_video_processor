@@ -9,9 +9,10 @@ from queue import Empty, Queue
 import cv2
 import numpy as np
 
-from console_logging import LOGGER
-from extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi
-import extract_video_io as video_io
+from .console_logging import LOGGER
+from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi
+from .project_paths import PROJECT_ROOT
+from . import extract_video_io as video_io
 
 
 INITIAL_SCAN_TARGETS = (
@@ -138,7 +139,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                 runtime_state["last_track_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
                 LOGGER.log("", f"Race {race_number:03} | track screen found at source {timecode}", color_name="green")
-                output_folder = os.path.join(os.path.dirname(__file__), "Output_Results", "Frames")
+                output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
                 os.makedirs(output_folder, exist_ok=True)
                 frame_filename = os.path.join(
                     output_folder,
@@ -168,7 +169,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                 runtime_state["last_race_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
                 LOGGER.log("", f"Race {race_number:03} | race number found at source {timecode}", color_name="green")
-                output_folder = os.path.join(os.path.dirname(__file__), "Output_Results", "Frames")
+                output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
                 os.makedirs(output_folder, exist_ok=True)
                 frame_filename = os.path.join(
                     output_folder,
@@ -445,7 +446,7 @@ def save_auxiliary_detection_frames(capture, video_path, detections, score_frame
     if not detections:
         return
 
-    output_folder = os.path.join(os.path.dirname(__file__), "Output_Results", "Frames")
+    output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
     os.makedirs(output_folder, exist_ok=True)
 
     for detection in detections:

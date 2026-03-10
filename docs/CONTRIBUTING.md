@@ -66,7 +66,7 @@ python main.py --ocr --video Demo_CaptureCard_Race.mp4
 If you change output logic, also compare against a baseline:
 
 ```bash
-python tools/validate_outputs.py --baseline-dir baselines/<baseline-name>
+python tools/validate_outputs.py --baseline-dir benchmarks/baselines/<baseline-name>
 ```
 
 ## Runtime Output Policy
@@ -77,7 +77,7 @@ Normal runtime data belongs in:
 - `Output_Results/`
 
 Curated benchmark or regression material belongs in:
-- `baselines/`
+- `benchmarks/baselines/`
 
 ## Performance Work
 
@@ -95,8 +95,8 @@ When changing performance-sensitive code:
 If you change workflow, setup, commands, config, or repo structure, update:
 - `README.md`
 - `ReadMe.txt`
-- `PROJECT_STRUCTURE.md`
-- `CHANGELOG.md`
+- `docs/PROJECT_STRUCTURE.md`
+- `docs/CHANGELOG.md`
 
 The repo should stay understandable for:
 - a hobbyist user
