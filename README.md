@@ -62,7 +62,12 @@ The processing pipeline has two major stages.
 - combines nearby frames to reduce OCR mistakes
 - matches fuzzy player names across races
 - checks race points and running totals
+- resolves tracks, cups, and future character metadata from one compact game catalog
 - writes an Excel workbook
+
+Metadata note:
+- the repo runtime uses `reference_data/game_catalog.json` as the single source of truth
+- that compact catalog is derived locally from `database/firestore-export.json`
 
 ## Quick Start
 

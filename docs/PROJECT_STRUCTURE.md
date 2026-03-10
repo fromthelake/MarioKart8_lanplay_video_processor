@@ -73,12 +73,18 @@ The project has two main phases:
 - `mk8_local_play/console_logging.py`
   - consistent operator-style logging and resource reporting
 
-## Track Metadata
+## Game Catalog
 
-- `reference_data/track_metadata.json`
-  - source of truth for track IDs and cup names
+- `database/firestore-export.json`
+  - local source export used to derive the compact catalog
+- `reference_data/game_catalog.json`
+  - single source of truth for cups, tracks, and characters
+- `tools/build_game_catalog.py`
+  - rebuilds the compact catalog from the Firestore export
+- `mk8_local_play/game_catalog.py`
+  - loader around the compact catalog
 - `mk8_local_play/track_metadata.py`
-  - small loader around the JSON file
+  - compatibility wrapper for existing track tuple consumers
 - `reference_data/track_reference_images/`
   - reference assets kept in-repo for manual checking and hobby use
 

@@ -18,9 +18,7 @@ Output_Results/Debug/*
 !Output_Results/Debug/.gitkeep
 Output_Results/Debug/Score_Frames/*
 !Output_Results/Debug/Score_Frames/.gitkeep
-Output_Results/Tournament_Results.xlsx
 Output_Results/*_Tournament_Results.xlsx
-Output_Results/Tournament_Results_Debug.xlsx
 Output_Results/*_Tournament_Results_Debug.xlsx
 Output_Results/_temp_*.xlsx
 
@@ -29,6 +27,9 @@ Output_Results/Debug/debug_max_val.csv
 Output_Results/Debug/exported_frame_metadata.csv
 Output_Results/Debug/linking_*.xlsx
 ocr_profile_run.txt
+
+# Local source export used to rebuild the compact game catalog
+database/firestore-export.json
 
 # Local benchmark baselines
 benchmarks/baselines/quick/

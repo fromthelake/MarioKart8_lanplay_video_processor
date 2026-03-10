@@ -26,5 +26,9 @@ def resolve_reference_file(*relative_parts: str) -> Path:
     return resolve_data_file("reference_data", *relative_parts)
 
 
+def resolve_game_catalog_file() -> Path:
+    return resolve_reference_file("game_catalog.json")
+
+
 def resolve_track_metadata_file() -> Path:
-    return resolve_reference_file("track_metadata.json")
+    return resolve_game_catalog_file()

@@ -55,6 +55,7 @@ The format is intentionally simple and human-readable.
 - Naming moved toward clearer, human-readable module and function names.
 - Internal extraction naming now prefers descriptive terms like `initial scan` instead of vague phase labels.
 - OCR output writes timestamped workbooks to `Output_Results/`
+- Track, cup, and character metadata now derive from a compact `reference_data/game_catalog.json` built from `database/firestore-export.json`.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.

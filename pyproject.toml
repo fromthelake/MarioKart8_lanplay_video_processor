@@ -38,7 +38,7 @@ include = ["mk8_local_play", "mk8_local_play_data"]
 
 [tool.setuptools.package-data]
 mk8_local_play_data = [
-  "reference_data/track_metadata.json",
+  "reference_data/game_catalog.json",
   "assets/gui/*.jpg",
   "assets/templates/*.png",
 ]
