@@ -305,6 +305,7 @@ def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str,
                 "best_position_template": int(hybrid_best["template_index"]),
                 "best_position_coeff_template": int(coeff_best["template_index"]),
                 "best_position_iou_template": int(iou_best["template_index"]),
+                "coeff_ranked_templates": [int(item["template_index"]) for item in coeff_sorted],
                 "best_position_iou": round(float(iou_best["white_iou"]), 3),
                 "best_position_weighted_iou": round(float(iou_best["weighted_white_iou"]), 3),
                 "best_position_template_score": round(float(hybrid_best["coefficient"]), 3),
@@ -446,12 +447,20 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
     for metric in row_metrics:
         best_position_score = float(metric.get("best_position_score", 0.0))
         best_rank = int(metric.get("best_position_template", 0))
+        coeff_ranked_templates = [int(value) for value in metric.get("coeff_ranked_templates", [])]
 
         row_supported = best_position_score >= POSITION_PRESENT_COEFF_THRESHOLD
 
-        # Ranking rows should never decrease as the table goes downward. Ties remain valid.
+        # Ranking rows should never decrease as the table goes downward. If the preferred
+        # template drops below the previous row, try the next logical high-coefficient
+        # candidate first instead of stopping immediately. This helps with near-neighbours
+        # such as 3 vs 8 while still enforcing a non-decreasing rank sequence.
         if row_supported and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
-            row_supported = False
+            fallback_rank = next((template_rank for template_rank in coeff_ranked_templates if template_rank >= last_confirmed_rank), 0)
+            if fallback_rank > 0:
+                best_rank = fallback_rank
+            else:
+                row_supported = False
 
         if not row_supported:
             break

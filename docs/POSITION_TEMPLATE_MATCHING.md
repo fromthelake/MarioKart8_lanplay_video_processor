@@ -109,6 +109,21 @@ Once a row passed the presence gate, the official template-ranking method is:
 
 This is now implemented as the official position-guided template ranking.
 
+### Step 3. Monotone fallback
+
+Rows may stay equal or increase as the table goes down.
+
+That means:
+
+- lower than the row above is not allowed
+- equal to the row above is allowed
+- higher than the row above is allowed
+
+If the preferred template would drop below the row above, the code now tries the next
+logical high-coefficient candidate first instead of stopping immediately.
+
+This is mainly useful for close-shape neighbours such as `3` and `8`.
+
 ## Current status
 
 The stricter ROI and the new template slicing made the row-level results much stronger.
