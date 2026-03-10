@@ -416,14 +416,9 @@ This repository only provides the program code around the processing workflow.
 - It is meant for hobby and private-use scenarios.
 - Users remain responsible for respecting all third-party rights when using it.
 
-## Compatibility Wrappers
+## Primary Entry Points
 
-Older script names still exist so existing habits and shortcuts do not break:
-- `Main_RunMe.py`
-- `Extract_Frames_From_Video.py`
-- `Extract_Text_From_Frames.py`
-
-New work should use:
+Use these files:
 - `main.py`
 - `extract_frames.py`
 - `extract_text.py`

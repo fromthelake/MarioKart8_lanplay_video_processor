@@ -14,8 +14,6 @@ The project has two main phases:
 - `main.py`
   - main CLI and GUI entrypoint
   - launches extraction, OCR, merge, runtime checks, and profile runs
-- `Main_RunMe.py`
-  - compatibility wrapper for the old filename
 
 ## Extraction Modules
 
@@ -34,9 +32,6 @@ The project has two main phases:
   - shared helpers for frame reads, seeks, and export metadata
 - `extract_common.py`
   - shared extraction utilities such as scaling, cropping, template matching, and GPU/runtime helpers
-
-Compatibility wrappers:
-- `Extract_Frames_From_Video.py`
 
 ## OCR Modules
 
@@ -59,9 +54,6 @@ Compatibility wrappers:
   - builds the user-facing OCR completion summary
 - `ocr_common.py`
   - shared OCR frame and metadata helpers
-
-Compatibility wrappers:
-- `Extract_Text_From_Frames.py`
 
 ## Runtime And Configuration
 
