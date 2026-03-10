@@ -35,7 +35,7 @@ POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 5
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
 POSITION_PRESENT_COEFF_THRESHOLD = 0.60
 CHARACTER_ROI_LEFT = 377
-CHARACTER_TEMPLATE_SIZE = 51
+CHARACTER_TEMPLATE_SIZE = 48
 CHARACTER_ROW_START = 49
 CHARACTER_ROW_STEP = 52
 CHARACTER_ROW_PADDING_TOP = 2
@@ -177,19 +177,27 @@ def load_character_templates() -> List[Dict[str, object]]:
         template_path = resolve_asset_file("character", f"{character.character_index}.png")
         if not template_path.exists():
             continue
-        template_image = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+        template_image = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
         if template_image is None:
             continue
+        if len(template_image.shape) == 2:
+            template_image = cv2.cvtColor(template_image, cv2.COLOR_GRAY2BGRA)
+        elif template_image.shape[2] == 3:
+            alpha_channel = np.full(template_image.shape[:2], 255, dtype=np.uint8)
+            template_image = np.dstack((template_image, alpha_channel))
         resized_template = cv2.resize(
             template_image,
             (CHARACTER_TEMPLATE_SIZE, CHARACTER_TEMPLATE_SIZE),
             interpolation=cv2.INTER_LINEAR,
         )
+        template_rgb = resized_template[:, :, :3]
+        template_alpha = resized_template[:, :, 3]
         templates.append(
             {
                 "character_index": int(character.character_index),
                 "character_name": str(character.name_uk),
-                "template_image": resized_template,
+                "template_image": template_rgb,
+                "template_alpha": template_alpha,
             }
         )
     return templates
@@ -366,13 +374,16 @@ def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, obj
 
         best_match = None
         for template in templates:
-            result = cv2.matchTemplate(row_roi, template["template_image"], cv2.TM_CCOEFF_NORMED)
-            _, max_value, _, _ = cv2.minMaxLoc(result)
+            match_result = masked_character_match_score(
+                row_roi,
+                template["template_image"],
+                template["template_alpha"],
+            )
             candidate = {
                 "Character": template["character_name"],
                 "CharacterIndex": template["character_index"],
-                "CharacterMatchConfidence": round(float(max_value) * 100.0, 1),
-                "CharacterMatchMethod": "color_template_local_search",
+                "CharacterMatchConfidence": round(float(match_result["score"]) * 100.0, 1),
+                "CharacterMatchMethod": "alpha_aware_color_template_local_search",
             }
             if best_match is None or candidate["CharacterMatchConfidence"] > best_match["CharacterMatchConfidence"]:
                 best_match = candidate
@@ -383,6 +394,50 @@ def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, obj
             "CharacterMatchMethod": "no_match",
         })
     return metrics
+
+
+def masked_character_match_score(source_image: np.ndarray, template_image: np.ndarray, template_alpha: np.ndarray) -> Dict[str, float]:
+    """Match a character icon while ignoring fully transparent template pixels.
+
+    The score is color-based and alpha-aware:
+    - only pixels where the template alpha is visible contribute
+    - transparent template background does not count toward confidence
+    - the best local placement inside the padded ROI is returned
+    """
+    source_height, source_width = source_image.shape[:2]
+    template_height, template_width = template_image.shape[:2]
+    if source_height < template_height or source_width < template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        source_height, source_width = source_image.shape[:2]
+
+    visible_mask = template_alpha > 16
+    visible_pixels = int(np.count_nonzero(visible_mask))
+    if visible_pixels <= 0:
+        return {"score": 0.0, "offset_x": 0, "offset_y": 0}
+
+    best_score = None
+    best_offset = (0, 0)
+    template_rgb = template_image.astype(np.float32)
+    mask_3d = np.repeat(visible_mask[:, :, None], 3, axis=2)
+
+    for offset_y in range(source_height - template_height + 1):
+        for offset_x in range(source_width - template_width + 1):
+            window = source_image[offset_y:offset_y + template_height, offset_x:offset_x + template_width].astype(np.float32)
+            masked_template = template_rgb[mask_3d]
+            masked_window = window[mask_3d]
+            if masked_window.size == 0:
+                continue
+            mean_abs_diff = float(np.mean(np.abs(masked_template - masked_window)))
+            score = max(0.0, 1.0 - (mean_abs_diff / 255.0))
+            if best_score is None or score > best_score:
+                best_score = score
+                best_offset = (offset_x, offset_y)
+
+    return {
+        "score": float(best_score or 0.0),
+        "offset_x": int(best_offset[0]),
+        "offset_y": int(best_offset[1]),
+    }
 
 
 def build_row_presence_metrics(names: List[str], confidence_scores: List[int], race_points: List[str], total_points: List[str]) -> List[Dict[str, object]]:
