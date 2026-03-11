@@ -842,18 +842,41 @@ def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
     return best_value, (best_weight / total_weight if total_weight > 0 else 0.0)
 
 
-def build_consensus_rows(observations: List[Dict[str, object]], visible_rows: int, points_key: str) -> List[Dict[str, object]]:
+def select_consensus_window(observations: List[Dict[str, object]], mode: str, size: int = 3) -> List[Dict[str, object]]:
+    """Pick a stable observation subset for a specific OCR signal."""
+    if not observations:
+        return []
+    if len(observations) <= size or mode == "all":
+        return observations
+    if mode == "early":
+        return observations[:size]
+    if mode == "late":
+        return observations[-size:]
+    return observations
+
+
+def build_consensus_rows(
+    *,
+    name_observations: List[Dict[str, object]],
+    point_observations: List[Dict[str, object]],
+    visible_rows: int,
+    points_key: str,
+    character_observations: List[Dict[str, object]] | None = None,
+) -> List[Dict[str, object]]:
     """Collapse multiple nearby frames into one best-effort row list."""
+    character_observations = character_observations or point_observations
     rows = []
     for row_index in range(max(visible_rows, 1)):
         name_votes = []
         point_votes = []
         character_votes = []
-        for observation in observations:
+        for observation in name_observations:
             name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
             name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
             name_votes.append((name, max(1.0, float(name_conf))))
+        for observation in point_observations:
             point_votes.append((parse_detected_int(observation[points_key][row_index]), 1.0))
+        for observation in character_observations:
             if row_index < len(observation.get("character_metrics", [])):
                 character_match = observation["character_metrics"][row_index]
                 if character_match.get("CharacterIndex") is not None:
@@ -1078,16 +1101,22 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     if not total_observations:
         total_observations = score_observations
 
-    visible_votes = Counter(observation["visible_rows"] for observation in score_observations if observation["visible_rows"] > 0)
+    score_name_observations = select_consensus_window(score_observations, "all")
+    score_point_observations = select_consensus_window(score_observations, "early")
+    score_character_observations = select_consensus_window(score_observations, "late")
+    score_position_observations = select_consensus_window(score_observations, "late")
+    score_count_observations = select_consensus_window(score_observations, "early")
+
+    visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
-    row_count_confidence = (visible_votes[visible_rows] / len(score_observations)) if visible_rows and score_observations else 0.0
+    row_count_confidence = (visible_votes[visible_rows] / len(score_count_observations)) if visible_rows and score_count_observations else 0.0
     position_guided_visible_votes = Counter(
-        observation["position_guided_visible_rows"] for observation in score_observations if observation["position_guided_visible_rows"] > 0
+        observation["position_guided_visible_rows"] for observation in score_count_observations if observation["position_guided_visible_rows"] > 0
     )
     position_guided_visible_rows = position_guided_visible_votes.most_common(1)[0][0] if position_guided_visible_votes else 0
     position_guided_row_count_confidence = (
-        position_guided_visible_votes[position_guided_visible_rows] / len(score_observations)
-        if position_guided_visible_rows and score_observations else 0.0
+        position_guided_visible_votes[position_guided_visible_rows] / len(score_count_observations)
+        if position_guided_visible_rows and score_count_observations else 0.0
     )
     total_visible_votes = Counter(observation["visible_rows"] for observation in total_observations if observation["visible_rows"] > 0)
     total_visible_rows = total_visible_votes.most_common(1)[0][0] if total_visible_votes else visible_rows
@@ -1099,26 +1128,34 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     )
 
     recovery = select_race_score_recovery(
-        score_observations,
+        score_position_observations,
         current_score_rows=position_guided_visible_rows,
         current_confidence=round(position_guided_row_count_confidence * 100, 1),
         total_score_rows=total_position_guided_visible_rows,
     )
     if recovery["used"]:
         position_guided_visible_rows = int(recovery["count"])
-        recovery_start_index = int(recovery["index"])
-        recovery_observations = score_observations[recovery_start_index:]
         position_guided_row_count_confidence = max(position_guided_row_count_confidence, 0.85)
-    else:
-        recovery_observations = score_observations
 
-    representative_score_observation = score_observations[len(score_observations) // 2] if score_observations else {}
+    representative_score_observation = score_position_observations[len(score_position_observations) // 2] if score_position_observations else {}
     representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
 
     # Use the position-guided count as the official row count. The older OCR-only count
     # is still returned in debug data as a legacy reference.
-    score_rows = build_consensus_rows(recovery_observations, position_guided_visible_rows, "race_points")
-    total_rows = build_consensus_rows(total_observations, total_position_guided_visible_rows, "total_points")
+    score_rows = build_consensus_rows(
+        name_observations=score_name_observations,
+        point_observations=score_point_observations,
+        visible_rows=position_guided_visible_rows,
+        points_key="race_points",
+        character_observations=score_character_observations,
+    )
+    total_rows = build_consensus_rows(
+        name_observations=total_observations,
+        point_observations=total_observations,
+        visible_rows=total_position_guided_visible_rows,
+        points_key="total_points",
+        character_observations=total_observations,
+    )
     rows = map_total_rows_to_race_rows(
         score_rows,
         total_rows,
@@ -1138,9 +1175,9 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "legacy_total_visible_rows": total_visible_rows,
         "row_count_confidence": round(position_guided_row_count_confidence * 100, 1),
         "legacy_row_count_confidence": round(row_count_confidence * 100, 1),
-        "score_count_votes": summarize_count_votes(score_observations, "position_guided_visible_rows"),
+        "score_count_votes": summarize_count_votes(score_count_observations, "position_guided_visible_rows"),
         "total_count_votes": summarize_count_votes(total_observations, "position_guided_visible_rows"),
-        "legacy_score_count_votes": summarize_count_votes(score_observations, "visible_rows"),
+        "legacy_score_count_votes": summarize_count_votes(score_count_observations, "visible_rows"),
         "legacy_total_count_votes": summarize_count_votes(total_observations, "visible_rows"),
         "score_row_metrics_summary": representative_score_observation.get("row_metrics_summary", ""),
         "total_row_metrics_summary": representative_total_observation.get("row_metrics_summary", ""),

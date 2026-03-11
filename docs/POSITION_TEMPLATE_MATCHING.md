@@ -158,3 +158,31 @@ When the selected RaceScore frame looks suspicious, the OCR layer now:
 
 This recovery only changes the RaceScore player-count decision. It does not replace the
 whole OCR payload for the race.
+
+## RaceScore frame split
+
+RaceScore OCR now uses different frame subsets for different signals inside the same
+7-frame consensus bundle.
+
+Current split:
+
+- player names: all 7 nearby frames
+- race points: first 3 frames
+- character icons: last 3 frames
+- left-side position templates: last 3 frames
+- RaceScore player count: first 3 frames
+
+Why this split exists:
+
+- early RaceScore frames keep the points table clean before later drift starts pulling
+  values downward
+- late RaceScore frames are better for stable character icons and left-side rank shapes
+- names benefit most from the larger 7-frame vote
+
+This was validated directly on `Divisie_2` race 1:
+
+- frames `8299..8302` read the correct race points
+- frames `8303..8305` drifted downward by `-1` and then `-2`
+
+So race points now use the early clean subset, while later frames are reserved for the
+signals that visibly improve later in the score-screen animation.
