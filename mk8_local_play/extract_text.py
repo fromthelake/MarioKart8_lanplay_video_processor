@@ -23,8 +23,12 @@ from .ocr_common import find_metadata_entry, load_consensus_frames, load_exporte
 from .ocr_scoreboard_consensus import (
     build_consensus_observation,
     build_race_warning_messages,
+    character_shortlist_summary_lines,
     exact_total_score_fallback,
+    observation_stage_summary_lines,
     parse_detected_int,
+    reset_character_shortlist_state,
+    reset_observation_stage_stats,
 )
 from .ocr_session_validation import apply_session_validation
 from .project_paths import PROJECT_ROOT
@@ -436,6 +440,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         preprocess_name,
         weighted_similarity,
         annotate_path,
+        video_context=race_class,
     )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
@@ -501,6 +506,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 
 def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, selected_race_classes=None):
     phase_start_time = time.time()
+    reset_observation_stage_stats()
+    reset_character_shortlist_state()
     image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
 
     if not image_files:
@@ -651,7 +658,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         folder_path,
         phase_start_time,
         progress.peak_lines(),
-        OCR_PROFILER.summary_lines(),
+        OCR_PROFILER.summary_lines() + observation_stage_summary_lines() + character_shortlist_summary_lines(),
         per_video_ocr_durations,
         build_race_warning_messages,
         pluralize,

@@ -1,5 +1,7 @@
 import os
 import re
+import time
+import threading
 from collections import Counter, defaultdict
 from functools import lru_cache
 from typing import Dict, List, Tuple
@@ -40,6 +42,76 @@ CHARACTER_ROW_START = 49
 CHARACTER_ROW_STEP = 52
 CHARACTER_ROW_PADDING_TOP = 2
 CHARACTER_ROW_PADDING_BOTTOM = 2
+EXCLUDED_CHARACTER_TEMPLATE_INDICES = {79, 80, 81}
+OBSERVATION_STAGE_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
+CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(set)
+CHARACTER_SHORTLIST_LOCK = threading.Lock()
+CHARACTER_SHORTLIST_STATS = defaultdict(int)
+PLAYER_CHARACTER_PRIORS = defaultdict(dict)
+CHARACTER_SHORTLIST_MIN_CONFIDENCE = 78.0
+CHARACTER_SHORTLIST_MIN_MARGIN = 5.0
+CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 76.0
+CHARACTER_PRIOR_STABLE_MIN_SEEN = 2
+CHARACTER_PRIOR_MAX_FAST_ACCEPTS = 6
+
+
+def record_observation_stage(label: str, duration_s: float) -> None:
+    stats = OBSERVATION_STAGE_STATS[label]
+    stats["calls"] += 1
+    stats["seconds"] += duration_s
+
+
+def observation_stage_summary_lines() -> List[str]:
+    if not OBSERVATION_STAGE_STATS:
+        return []
+    total_seconds = sum(item["seconds"] for item in OBSERVATION_STAGE_STATS.values())
+    lines = [f"Observation stage time: {total_seconds:.2f}s"]
+    for label, item in sorted(OBSERVATION_STAGE_STATS.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
+        avg_ms = (item["seconds"] / max(1, item["calls"])) * 1000.0
+        lines.append(f"- {label}: {item['calls']} calls | {item['seconds']:.2f}s total | {avg_ms:.1f} ms/call")
+    return lines
+
+
+def reset_observation_stage_stats() -> None:
+    OBSERVATION_STAGE_STATS.clear()
+
+
+def character_shortlist_summary_lines() -> List[str]:
+    if not CHARACTER_SHORTLIST_STATS:
+        return []
+    return [
+        "Character shortlist activity",
+        f"- prior rows accepted: {CHARACTER_SHORTLIST_STATS['prior_accepts']}",
+        f"- shortlist rows accepted: {CHARACTER_SHORTLIST_STATS['shortlist_accepts']}",
+        f"- prior rows escalated to shortlist/full search: {CHARACTER_SHORTLIST_STATS['prior_fallbacks']}",
+        f"- shortlist rows escalated to full search: {CHARACTER_SHORTLIST_STATS['shortlist_fallbacks']}",
+        f"- full-search rows: {CHARACTER_SHORTLIST_STATS['full_search_rows']}",
+        f"- shortlist expansions: {CHARACTER_SHORTLIST_STATS['shortlist_expansions']}",
+    ]
+
+
+def reset_character_shortlist_state() -> None:
+    with CHARACTER_SHORTLIST_LOCK:
+        CHARACTER_SHORTLIST_BY_VIDEO.clear()
+        PLAYER_CHARACTER_PRIORS.clear()
+    CHARACTER_SHORTLIST_STATS.clear()
+
+
+def player_identity_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+def is_risky_character_family(character_name: str) -> bool:
+    normalized = str(character_name or "").lower()
+    return "yoshi" in normalized or "birdo" in normalized
+
+
+def character_margin_threshold(character_name: str) -> float:
+    return 3.5 if is_risky_character_family(character_name) else 3.0
+
+
+def character_confidence_threshold(character_name: str) -> float:
+    return 74.5 if is_risky_character_family(character_name) else CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE
 
 
 def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
@@ -174,6 +246,8 @@ def load_character_templates() -> List[Dict[str, object]]:
     catalog = load_game_catalog()
     templates = []
     for character in catalog.characters:
+        if int(character.character_index) in EXCLUDED_CHARACTER_TEMPLATE_INDICES:
+            continue
         template_path = resolve_asset_file("character", f"{character.character_index}.png")
         if not template_path.exists():
             continue
@@ -201,6 +275,63 @@ def load_character_templates() -> List[Dict[str, object]]:
             }
         )
     return templates
+
+
+def shortlist_character_templates(templates: List[Dict[str, object]], allowed_indices: set[int]) -> List[Dict[str, object]]:
+    if not allowed_indices:
+        return templates
+    shortlisted = [template for template in templates if int(template["character_index"]) in allowed_indices]
+    return shortlisted or templates
+
+
+def best_character_matches(row_roi: np.ndarray, templates: List[Dict[str, object]], limit: int = 2) -> List[Dict[str, object]]:
+    ranked_matches = []
+    for template in templates:
+        match_result = masked_character_match_score(
+            row_roi,
+            template["template_image"],
+            template["template_alpha"],
+        )
+        ranked_matches.append(
+            {
+                "Character": template["character_name"],
+                "CharacterIndex": template["character_index"],
+                "CharacterMatchConfidence": round(float(match_result["score"]) * 100.0, 1),
+                "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+            }
+        )
+    ranked_matches.sort(key=lambda item: item["CharacterMatchConfidence"], reverse=True)
+    return ranked_matches[:limit]
+
+
+def update_player_character_prior(video_context: str | None, player_name: str, match: Dict[str, object]) -> None:
+    if not video_context:
+        return
+    player_key = player_identity_key(player_name)
+    if len(player_key) < 3:
+        return
+    character_index = match.get("CharacterIndex")
+    if character_index is None:
+        return
+    with CHARACTER_SHORTLIST_LOCK:
+        player_priors = PLAYER_CHARACTER_PRIORS[str(video_context)]
+        existing = player_priors.get(player_key)
+        if existing and int(existing["CharacterIndex"]) == int(character_index):
+            existing["seen_count"] = int(existing.get("seen_count", 1)) + 1
+            if match.get("CharacterMatchMethod") == "character_prior_confirm":
+                existing["fast_accepts_since_revalidation"] = int(existing.get("fast_accepts_since_revalidation", 0)) + 1
+            else:
+                existing["fast_accepts_since_revalidation"] = 0
+            existing["CharacterMatchConfidence"] = float(match.get("CharacterMatchConfidence", existing.get("CharacterMatchConfidence", 0.0)))
+            existing["Character"] = str(match.get("Character", existing.get("Character", "")))
+        else:
+            player_priors[player_key] = {
+                "CharacterIndex": int(character_index),
+                "Character": str(match.get("Character", "")),
+                "CharacterMatchConfidence": float(match.get("CharacterMatchConfidence", 0.0)),
+                "seen_count": 1,
+                "fast_accepts_since_revalidation": 0,
+            }
 
 
 def _template_match_score(source_image: np.ndarray, template_image: np.ndarray) -> float:
@@ -338,7 +469,13 @@ def build_normalized_position_strip(processed_image: np.ndarray) -> np.ndarray:
     return combine_position_rows(normalize_position_rows(position_strip))
 
 
-def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, object]]:
+def build_character_match_metrics(
+    frame_image: np.ndarray,
+    *,
+    names: List[str] | None = None,
+    name_confidences: List[int] | None = None,
+    video_context: str | None = None,
+) -> List[Dict[str, object]]:
     """Template-match the full-color character icons for each scoreboard row."""
     templates = load_character_templates()
     if not templates:
@@ -354,6 +491,10 @@ def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, obj
 
     image_height, image_width = frame_image.shape[:2]
     metrics = []
+    with CHARACTER_SHORTLIST_LOCK:
+        shortlist_indices = set(CHARACTER_SHORTLIST_BY_VIDEO.get(str(video_context or ""), set()))
+        prior_state_by_player = dict(PLAYER_CHARACTER_PRIORS.get(str(video_context or ""), {}))
+    templates_by_index = {int(template["character_index"]): template for template in templates}
     for row_index in range(12):
         (x1, y1), (x2, y2) = character_row_roi(row_index)
         crop_x1 = max(0, min(image_width, x1))
@@ -372,27 +513,83 @@ def build_character_match_metrics(frame_image: np.ndarray) -> List[Dict[str, obj
             )
             continue
 
-        best_match = None
-        for template in templates:
-            match_result = masked_character_match_score(
-                row_roi,
-                template["template_image"],
-                template["template_alpha"],
+        player_name = names[row_index] if names and row_index < len(names) else ""
+        player_name_confidence = float(name_confidences[row_index]) if name_confidences and row_index < len(name_confidences) else 0.0
+        player_key = player_identity_key(player_name)
+        prior_state = prior_state_by_player.get(player_key)
+        shortlist_templates = shortlist_character_templates(templates, shortlist_indices)
+        if prior_state is not None:
+            prior_index = int(prior_state["CharacterIndex"])
+            if all(int(template["character_index"]) != prior_index for template in shortlist_templates):
+                prior_template = templates_by_index.get(prior_index)
+                if prior_template is not None:
+                    shortlist_templates = shortlist_templates + [prior_template]
+        shortlist_matches = best_character_matches(row_roi, shortlist_templates, limit=2)
+        shortlist_best = shortlist_matches[0] if shortlist_matches else None
+        shortlist_second = shortlist_matches[1] if len(shortlist_matches) > 1 else {"CharacterMatchConfidence": 0.0}
+        shortlist_margin = (
+            float(shortlist_best["CharacterMatchConfidence"]) - float(shortlist_second["CharacterMatchConfidence"])
+            if shortlist_best is not None else 0.0
+        )
+        if (
+            prior_state
+            and player_name_confidence >= 80.0
+            and int(prior_state.get("seen_count", 0)) >= CHARACTER_PRIOR_STABLE_MIN_SEEN
+            and int(prior_state.get("fast_accepts_since_revalidation", 0)) < CHARACTER_PRIOR_MAX_FAST_ACCEPTS
+        ):
+            prior_character_name = str(prior_state.get("Character", ""))
+            prior_is_best = (
+                shortlist_best is not None
+                and shortlist_best.get("CharacterIndex") is not None
+                and int(shortlist_best["CharacterIndex"]) == int(prior_state["CharacterIndex"])
             )
-            candidate = {
-                "Character": template["character_name"],
-                "CharacterIndex": template["character_index"],
-                "CharacterMatchConfidence": round(float(match_result["score"]) * 100.0, 1),
-                "CharacterMatchMethod": "alpha_aware_color_template_local_search",
-            }
-            if best_match is None or candidate["CharacterMatchConfidence"] > best_match["CharacterMatchConfidence"]:
-                best_match = candidate
+            if (
+                prior_is_best
+                and float(shortlist_best["CharacterMatchConfidence"]) >= character_confidence_threshold(prior_character_name)
+                and shortlist_margin >= character_margin_threshold(prior_character_name)
+            ):
+                CHARACTER_SHORTLIST_STATS["prior_accepts"] += 1
+                best_match = dict(shortlist_best)
+                best_match["CharacterMatchMethod"] = "character_prior_confirm"
+                update_player_character_prior(video_context, player_name, best_match)
+                metrics.append(best_match)
+                continue
+            CHARACTER_SHORTLIST_STATS["prior_fallbacks"] += 1
+
+        use_shortlist = (
+            shortlist_best is not None
+            and len(shortlist_templates) < len(templates)
+            and float(shortlist_best["CharacterMatchConfidence"]) >= character_confidence_threshold(str(shortlist_best.get("Character", "")))
+            and shortlist_margin >= character_margin_threshold(str(shortlist_best.get("Character", "")))
+        )
+
+        if use_shortlist:
+            CHARACTER_SHORTLIST_STATS["shortlist_accepts"] += 1
+            best_match = dict(shortlist_best)
+            best_match["CharacterMatchMethod"] = "character_shortlist_alpha_search"
+        else:
+            if len(shortlist_templates) < len(templates):
+                CHARACTER_SHORTLIST_STATS["shortlist_fallbacks"] += 1
+            CHARACTER_SHORTLIST_STATS["full_search_rows"] += 1
+            full_matches = best_character_matches(row_roi, templates, limit=2)
+            best_match = full_matches[0] if full_matches else None
+            if best_match is not None and video_context:
+                best_index = int(best_match["CharacterIndex"])
+                with CHARACTER_SHORTLIST_LOCK:
+                    shortlist = CHARACTER_SHORTLIST_BY_VIDEO[str(video_context)]
+                    if best_index not in shortlist:
+                        shortlist.add(best_index)
+                        CHARACTER_SHORTLIST_STATS["shortlist_expansions"] += 1
+
         metrics.append(best_match or {
             "Character": "",
             "CharacterIndex": None,
             "CharacterMatchConfidence": 0.0,
             "CharacterMatchMethod": "no_match",
         })
+
+        if metrics[-1].get("CharacterIndex") is not None:
+            update_player_character_prior(video_context, player_name, metrics[-1])
     return metrics
 
 
@@ -765,36 +962,72 @@ def score_digit_layout(scale_factor: int = 5):
     }
 
 
-def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names_batched, annotate_path: str | None = None) -> Dict[str, object]:
+def extract_scoreboard_observation(
+    frame_image: np.ndarray,
+    extract_player_names_batched,
+    annotate_path: str | None = None,
+    video_context: str | None = None,
+) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
+    stage_start = time.perf_counter()
     processed_img = process_image(frame_image)
-    character_metrics = build_character_match_metrics(frame_image)
+    record_observation_stage("process_image", time.perf_counter() - stage_start)
+
     (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi()
-    raw_position_strip = frame_image[position_y1:position_y2, position_x1:position_x2].copy()
+
+    stage_start = time.perf_counter()
     normalized_position_strip = build_normalized_position_strip(processed_img)
+    record_observation_stage("normalize_position_strip", time.perf_counter() - stage_start)
+
     processed_img[position_y1:position_y2, position_x1:position_x2] = cv2.cvtColor(normalized_position_strip, cv2.COLOR_GRAY2BGR)
-    match_row_crops = extract_position_row_match_crops(processed_img)
+
     processed_img_pil = Image.fromarray(processed_img).convert("RGB")
     scale_factor = 5
+    stage_start = time.perf_counter()
     scaled_image = processed_img_pil.resize(
         (processed_img_pil.width * scale_factor, processed_img_pil.height * scale_factor),
         Image.NEAREST,
     )
+    record_observation_stage("scale_image", time.perf_counter() - stage_start)
     layout = score_digit_layout(scale_factor)
-    race_points = detect_digits_in_image(scaled_image, *layout["race_points"])
-    total_points = detect_digits_in_image(scaled_image, *layout["total_points"])
 
+    stage_start = time.perf_counter()
+    race_points = detect_digits_in_image(scaled_image, *layout["race_points"])
+    record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
+    total_points = detect_digits_in_image(scaled_image, *layout["total_points"])
+    record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
     scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height), Image.NEAREST)
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
+    record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
         scaled_image_resized.save(annotate_path)
 
+    stage_start = time.perf_counter()
     names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
+    record_observation_stage("extract_player_names", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
+    character_metrics = build_character_match_metrics(
+        frame_image,
+        names=names,
+        name_confidences=confidence_scores,
+        video_context=video_context,
+    )
+    record_observation_stage("character_metrics", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
     row_metrics = build_row_presence_metrics(names, confidence_scores, race_points, total_points)
+    record_observation_stage("build_row_presence_metrics", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
     position_metrics = build_position_signal_metrics(processed_img)
+    record_observation_stage("build_position_signal_metrics", time.perf_counter() - stage_start)
     for row_metric, position_metric in zip(row_metrics, position_metrics):
         row_metric.update(position_metric)
-    processed_position_strip = processed_img[position_y1:position_y2, position_x1:position_x2].copy()
     valid_rows = [bool(metric["legacy_row_present"]) for metric in row_metrics]
 
     visible_rows = 0
@@ -811,9 +1044,6 @@ def extract_scoreboard_observation(frame_image: np.ndarray, extract_player_names
         "race_points": race_points,
         "total_points": total_points,
         "character_metrics": character_metrics,
-        "raw_position_strip": raw_position_strip,
-        "processed_position_strip": processed_position_strip,
-        "position_match_row_crops": match_row_crops,
         "row_metrics": row_metrics,
         "row_metrics_summary": summarize_row_metrics(row_metrics),
         "visible_rows": visible_rows,
@@ -842,6 +1072,9 @@ def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
     return best_value, (best_weight / total_weight if total_weight > 0 else 0.0)
 
 
+TOTAL_SCORE_CONSENSUS_WINDOW_SIZE = 3
+
+
 def select_consensus_window(observations: List[Dict[str, object]], mode: str, size: int = 3) -> List[Dict[str, object]]:
     """Pick a stable observation subset for a specific OCR signal."""
     if not observations:
@@ -852,6 +1085,9 @@ def select_consensus_window(observations: List[Dict[str, object]], mode: str, si
         return observations[:size]
     if mode == "late":
         return observations[-size:]
+    if mode == "center":
+        start_index = max(0, (len(observations) - size) // 2)
+        return observations[start_index:start_index + size]
     return observations
 
 
@@ -870,6 +1106,7 @@ def build_consensus_rows(
         name_votes = []
         point_votes = []
         character_votes = []
+        character_method_votes = defaultdict(float)
         for observation in name_observations:
             name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
             name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
@@ -880,16 +1117,18 @@ def build_consensus_rows(
             if row_index < len(observation.get("character_metrics", [])):
                 character_match = observation["character_metrics"][row_index]
                 if character_match.get("CharacterIndex") is not None:
+                    character_weight = max(1.0, float(character_match.get("CharacterMatchConfidence", 0.0)))
+                    character_key = (
+                        int(character_match["CharacterIndex"]),
+                        str(character_match.get("Character", "")),
+                    )
                     character_votes.append(
                         (
-                            (
-                                int(character_match["CharacterIndex"]),
-                                str(character_match.get("Character", "")),
-                                str(character_match.get("CharacterMatchMethod", "")),
-                            ),
-                            max(1.0, float(character_match.get("CharacterMatchConfidence", 0.0))),
+                            character_key,
+                            character_weight,
                         )
                     )
+                    character_method_votes[(character_key, str(character_match.get("CharacterMatchMethod", "")))] += character_weight
 
         player_name, name_confidence = weighted_vote(name_votes)
         detected_value, point_confidence = weighted_vote(point_votes)
@@ -903,7 +1142,14 @@ def build_consensus_rows(
         character_name = ""
         character_method = ""
         if character_vote is not None:
-            character_index, character_name, character_method = character_vote
+            character_index, character_name = character_vote
+            matching_methods = {
+                method: weight
+                for (method_key, method), weight in character_method_votes.items()
+                if method_key == character_vote
+            }
+            if matching_methods:
+                character_method = max(matching_methods.items(), key=lambda item: item[1])[0]
 
         rows.append(
             {
@@ -1085,7 +1331,8 @@ def select_race_score_recovery(
 
 
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
-                                preprocess_name, weighted_similarity, annotate_path: str | None = None) -> Dict[str, object]:
+                                preprocess_name, weighted_similarity, annotate_path: str | None = None,
+                                video_context: str | None = None) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
@@ -1094,10 +1341,17 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     total_observations = []
     for index, frame in enumerate(frames):
         score_observations.append(
-            extract_scoreboard_observation(frame, extract_player_names_batched, annotate_path if index == len(frames) // 2 else None)
+            extract_scoreboard_observation(
+                frame,
+                extract_player_names_batched,
+                annotate_path if index == len(frames) // 2 else None,
+                video_context=video_context,
+            )
         )
     for frame in total_frames:
-        total_observations.append(extract_scoreboard_observation(frame, extract_player_names_batched))
+        total_observations.append(
+            extract_scoreboard_observation(frame, extract_player_names_batched, video_context=video_context)
+        )
     if not total_observations:
         total_observations = score_observations
 
@@ -1106,7 +1360,11 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     score_character_observations = select_consensus_window(score_observations, "late")
     score_position_observations = select_consensus_window(score_observations, "late")
     score_count_observations = select_consensus_window(score_observations, "early")
-
+    total_consensus_observations = select_consensus_window(
+        total_observations,
+        "center",
+        size=TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
+    )
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
     row_count_confidence = (visible_votes[visible_rows] / len(score_count_observations)) if visible_rows and score_count_observations else 0.0
@@ -1118,10 +1376,14 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         position_guided_visible_votes[position_guided_visible_rows] / len(score_count_observations)
         if position_guided_visible_rows and score_count_observations else 0.0
     )
-    total_visible_votes = Counter(observation["visible_rows"] for observation in total_observations if observation["visible_rows"] > 0)
+    total_visible_votes = Counter(
+        observation["visible_rows"] for observation in total_consensus_observations if observation["visible_rows"] > 0
+    )
     total_visible_rows = total_visible_votes.most_common(1)[0][0] if total_visible_votes else visible_rows
     total_position_guided_visible_votes = Counter(
-        observation["position_guided_visible_rows"] for observation in total_observations if observation["position_guided_visible_rows"] > 0
+        observation["position_guided_visible_rows"]
+        for observation in total_consensus_observations
+        if observation["position_guided_visible_rows"] > 0
     )
     total_position_guided_visible_rows = (
         total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
@@ -1138,7 +1400,9 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         position_guided_row_count_confidence = max(position_guided_row_count_confidence, 0.85)
 
     representative_score_observation = score_position_observations[len(score_position_observations) // 2] if score_position_observations else {}
-    representative_total_observation = total_observations[len(total_observations) // 2] if total_observations else {}
+    representative_total_observation = (
+        total_consensus_observations[len(total_consensus_observations) // 2] if total_consensus_observations else {}
+    )
 
     # Use the position-guided count as the official row count. The older OCR-only count
     # is still returned in debug data as a legacy reference.
@@ -1150,11 +1414,11 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         character_observations=score_character_observations,
     )
     total_rows = build_consensus_rows(
-        name_observations=total_observations,
-        point_observations=total_observations,
+        name_observations=total_consensus_observations,
+        point_observations=total_consensus_observations,
         visible_rows=total_position_guided_visible_rows,
         points_key="total_points",
-        character_observations=total_observations,
+        character_observations=total_consensus_observations,
     )
     rows = map_total_rows_to_race_rows(
         score_rows,
@@ -1176,9 +1440,9 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "row_count_confidence": round(position_guided_row_count_confidence * 100, 1),
         "legacy_row_count_confidence": round(row_count_confidence * 100, 1),
         "score_count_votes": summarize_count_votes(score_count_observations, "position_guided_visible_rows"),
-        "total_count_votes": summarize_count_votes(total_observations, "position_guided_visible_rows"),
+        "total_count_votes": summarize_count_votes(total_consensus_observations, "position_guided_visible_rows"),
         "legacy_score_count_votes": summarize_count_votes(score_count_observations, "visible_rows"),
-        "legacy_total_count_votes": summarize_count_votes(total_observations, "visible_rows"),
+        "legacy_total_count_votes": summarize_count_votes(total_consensus_observations, "visible_rows"),
         "score_row_metrics_summary": representative_score_observation.get("row_metrics_summary", ""),
         "total_row_metrics_summary": representative_total_observation.get("row_metrics_summary", ""),
         "representative_score_observation": representative_score_observation,
