@@ -34,6 +34,8 @@ INITIAL_SCAN_WINDOW_STEPS = 2
 INITIAL_SCAN_SEGMENT_OVERLAP_FRAMES = APP_CONFIG.pass1_segment_overlap_frames
 INITIAL_SCAN_MIN_SEGMENT_FRAMES = APP_CONFIG.pass1_min_segment_frames
 INITIAL_SCAN_PROGRESS_REPORT_SECONDS = 2.0
+INITIAL_SCAN_EOF_GUARD_SECONDS = 10.0
+INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
 
 # Score-screen selection always runs on the fixed 1280x720 working image, so these
 # ROIs can stay as constants instead of being rebuilt for every frame.
@@ -455,6 +457,24 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 )
                 scan_progress.update(0)
                 while cap.isOpened() and frame_count < total_frames:
+                    remaining_frames = max(0, total_frames - frame_count)
+                    eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
+                    if (
+                        total_frames > 0
+                        and frame_count / total_frames >= INITIAL_SCAN_EOF_GUARD_PROGRESS
+                        and remaining_frames <= eof_guard_frames
+                    ):
+                        LOGGER.log(
+                            f"[Video {video_index}/{total_videos} - Scan]",
+                            (
+                                f"Stopping scan near EOF to avoid decoder stalls "
+                                f"({remaining_frames} frames remaining, "
+                                f"{remaining_frames / max(fps, 1):.1f}s tail)"
+                            ),
+                            color_name="yellow",
+                        )
+                        frame_count = total_frames
+                        break
                     window_interrupted = False
 
                     for _ in range(INITIAL_SCAN_WINDOW_STEPS):
