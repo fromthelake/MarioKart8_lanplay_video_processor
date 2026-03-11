@@ -37,6 +37,8 @@ POSITION_TEMPLATE_HEIGHT = 36
 POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
 POSITION_PRESENT_COEFF_THRESHOLD = 0.60
+POSITION_TEMPLATE_FAST_PATH_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_FAST_PATH_ENABLED", "1").lower() not in {"0", "false", "no"}
+POSITION_TEMPLATE_BEAM_WIDTH = max(1, int(os.environ.get("MK8_POSITION_TEMPLATE_BEAM_WIDTH", "3")))
 CHARACTER_ROI_LEFT = 377
 CHARACTER_TEMPLATE_SIZE = 48
 CHARACTER_ROW_START = 49
@@ -404,59 +406,114 @@ def _best_template_overlap_metrics(source_image: np.ndarray, template_image: np.
     return best_metrics
 
 
+def _evaluate_position_template(row_image: np.ndarray, template_index: int, template: np.ndarray) -> Dict[str, float]:
+    coefficient = _template_match_score(row_image, template)
+    overlap_metrics = _best_template_overlap_metrics(row_image, template)
+    return {
+        "template_index": int(template_index),
+        "coefficient": float(coefficient),
+        "white_iou": float(overlap_metrics["white_iou"]),
+        "weighted_white_iou": float(overlap_metrics["weighted_white_iou"]),
+        "white_f1": float(overlap_metrics["white_f1"]),
+    }
+
+
+def _position_template_candidate_score(template_score: Dict[str, float]) -> float:
+    return (float(template_score["weighted_white_iou"]) * 10.0) + float(template_score["coefficient"])
+
+
+def _build_position_metrics_from_template_scores(
+    row_index: int,
+    template_scores: List[Dict[str, float]],
+    chosen_template_index: int | None = None,
+) -> Dict[str, float]:
+    coeff_sorted = sorted(template_scores, key=lambda item: item["coefficient"], reverse=True)
+    coeff_best = coeff_sorted[0] if coeff_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
+    coeff_second = coeff_sorted[1] if len(coeff_sorted) > 1 else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
+    iou_sorted = sorted(template_scores, key=lambda item: item["weighted_white_iou"], reverse=True)
+    iou_best = iou_sorted[0] if iou_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
+
+    shortlist = coeff_sorted[:3] if len(coeff_sorted) >= 3 else coeff_sorted
+    hybrid_best = max(shortlist, key=lambda item: (item["weighted_white_iou"], item["coefficient"])) if shortlist else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
+    expected_score = next(
+        (item for item in template_scores if int(item["template_index"]) == row_index + 1),
+        {"coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0},
+    )
+    chosen_score = next(
+        (item for item in template_scores if chosen_template_index is not None and int(item["template_index"]) == int(chosen_template_index)),
+        hybrid_best,
+    )
+    all_coefficients = {f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)}
+    for item in template_scores:
+        all_coefficients[f"PositionTemplate{int(item['template_index']):02}_Coeff"] = round(float(item["coefficient"]), 3)
+    return {
+        "expected_position_score": round(float(expected_score["coefficient"]), 3),
+        "expected_position_iou": round(float(expected_score["white_iou"]), 3),
+        "expected_position_weighted_iou": round(float(expected_score["weighted_white_iou"]), 3),
+        "best_position_score": round(float(coeff_best["coefficient"]), 3),
+        "second_best_position_score": round(float(coeff_second["coefficient"]), 3),
+        "position_margin": round(float(coeff_best["coefficient"]) - float(coeff_second["coefficient"]), 3),
+        "any_position_score": round(float(coeff_best["coefficient"]), 3),
+        "best_position_template": int(chosen_score["template_index"]),
+        "best_position_coeff_template": int(coeff_best["template_index"]),
+        "best_position_iou_template": int(iou_best["template_index"]),
+        "coeff_ranked_templates": [int(item["template_index"]) for item in coeff_sorted],
+        "best_position_iou": round(float(iou_best["white_iou"]), 3),
+        "best_position_weighted_iou": round(float(iou_best["weighted_white_iou"]), 3),
+        "best_position_template_score": round(float(chosen_score["coefficient"]), 3),
+        "best_position_template_iou": round(float(chosen_score["white_iou"]), 3),
+        "best_position_template_weighted_iou": round(float(chosen_score["weighted_white_iou"]), 3),
+        "position_template_coefficients": all_coefficients,
+    }
+
+
+def _build_position_signal_metrics_fast(position_rows: List[np.ndarray], templates: List[np.ndarray]) -> List[Dict[str, float]]:
+    beam = [{"score": 0.0, "prev_rank": 1, "chosen_ranks": [], "row_template_scores": []}]
+    for row_index, row_image in enumerate(position_rows):
+        row_number = row_index + 1
+        next_beam = []
+        for state in beam:
+            previous_rank = int(state["prev_rank"])
+            candidate_indices = {row_number} if row_index == 0 else {previous_rank, row_number}
+            candidate_scores = []
+            for candidate_index in sorted(candidate_indices):
+                template = templates[candidate_index - 1]
+                template_score = _evaluate_position_template(row_image, candidate_index, template)
+                candidate_scores.append(template_score)
+            for candidate_score in candidate_scores:
+                next_beam.append(
+                    {
+                        "score": float(state["score"]) + _position_template_candidate_score(candidate_score),
+                        "prev_rank": int(candidate_score["template_index"]),
+                        "chosen_ranks": list(state["chosen_ranks"]) + [int(candidate_score["template_index"])],
+                        "row_template_scores": list(state["row_template_scores"]) + [candidate_scores],
+                    }
+                )
+        next_beam.sort(key=lambda item: item["score"], reverse=True)
+        beam = next_beam[:POSITION_TEMPLATE_BEAM_WIDTH]
+    best_state = beam[0] if beam else {"chosen_ranks": [], "row_template_scores": []}
+    metrics = []
+    for row_index, template_scores in enumerate(best_state.get("row_template_scores", [])):
+        chosen_rank = None
+        if row_index < len(best_state.get("chosen_ranks", [])):
+            chosen_rank = int(best_state["chosen_ranks"][row_index])
+        metrics.append(_build_position_metrics_from_template_scores(row_index, template_scores, chosen_rank))
+    return metrics
+
+
 def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str, float]]:
     """Measure whether each row still shows a position number in the fixed left strip."""
     position_rows = extract_position_row_match_crops(processed_image)
     templates = load_position_row_templates()
+    if POSITION_TEMPLATE_FAST_PATH_ENABLED:
+        return _build_position_signal_metrics_fast(position_rows, templates)
     metrics = []
     for row_index, row_image in enumerate(position_rows):
-        template_scores = []
-        for template_index, template in enumerate(templates, start=1):
-            coefficient = _template_match_score(row_image, template)
-            overlap_metrics = _best_template_overlap_metrics(row_image, template)
-            template_scores.append(
-                {
-                    "template_index": template_index,
-                    "coefficient": float(coefficient),
-                    "white_iou": float(overlap_metrics["white_iou"]),
-                    "weighted_white_iou": float(overlap_metrics["weighted_white_iou"]),
-                    "white_f1": float(overlap_metrics["white_f1"]),
-                }
-            )
-
-        coeff_sorted = sorted(template_scores, key=lambda item: item["coefficient"], reverse=True)
-        coeff_best = coeff_sorted[0] if coeff_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
-        coeff_second = coeff_sorted[1] if len(coeff_sorted) > 1 else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
-        iou_sorted = sorted(template_scores, key=lambda item: item["weighted_white_iou"], reverse=True)
-        iou_best = iou_sorted[0] if iou_sorted else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
-
-        shortlist = coeff_sorted[:3] if len(coeff_sorted) >= 3 else coeff_sorted
-        hybrid_best = max(shortlist, key=lambda item: (item["weighted_white_iou"], item["coefficient"])) if shortlist else {"template_index": 0, "coefficient": 0.0, "white_iou": 0.0}
-        expected_score = template_scores[row_index] if row_index < len(template_scores) else {"coefficient": 0.0, "white_iou": 0.0, "weighted_white_iou": 0.0}
-        metrics.append(
-            {
-                "expected_position_score": round(float(expected_score["coefficient"]), 3),
-                "expected_position_iou": round(float(expected_score["white_iou"]), 3),
-                "expected_position_weighted_iou": round(float(expected_score["weighted_white_iou"]), 3),
-                "best_position_score": round(float(coeff_best["coefficient"]), 3),
-                "second_best_position_score": round(float(coeff_second["coefficient"]), 3),
-                "position_margin": round(float(coeff_best["coefficient"]) - float(coeff_second["coefficient"]), 3),
-                "any_position_score": round(float(coeff_best["coefficient"]), 3),
-                "best_position_template": int(hybrid_best["template_index"]),
-                "best_position_coeff_template": int(coeff_best["template_index"]),
-                "best_position_iou_template": int(iou_best["template_index"]),
-                "coeff_ranked_templates": [int(item["template_index"]) for item in coeff_sorted],
-                "best_position_iou": round(float(iou_best["white_iou"]), 3),
-                "best_position_weighted_iou": round(float(iou_best["weighted_white_iou"]), 3),
-                "best_position_template_score": round(float(hybrid_best["coefficient"]), 3),
-                "best_position_template_iou": round(float(hybrid_best["white_iou"]), 3),
-                "best_position_template_weighted_iou": round(float(hybrid_best["weighted_white_iou"]), 3),
-                "position_template_coefficients": {
-                    f"PositionTemplate{item['template_index']:02}_Coeff": round(float(item["coefficient"]), 3)
-                    for item in template_scores
-                },
-            }
-        )
+        template_scores = [
+            _evaluate_position_template(row_image, template_index, template)
+            for template_index, template in enumerate(templates, start=1)
+        ]
+        metrics.append(_build_position_metrics_from_template_scores(row_index, template_scores))
     return metrics
 
 
