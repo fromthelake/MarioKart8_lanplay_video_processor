@@ -60,6 +60,7 @@ PLAYER_NAME_BATCH_VERTICAL_PADDING = max(
     int(os.environ.get("MK8_PLAYER_NAME_BATCH_VERTICAL_PADDING", "0")),
 )
 PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm 6")
+PLAYER_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_PLAYER_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -90,6 +91,26 @@ class OcrProfiler:
 
 
 OCR_PROFILER = OcrProfiler()
+PLAYER_NAME_FALLBACK_STATS = defaultdict(int)
+
+
+def reset_player_name_fallback_stats() -> None:
+    PLAYER_NAME_FALLBACK_STATS.clear()
+
+
+def player_name_fallback_summary_lines() -> List[str]:
+    if not PLAYER_NAME_FALLBACK_STATS:
+        return []
+    total = int(PLAYER_NAME_FALLBACK_STATS.get("fallback_rows", 0))
+    return [
+        "Player-name fallback activity",
+        f"- fallback rows: {total}",
+        f"- low batch confidence: {int(PLAYER_NAME_FALLBACK_STATS.get('reason_low_confidence', 0))}",
+        f"- short batch text: {int(PLAYER_NAME_FALLBACK_STATS.get('reason_short_text', 0))}",
+        f"- low batch character diversity: {int(PLAYER_NAME_FALLBACK_STATS.get('reason_low_diversity', 0))}",
+        f"- fallback improved confidence: {int(PLAYER_NAME_FALLBACK_STATS.get('fallback_improved_confidence', 0))}",
+        f"- fallback kept/better text length: {int(PLAYER_NAME_FALLBACK_STATS.get('fallback_kept_or_improved_length', 0))}",
+    ]
 
 
 class ProgressPrinter:
@@ -320,7 +341,19 @@ def extract_player_names_batched(
             average_confidence = 0
 
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", combined_text)
-        if average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE or len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+        low_confidence = average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
+        short_text = len(stripped_name) < 3
+        low_diversity = len(set(stripped_name)) < 3
+        if PLAYER_NAME_ROW_FALLBACK_ENABLED and (low_confidence or short_text or low_diversity):
+            PLAYER_NAME_FALLBACK_STATS["fallback_rows"] += 1
+            if low_confidence:
+                PLAYER_NAME_FALLBACK_STATS["reason_low_confidence"] += 1
+            if short_text:
+                PLAYER_NAME_FALLBACK_STATS["reason_short_text"] += 1
+            if low_diversity:
+                PLAYER_NAME_FALLBACK_STATS["reason_low_diversity"] += 1
+            original_text = combined_text
+            original_confidence = average_confidence
             roi = image[y1:y2, x1:x2]
             fallback_data = run_tesseract_image_to_data(roi, lang, "--psm 7", "player_name_row_fallback")
             words_in_roi = []
@@ -332,6 +365,10 @@ def extract_player_names_batched(
                     confidences_in_roi.append(fallback_conf)
             combined_text = " ".join(words_in_roi).strip()
             average_confidence = int(sum(confidences_in_roi) // len(confidences_in_roi)) if confidences_in_roi else 0
+            if average_confidence > original_confidence:
+                PLAYER_NAME_FALLBACK_STATS["fallback_improved_confidence"] += 1
+            if len(re.sub(r"[^a-zA-Z0-9]", "", combined_text)) >= len(re.sub(r"[^a-zA-Z0-9]", "", original_text)):
+                PLAYER_NAME_FALLBACK_STATS["fallback_kept_or_improved_length"] += 1
 
         extracted_names.append(combined_text)
         confidence_scores.append(average_confidence)
@@ -508,6 +545,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     phase_start_time = time.time()
     reset_observation_stage_stats()
     reset_character_shortlist_state()
+    reset_player_name_fallback_stats()
     image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
 
     if not image_files:
@@ -658,7 +696,10 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         folder_path,
         phase_start_time,
         progress.peak_lines(),
-        OCR_PROFILER.summary_lines() + observation_stage_summary_lines() + character_shortlist_summary_lines(),
+        OCR_PROFILER.summary_lines()
+        + observation_stage_summary_lines()
+        + character_shortlist_summary_lines()
+        + player_name_fallback_summary_lines(),
         per_video_ocr_durations,
         build_race_warning_messages,
         pluralize,

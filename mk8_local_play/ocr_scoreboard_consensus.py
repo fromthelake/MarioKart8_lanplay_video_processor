@@ -1,3 +1,4 @@
+import difflib
 import os
 import re
 import time
@@ -1057,6 +1058,78 @@ def normalize_name_for_vote(name: str) -> str:
     return re.sub(r"\s+", " ", text.strip())
 
 
+def _normalize_name_key(name: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9]", "", normalize_name_for_vote(name).lower())
+
+
+def weighted_name_vote(values: List[Tuple[str, float]]) -> Tuple[str, float]:
+    normalized_entries = []
+    total_weight = 0.0
+    for value, weight in values:
+        if value in (None, ""):
+            continue
+        numeric_weight = max(0.0, float(weight))
+        if numeric_weight <= 0:
+            continue
+        normalized_entries.append(
+            {
+                "raw": normalize_name_for_vote(str(value)),
+                "key": _normalize_name_key(str(value)),
+                "weight": numeric_weight,
+            }
+        )
+        total_weight += numeric_weight
+    if not normalized_entries:
+        return "", 0.0
+
+    clusters: list[dict[str, object]] = []
+    for entry in normalized_entries:
+        assigned_cluster = None
+        best_similarity = 0.0
+        for cluster in clusters:
+            cluster_key = str(cluster["representative_key"])
+            similarity = difflib.SequenceMatcher(None, entry["key"], cluster_key).ratio()
+            if similarity >= 0.72 and similarity > best_similarity:
+                best_similarity = similarity
+                assigned_cluster = cluster
+        if assigned_cluster is None:
+            assigned_cluster = {
+                "members": [],
+                "weight": 0.0,
+                "representative_raw": entry["raw"],
+                "representative_key": entry["key"],
+                "representative_weight": entry["weight"],
+            }
+            clusters.append(assigned_cluster)
+        assigned_cluster["members"].append(entry)
+        assigned_cluster["weight"] = float(assigned_cluster["weight"]) + entry["weight"]
+        current_rep_weight = float(assigned_cluster["representative_weight"])
+        current_rep_raw = str(assigned_cluster["representative_raw"])
+        if (
+            entry["weight"] > current_rep_weight
+            or (
+                entry["weight"] == current_rep_weight
+                and len(entry["key"]) >= len(str(assigned_cluster["representative_key"]))
+                and entry["raw"] != current_rep_raw
+            )
+        ):
+            assigned_cluster["representative_raw"] = entry["raw"]
+            assigned_cluster["representative_key"] = entry["key"]
+            assigned_cluster["representative_weight"] = entry["weight"]
+
+    best_cluster = max(
+        clusters,
+        key=lambda cluster: (
+            float(cluster["weight"]),
+            float(cluster["representative_weight"]),
+            len(str(cluster["representative_key"])),
+        ),
+    )
+    best_name = str(best_cluster["representative_raw"])
+    best_weight = float(best_cluster["weight"])
+    return best_name, (best_weight / total_weight if total_weight > 0 else 0.0)
+
+
 def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
     score_by_value = defaultdict(float)
     total_weight = 0.0
@@ -1130,7 +1203,7 @@ def build_consensus_rows(
                     )
                     character_method_votes[(character_key, str(character_match.get("CharacterMatchMethod", "")))] += character_weight
 
-        player_name, name_confidence = weighted_vote(name_votes)
+        player_name, name_confidence = weighted_name_vote(name_votes)
         detected_value, point_confidence = weighted_vote(point_votes)
         character_vote, character_vote_confidence = weighted_vote(character_votes)
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
@@ -1348,7 +1421,12 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 video_context=video_context,
             )
         )
-    for frame in total_frames:
+    total_frames_for_observation = select_consensus_window(
+        total_frames,
+        "center",
+        size=TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
+    )
+    for frame in total_frames_for_observation:
         total_observations.append(
             extract_scoreboard_observation(frame, extract_player_names_batched, video_context=video_context)
         )
@@ -1360,11 +1438,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     score_character_observations = select_consensus_window(score_observations, "late")
     score_position_observations = select_consensus_window(score_observations, "late")
     score_count_observations = select_consensus_window(score_observations, "early")
-    total_consensus_observations = select_consensus_window(
-        total_observations,
-        "center",
-        size=TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
-    )
+    total_consensus_observations = total_observations
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
     row_count_confidence = (visible_votes[visible_rows] / len(score_count_observations)) if visible_rows and score_count_observations else 0.0
