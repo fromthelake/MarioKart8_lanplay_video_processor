@@ -58,6 +58,9 @@ The format is intentionally simple and human-readable.
 - Track, cup, and character metadata now derive from a compact `reference_data/game_catalog.json` built from `database/firestore-export.json`.
 - User workbooks now include `Character` and `Position After Race`.
 - Debug workbooks now include explicit session rebase/reset flags, RaceScore recovery fields, identity labels, and character match details.
+- Workbook output now keeps only timestamped files, with debug workbooks grouped under `Output_Results/Debug/`.
+- Character icon matching now uses alpha-aware full-color template matching and `48x48` resized templates inside the fixed icon ROI.
+- `Position After Race` is now recalculated from the final validated totals and allows shared placements such as `1,1,1,4,...`.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
@@ -67,6 +70,8 @@ The format is intentionally simple and human-readable.
 - Later connection-reset races now keep the authoritative tournament totals running while clearly flagging the OCR reset rows.
 - RaceScore player counts now recover from later frames when the black results banner hides the last row.
 - Duplicate exact player names can now be split with character-aware identity tracking, producing stable names such as `Name_1` and `Name_2`.
+- Review-reason parsing no longer turns values like `15.0` into incorrect messages such as `150`.
+- Position-guided player count detection now treats rows with `Coeff < 0.60` as empty, preventing false extra rows in stable 10-player cases.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.

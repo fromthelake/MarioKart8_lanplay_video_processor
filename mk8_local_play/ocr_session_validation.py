@@ -127,6 +127,25 @@ def detect_connection_reset(previous_validated_totals, prepared_rows) -> bool:
     return broad_drops >= max(4, int(len(rows_with_detected_totals) * 0.7))
 
 
+def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
+    """Recompute post-race positions from authoritative totals, allowing ties.
+
+    We use competition ranking ("1224" style):
+    - equal totals share the same position
+    - the next lower total skips ahead by the number of tied rows above
+
+    This keeps Position After Race aligned with the final validated tournament totals
+    instead of the earlier OCR-only row mapping guess.
+    """
+    df = df.copy()
+    ranked = (
+        df.groupby(["RaceClass", "RaceIDNumber"], sort=False)["NewTotalScore"]
+        .rank(method="min", ascending=False)
+    )
+    df["PositionAfterRace"] = ranked.astype("Int64")
+    return df
+
+
 def apply_session_validation(df, parse_detected_int, exact_total_score_fallback):
     """Compute running totals, session boundaries, and review flags for OCR rows."""
     df = df.copy()
@@ -291,4 +310,4 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 session_totals[player_key] = session_new_total
                 previous_validated_totals[player_key] = new_total
 
-    return df
+    return assign_shared_positions_after_race(df)
