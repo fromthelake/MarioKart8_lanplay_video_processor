@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
+import pytesseract
 from PIL import Image, ImageDraw
 
 from .data_paths import resolve_asset_file
@@ -920,7 +921,12 @@ def is_white_box(image: Image.Image, top_left: Tuple[int, int], box_size: Tuple[
 
 
 def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
-    """Use a fixed pixel-signature because MK8 digits are visually stable after preprocessing."""
+    """Use a fixed pixel-signature because MK8 digits are visually stable after preprocessing.
+
+    If the exact signature misses by one segment, fall back to the closest stable digit
+    instead of dropping the digit entirely. This is especially important for 3-digit
+    total scores where a missed middle digit can turn ``161`` into ``11``.
+    """
     white_pixels = {
         label: is_white_box(image, (box_top_left[0] + x, box_top_left[1] + y))
         for label, (x, y) in red_pixels.items()
@@ -937,30 +943,108 @@ def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels
         (7, {"top_middle", "right_middle", "right_bottom"}),
         (1, {"middle_middle", "middle_bottom"}),
     ]
+    active_labels = {label for label, is_white in white_pixels.items() if is_white}
     for digit, pattern in digit_patterns:
-        if all(white_pixels.get(label, False) for label in pattern):
+        if pattern.issubset(active_labels):
             return digit
+    if not active_labels:
+        return -1
+
+    best_digit = -1
+    best_score = -1.0
+    for digit, pattern in digit_patterns:
+        matched_required = len(pattern & active_labels)
+        missing_required = len(pattern - active_labels)
+        extra_active = len(active_labels - pattern)
+        score = matched_required - (missing_required * 0.75) - (extra_active * 0.35)
+        if score > best_score:
+            best_score = score
+            best_digit = digit
+
+    # Only accept the soft match when most required segments line up.
+    for digit, pattern in digit_patterns:
+        if digit == best_digit:
+            matched_ratio = len(pattern & active_labels) / max(1, len(pattern))
+            if matched_ratio >= 0.6:
+                return best_digit
+            break
     return -1
+
+
+def ocr_digit_row_fallback(
+    image: Image.Image,
+    start_coords: List[Tuple[int, int]],
+    row_offset: int,
+    box_dims: Tuple[int, int],
+    row_index: int,
+    boxes_per_row: int,
+    *,
+    valid_min: int,
+    valid_max: int,
+) -> str:
+    y_offset = row_index * row_offset
+    x1 = start_coords[0][0]
+    y1 = start_coords[0][1] + y_offset
+    x2 = start_coords[boxes_per_row - 1][0] + box_dims[0]
+    y2 = y1 + box_dims[1]
+    padding = 6
+    crop = image.crop((x1 - padding, y1 - padding, x2 + padding, y2 + padding)).convert('L')
+    crop = crop.resize((crop.width * 3, crop.height * 3), Image.NEAREST)
+    crop_np = np.array(crop)
+    _, crop_np = cv2.threshold(crop_np, 180, 255, cv2.THRESH_BINARY)
+    text = pytesseract.image_to_string(
+        Image.fromarray(crop_np),
+        config='--psm 7 -c tessedit_char_whitelist=0123456789'
+    )
+    digits_only = re.sub(r'[^0-9]', '', text)
+    if not digits_only:
+        return ''
+    try:
+        value = int(digits_only)
+    except ValueError:
+        return ''
+    if valid_min <= value <= valid_max:
+        return digits_only
+    return ''
 
 
 def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int]], row_offset: int,
                            box_dims: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]],
-                           num_rows: int, boxes_per_row: int) -> List[str]:
+                           num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int) -> List[str]:
     coordinate_set = []
     draw = ImageDraw.Draw(image)
     for row_index in range(num_rows):
         y_offset = row_index * row_offset
-        row_number = ""
+        row_digits = []
+        has_unknown_digit = False
         for box_index in range(boxes_per_row):
             start_x, start_y = start_coords[box_index]
             top_left = (start_x, start_y + y_offset)
             digit = identify_digit(image, top_left, red_pixels)
             if digit != -1:
-                row_number += str(digit)
+                row_digits.append(str(digit))
+            else:
+                row_digits.append('')
+                has_unknown_digit = True
             for _label, (x, y) in red_pixels.items():
                 rect_top_left = (top_left[0] + x, top_left[1] + y)
                 rect_bottom_right = (rect_top_left[0] + 3, rect_top_left[1] + 2)
                 draw.rectangle([rect_top_left, rect_bottom_right], outline="red", fill="red")
+        row_number = ''.join(row_digits)
+        numeric_value = parse_detected_int(row_number)
+        if has_unknown_digit or numeric_value is None or not (valid_min <= int(numeric_value) <= valid_max):
+            fallback_value = ocr_digit_row_fallback(
+                image,
+                start_coords,
+                row_offset,
+                box_dims,
+                row_index,
+                boxes_per_row,
+                valid_min=valid_min,
+                valid_max=valid_max,
+            )
+            if fallback_value:
+                row_number = fallback_value
         coordinate_set.append(row_number)
     return coordinate_set
 
@@ -1050,11 +1134,11 @@ def extract_scoreboard_observation(
     layout = score_digit_layout(scale_factor)
 
     stage_start = time.perf_counter()
-    race_points = detect_digits_in_image(scaled_image, *layout["race_points"])
+    race_points = detect_digits_in_image(scaled_image, *layout["race_points"], valid_min=1, valid_max=15)
     record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
-    total_points = detect_digits_in_image(scaled_image, *layout["total_points"])
+    total_points = detect_digits_in_image(scaled_image, *layout["total_points"], valid_min=0, valid_max=999)
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()

@@ -9,9 +9,12 @@ VALIDATION_STATUS_LABELS = {
     "race_points_match": "Race points matched OCR",
     "validated": "Validated against OCR total score",
     "race_points_mismatch": "Race points mismatch",
+    "race_points_out_of_range": "Race points out of range",
     "total_score_mismatch": "Total score mismatch",
     "rebased": "Session rebased from OCR total score",
     "connection_reset": "Connection reset detected",
+    "total_score_order_violation": "Total score order violation",
+    "total_score_out_of_range": "Total score out of range",
 }
 
 
@@ -45,6 +48,10 @@ def build_review_reason_messages(
             messages.append(
                 f"Race points should be {race_points}, but OCR read {detected_race if detected_race is not None else 'nothing'}."
             )
+        elif code == "race_points_out_of_range":
+            messages.append(
+                f"OCR race points {detected_race if detected_race is not None else 'nothing'} are outside the expected range 1..15."
+            )
         elif code == "total_score_mismatch":
             messages.append(
                 f"Expected total after race is {expected_session_total}, but OCR total score read {detected_total if detected_total is not None else 'nothing'}."
@@ -75,6 +82,14 @@ def build_review_reason_messages(
         elif code == "race_total_player_count_mismatch":
             messages.append(
                 f"Race score screen shows {race_score_players} players, but total score screen shows {total_score_players}."
+            )
+        elif code == "total_score_order_violation":
+            messages.append(
+                "Total score order on the scoreboard is not monotonic from top to bottom."
+            )
+        elif code == "total_score_out_of_range":
+            messages.append(
+                f"OCR total score {detected_total if detected_total is not None else 'nothing'} is outside the expected range 1..999."
             )
         else:
             messages.append(str(code).replace("_", " ").capitalize())
@@ -125,6 +140,40 @@ def detect_connection_reset(previous_validated_totals, prepared_rows) -> bool:
         if int(row["detected_total"]) + max(2, int(row["race_points"])) < int(previous_total):
             broad_drops += 1
     return broad_drops >= max(4, int(len(rows_with_detected_totals) * 0.7))
+
+
+def detect_total_score_order_violations(race_rows: pd.DataFrame, remapped_totals_by_index: dict[int, int]) -> set[int]:
+    """Flag OCR total-score rows that break the expected descending scoreboard order."""
+    ordered_rows = []
+    for index, row in race_rows.iterrows():
+        scoreboard_position = row.get("PositionAfterRace")
+        if pd.isna(scoreboard_position):
+            continue
+        try:
+            scoreboard_position = int(scoreboard_position)
+        except (TypeError, ValueError):
+            continue
+        detected_total = remapped_totals_by_index.get(index, row.get("DetectedTotalScore"))
+        if pd.isna(detected_total):
+            continue
+        try:
+            detected_total = int(detected_total)
+        except (TypeError, ValueError):
+            continue
+        ordered_rows.append((scoreboard_position, index, detected_total))
+
+    ordered_rows.sort(key=lambda item: item[0])
+    violating_indices: set[int] = set()
+    previous_entry = None
+    for current_entry in ordered_rows:
+        if previous_entry is not None:
+            previous_total = int(previous_entry[2])
+            current_total = int(current_entry[2])
+            if current_total > previous_total:
+                violating_indices.add(int(previous_entry[1]))
+                violating_indices.add(int(current_entry[1]))
+        previous_entry = current_entry
+    return violating_indices
 
 
 def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
@@ -217,6 +266,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     prepared_row["session_new_total"] = int(prepared_row["detected_total"])
 
             remapped_totals_by_index = exact_total_score_fallback(prepared_rows)
+            total_score_order_violations = detect_total_score_order_violations(race_rows, remapped_totals_by_index)
 
             for prepared_row, (_, row) in zip(prepared_rows, race_rows.iterrows()):
                 index = prepared_row["index"]
@@ -239,18 +289,29 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     review_reasons.append("session_rebased")
                     score_status = "rebased"
                 if detected_race is not None:
-                    if detected_race == race_points:
+                    if not (1 <= int(detected_race) <= 15):
+                        review_reasons.append("race_points_out_of_range")
+                        score_status = "race_points_mismatch"
+                    elif detected_race == race_points:
                         score_status = "race_points_match" if score_status == "computed_only" else score_status
                     else:
                         review_reasons.append("race_points_mismatch")
                         score_status = "race_points_mismatch"
 
                 if detected_total is not None:
-                    if detected_total == session_new_total:
+                    if not (1 <= int(detected_total) <= 999):
+                        review_reasons.append("total_score_out_of_range")
+                        score_status = "total_score_mismatch"
+                    elif detected_total == session_new_total:
                         score_status = "validated" if score_status in {"computed_only", "race_points_match"} else score_status
                     else:
                         review_reasons.append("total_score_mismatch")
                         score_status = "total_score_mismatch"
+
+                if index in total_score_order_violations:
+                    review_reasons.append("total_score_order_violation")
+                    if score_status in {"computed_only", "race_points_match", "validated", "rebased"}:
+                        score_status = "total_score_order_violation"
 
                 if session_reset_detected:
                     review_reasons.append("connection_reset")
