@@ -4,6 +4,7 @@ import os
 import argparse
 import csv
 import time
+from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .app_runtime import load_app_config
@@ -17,11 +18,13 @@ from .extract_common import (
     GPU_RUNTIME,
     TARGET_HEIGHT,
     TARGET_WIDTH,
+    build_video_identity,
     count_exported_detection_files,
     crop_and_upscale_image,
     determine_scaling,
     frame_to_timecode,
     load_videos_from_folder,
+    relative_video_path,
 )
 
 # Record the start time
@@ -161,10 +164,10 @@ def print_timing_summary(video_name, stats):
     LOGGER.summary_block(f"[{video_name} - Debug Timing]", lines, color_name="dim")
 
 
-def collect_consensus_frames(video_path, center_frame, fps, left, top, crop_width, crop_height, bundle_kind):
+def collect_consensus_frames(video_path, video_label, center_frame, fps, left, top, crop_width, crop_height, bundle_kind):
     """Collect nearby upscaled frames for in-memory OCR consensus during --all runs."""
     radius = max(0, APP_CONFIG.ocr_consensus_frames // 2)
-    cache_key = (os.path.splitext(os.path.basename(video_path))[0], int(bundle_kind[0]), bundle_kind[1])
+    cache_key = (video_label, int(bundle_kind[0]), bundle_kind[1])
     local_cap = cv2.VideoCapture(video_path)
     if not local_cap.isOpened():
         return
@@ -184,7 +187,7 @@ def collect_consensus_frames(video_path, center_frame, fps, left, top, crop_widt
         CONSENSUS_FRAME_CACHE[cache_key] = bundled_frames
 
 
-def process_score_candidates(video_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
+def process_score_candidates(video_path, video_label, video_source_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
                              crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
@@ -273,6 +276,7 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
             continue
         score_screen_selection.save_score_frames(
             video_path,
+            video_label,
             result["candidate"]["race_number"],
             result["race_score_frame"],
             result["total_score_frame"],
@@ -286,10 +290,11 @@ def process_score_candidates(video_path, score_candidates, templates, fps, csv_w
             metadata_writer,
             CONSENSUS_FRAME_CACHE,
             frame_to_timecode,
+            video_source_path=video_source_path,
         )
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
-def extract_frames(return_frame_cache=False, selected_videos=None):
+def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False):
     """Main function to process videos and apply template matching."""
     phase_start_time = time.time()
     CONSENSUS_FRAME_CACHE.clear()
@@ -338,10 +343,17 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
 
     csv_output_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'debug_max_val.csv')
     metadata_output_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'exported_frame_metadata.csv')
-    video_paths = load_videos_from_folder(folder_path)
+    video_paths = load_videos_from_folder(folder_path, include_subfolders=include_subfolders)
     if selected_videos:
-        selected_names = {str(name).lower() for name in selected_videos}
-        video_paths = [path for path in video_paths if os.path.basename(path).lower() in selected_names]
+        selected_names = {str(name).replace("\\", "/").lower() for name in selected_videos}
+        filtered_video_paths = []
+        for path in video_paths:
+            path_obj = Path(path)
+            basename = path_obj.name.lower()
+            relative_name = relative_video_path(path_obj, folder_path).lower()
+            if basename in selected_names or relative_name in selected_names:
+                filtered_video_paths.append(path)
+        video_paths = filtered_video_paths
     if not video_paths:
         LOGGER.log("[Extract - Phase Start]", "No videos found in Input_Videos", color_name="red")
         return {"frame_bundle_cache": {}, "summary": empty_summary} if return_frame_cache else {"summary": empty_summary}
@@ -440,9 +452,11 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
             scales = []
             video_name = os.path.basename(processing_video_path)
+            video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
+            source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
             LOGGER.log(
                 f"[Video {video_index}/{total_videos} - Start]",
-                f"{video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
+                f"{source_display_name if include_subfolders else video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
                 color_name="cyan",
             )
             stage_start = time.perf_counter()
@@ -502,6 +516,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             video_io.seek_to_frame(cap, 0, video_stats)
             detection_segment_tasks = initial_scan.build_detection_segment_tasks(
                 processing_video_path,
+                video_label,
+                source_display_name if include_subfolders else os.path.basename(video_path),
                 total_frames,
                 fps,
                 templates,
@@ -584,6 +600,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                             frame,
                             frame_count,
                             processing_video_path,
+                            video_label,
+                            source_display_name if include_subfolders else os.path.basename(video_path),
                             templates,
                             fps,
                             csv_writer,
@@ -673,6 +691,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 initial_scan.save_auxiliary_detection_frames(
                     cap,
                     processing_video_path,
+                    video_label,
+                    source_display_name if include_subfolders else os.path.basename(video_path),
                     auxiliary_detections,
                     score_frame_numbers,
                     median_left,
@@ -720,6 +740,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             total_score_progress.update(0)
             process_score_candidates(
                 processing_video_path,
+                video_label,
+                source_display_name if include_subfolders else os.path.basename(video_path),
                 score_candidates,
                 templates,
                 fps,
@@ -736,7 +758,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 total_videos=total_videos,
                 progress=total_score_progress,
             )
-            exported_counts = count_exported_detection_files(processing_video_path)
+            exported_counts = count_exported_detection_files(processing_video_path if not include_subfolders else video_label)
             total_score_screens_found += exported_counts["score"]
             total_track_screens_found += exported_counts["track"]
             total_race_numbers_found += exported_counts["race"]

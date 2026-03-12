@@ -74,7 +74,9 @@ def load_exported_frame_metadata(base_dir: Path):
 def find_metadata_entry(metadata_index, race_class: str, race_id_number: int, kind: str):
     """Look up metadata for one exported frame bundle."""
     for (video_name, race_number, entry_kind), value in metadata_index.items():
-        if race_number == race_id_number and entry_kind == kind and Path(video_name).stem == race_class:
+        if race_number != race_id_number or entry_kind != kind:
+            continue
+        if Path(video_name).stem == race_class or str(video_name) == race_class:
             return value
     return None
 
@@ -90,7 +92,10 @@ def load_consensus_frames(image_path: str, metadata_entry, input_videos_folder: 
     if metadata_entry is None:
         return [fallback_image]
 
-    video_path = input_videos_folder / str(metadata_entry["video"])
+    video_value = str(metadata_entry["video"])
+    video_path = Path(video_value)
+    if not video_path.is_absolute():
+        video_path = input_videos_folder / video_value
     if not video_path.exists():
         return [fallback_image]
     capture = cv2.VideoCapture(str(video_path))

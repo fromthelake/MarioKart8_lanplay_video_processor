@@ -175,6 +175,10 @@ Put your video files in folder:
 
 `./Input_Videos/`
 
+Optional:
+- you can also place videos inside subfolders under `./Input_Videos/`
+- use `--subfolders` if you want headless runs to include those subfolders
+
 ## Step 9. Run the tool
 
 Process everything in `Input_Videos`:
@@ -183,6 +187,25 @@ PowerShell Command:
 --------------
 .\.venv\Scripts\mk8-local-play.exe --all
 --------------
+
+Process everything in `Input_Videos` and all subfolders:
+
+PowerShell Command:
+--------------
+.\.venv\Scripts\mk8-local-play.exe --all --subfolders
+--------------
+
+Process only the current selected input set, including subfolders:
+
+PowerShell Command:
+--------------
+.\.venv\Scripts\mk8-local-play.exe --selection --subfolders
+--------------
+
+When `--subfolders` is used:
+- supported videos are discovered recursively under `./Input_Videos/`
+- exported frame bundles and Excel/CSV `Video` names include a sanitized relative folder path
+- this avoids naming conflicts when different folders contain files with the same base filename
 
 Process only the current selected input set:
 
@@ -228,6 +251,17 @@ What it includes:
 What it does not do:
 - it does not limit OCR to only newly extracted frames
 
+Add subfolders to `--all`:
+
+PowerShell Command:
+--------------
+.\.venv\Scripts\mk8-local-play.exe --all --subfolders
+--------------
+
+What it changes:
+- extraction also includes supported `.mp4`, `.mkv`, `.mkv`, `.mov`, `.avi`, and `.webm` files found in subfolders under `Input_Videos`
+- OCR/export still behaves like `--all`, so existing historical frame groups can still be included
+
 Run only the current selected input set:
 
 PowerShell Command:
@@ -245,6 +279,17 @@ What it includes:
 
 What it does not do:
 - it does not sweep unrelated historical frame groups from older videos
+
+Add subfolders to `--selection`:
+
+PowerShell Command:
+--------------
+.\.venv\Scripts\mk8-local-play.exe --selection --subfolders
+--------------
+
+What it changes:
+- extraction includes the current selected input set across `Input_Videos` and its subfolders
+- OCR/export stays scoped to only those subfolder-aware video classes
 
 Run extraction only:
 

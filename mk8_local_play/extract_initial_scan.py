@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from .console_logging import LOGGER
-from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi
+from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, build_video_identity, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi, relative_video_path
 from .project_paths import PROJECT_ROOT
 from . import extract_video_io as video_io
 
@@ -93,7 +93,7 @@ def _match_initial_scan_target(gray_image, target, templates, stats):
     return max_val, False, processed_roi
 
 
-def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, scale_x, scale_y, left, top,
+def process_frame(frame, frame_number, video_path, video_label, video_source_path, templates, fps, csv_writer, scale_x, scale_y, left, top,
                   crop_width, crop_height, stats, runtime_state, score_candidates, metadata_writer):
     """Run the single-process initial scan and export supporting frames immediately."""
     process_frame_start = time.perf_counter()
@@ -106,12 +106,12 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
         max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
         timecode = frame_to_timecode(frame_number, fps)
         if rejected_as_blank:
-            csv_writer.writerow([os.path.basename(video_path), target["label"], frame_number, 0, timecode])
+            csv_writer.writerow([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0, timecode])
             if target["kind"] == "race":
                 return 0
             continue
 
-        csv_writer.writerow([os.path.basename(video_path), target["label"], frame_number, max_val, timecode])
+        csv_writer.writerow([video_source_path or os.path.basename(video_path), target["label"], frame_number, max_val, timecode])
         if max_val <= target["match_threshold"] or np.isinf(max_val):
             continue
 
@@ -143,7 +143,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                 os.makedirs(output_folder, exist_ok=True)
                 frame_filename = os.path.join(
                     output_folder,
-                    f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+0TrackName.png",
+                    f"{video_label}+Race_{race_number:03}+0TrackName.png",
                 )
                 cv2.imwrite(frame_filename, saved_image)
                 video_io.log_exported_frame(
@@ -155,6 +155,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                     actual_track_frame,
                     fps,
                     frame_to_timecode,
+                    video_source_path=video_source_path,
                 )
                 video_io.seek_to_frame(runtime_state["capture"], frame_number, stats)
                 ret, _frame = video_io.read_video_frame(runtime_state["capture"], stats)
@@ -173,7 +174,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                 os.makedirs(output_folder, exist_ok=True)
                 frame_filename = os.path.join(
                     output_folder,
-                    f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+1RaceNumber.png",
+                    f"{video_label}+Race_{race_number:03}+1RaceNumber.png",
                 )
                 cv2.imwrite(frame_filename, upscaled_image)
                 video_io.log_exported_frame(
@@ -185,6 +186,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
                     frame_number,
                     fps,
                     frame_to_timecode,
+                    video_source_path=video_source_path,
                 )
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
@@ -193,7 +195,7 @@ def process_frame(frame, frame_number, video_path, templates, fps, csv_writer, s
     return 0
 
 
-def process_segment_frame(frame, frame_number, video_path, templates, fps, scale_x, scale_y, left, top,
+def process_segment_frame(frame, frame_number, video_path, video_source_path, templates, fps, scale_x, scale_y, left, top,
                           crop_width, crop_height, stats, state, debug_rows, emit_results):
     """Run the worker-safe initial scan without writing files or mutating shared state."""
     process_frame_start = time.perf_counter()
@@ -205,7 +207,7 @@ def process_segment_frame(frame, frame_number, video_path, templates, fps, scale
         max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
         timecode = frame_to_timecode(frame_number, fps) if emit_results else ""
         if emit_results:
-            debug_rows.append([os.path.basename(video_path), target["label"], frame_number, 0 if rejected_as_blank else max_val, timecode])
+            debug_rows.append([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0 if rejected_as_blank else max_val, timecode])
         if rejected_as_blank:
             if target["kind"] == "race":
                 video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
@@ -318,6 +320,7 @@ def scan_detection_segment(task):
                 frame,
                 frame_count,
                 video_path,
+                task.get("video_source_path"),
                 task["templates"],
                 fps,
                 task["scale_x"],
@@ -377,7 +380,7 @@ def choose_detection_segment_count(total_frames, requested_workers, minimum_segm
     return max(1, min(requested_workers, segment_count if segment_count > 0 else 1))
 
 
-def build_detection_segment_tasks(video_path, total_frames, fps, templates, scale_x, scale_y, left, top, crop_width,
+def build_detection_segment_tasks(video_path, video_label, video_source_path, total_frames, fps, templates, scale_x, scale_y, left, top, crop_width,
                                   crop_height, requested_workers, include_debug_rows, overlap_frames,
                                   minimum_segment_frames, window_steps, progress_report_seconds):
     """Build overlapped scan segments but keep output ownership non-overlapping."""
@@ -396,6 +399,8 @@ def build_detection_segment_tasks(video_path, total_frames, fps, templates, scal
             {
                 "segment_index": segment_index,
                 "video_path": video_path,
+                "video_label": video_label,
+                "video_source_path": video_source_path,
                 "fps": fps,
                 "scan_start": scan_start,
                 "scan_end": scan_end,
@@ -440,7 +445,7 @@ def assign_race_number(frame_number, score_frame_numbers):
     return bisect_left(score_frame_numbers, frame_number) + 1
 
 
-def save_auxiliary_detection_frames(capture, video_path, detections, score_frame_numbers, left, top,
+def save_auxiliary_detection_frames(capture, video_path, video_label, video_source_path, detections, score_frame_numbers, left, top,
                                     crop_width, crop_height, fps, stats, metadata_writer):
     """Persist merged track-name and race-number frames after worker results are combined."""
     if not detections:
@@ -476,7 +481,7 @@ def save_auxiliary_detection_frames(capture, video_path, detections, score_frame
 
         frame_filename = os.path.join(
             output_folder,
-            f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+{suffix}.png",
+            f"{video_label}+Race_{race_number:03}+{suffix}.png",
         )
         cv2.imwrite(frame_filename, upscaled_image)
         video_io.log_exported_frame(
@@ -488,6 +493,7 @@ def save_auxiliary_detection_frames(capture, video_path, detections, score_frame
             actual_saved_frame,
             fps,
             frame_to_timecode,
+            video_source_path=video_source_path,
         )
         video_io.add_timing(stats, "output_frame_capture_s", stage_start)
 

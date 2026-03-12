@@ -1,6 +1,8 @@
 import time
 import os
+import re
 from glob import glob
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -120,19 +122,42 @@ def match_template(processed_roi, template_binary, alpha_mask=None):
     return max_val
 
 
-def load_videos_from_folder(folder_path):
+def build_video_identity(video_path, input_root=None, include_subfolders=False):
+    """Return the stable video identifier used in exported frame names and OCR grouping."""
+    video_path = Path(video_path)
+    if not include_subfolders:
+        return video_path.stem
+    root_path = Path(input_root) if input_root is not None else video_path.parent
+    try:
+        relative_path = video_path.relative_to(root_path)
+    except ValueError:
+        relative_path = video_path if not video_path.is_absolute() else Path(video_path.name)
+    path_without_suffix = relative_path.with_suffix("")
+    sanitized_parts = [
+        re.sub(r"[^A-Za-z0-9._-]+", "_", part).strip("._-") or "part"
+        for part in path_without_suffix.parts
+    ]
+    return "__".join(sanitized_parts)
+
+
+def relative_video_path(video_path, input_root):
+    video_path = Path(video_path)
+    return str(video_path.relative_to(Path(input_root))).replace("\\", "/")
+
+
+def load_videos_from_folder(folder_path, *, include_subfolders=False):
     """Load supported video files from an input folder."""
-    video_extensions = ["*.mp4", "*.mkv", "*.mov", "*.avi", "*.webm"]
-    video_paths = []
-    for extension in video_extensions:
-        video_paths.extend(glob(os.path.join(folder_path, extension)))
-    return video_paths
+    video_extensions = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
+    root = Path(folder_path)
+    iterator = root.rglob("*") if include_subfolders else root.iterdir()
+    return [str(path) for path in sorted(iterator) if path.is_file() and path.suffix.lower() in video_extensions]
 
 
-def count_exported_detection_files(video_path):
-    """Count exported frame types for one source video."""
+def count_exported_detection_files(video_path_or_label):
+    """Count exported frame types for one source video or precomputed video label."""
     output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
-    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    path_obj = Path(str(video_path_or_label))
+    video_stem = path_obj.stem if path_obj.suffix else str(video_path_or_label)
     return {
         "track": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+0TrackName.png"))),
         "race": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+1RaceNumber.png"))),

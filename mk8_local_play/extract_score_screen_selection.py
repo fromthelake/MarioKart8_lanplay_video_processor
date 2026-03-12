@@ -196,9 +196,9 @@ def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop
     return bundled_frames
 
 
-def save_score_frames(video_path, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
+def save_score_frames(video_path, video_label, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
                       actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
-                      total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode):
+                      total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None):
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
@@ -206,24 +206,24 @@ def save_score_frames(video_path, race_number, race_score_frame, total_score_fra
     os.makedirs(output_folder, exist_ok=True)
     frame_filename = os.path.join(
         output_folder,
-        f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+2RaceScore.png"
+        f"{video_label}+Race_{race_number:03}+2RaceScore.png"
     )
     cv2.imwrite(frame_filename, race_score_image)
-    video_stem = os.path.splitext(os.path.basename(video_path))[0]
+    video_stem = video_label
     if race_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = list(race_consensus_frames)
     log_exported_frame(
-        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode
+        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path
     )
 
     frame_filename = os.path.join(
         output_folder,
-        f"{os.path.splitext(os.path.basename(video_path))[0]}+Race_{race_number:03}+3TotalScore.png"
+        f"{video_label}+Race_{race_number:03}+3TotalScore.png"
     )
     cv2.imwrite(frame_filename, total_score_image)
     if total_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = list(total_consensus_frames)
     log_exported_frame(
-        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode
+        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path
     )
     return True

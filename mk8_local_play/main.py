@@ -3,6 +3,7 @@ import cProfile
 import glob
 import os
 import pstats
+import re
 import subprocess
 import sys
 import cv2
@@ -34,26 +35,62 @@ OCR_MODULE = "mk8_local_play.extract_text"
 PROFILE_OUTPUT = OUTPUT_DIR / "Debug" / "performance_profile.txt"
 
 
-SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
 
 
-def selected_input_video_files(selected_video: str | None = None) -> list[Path]:
-    all_video_files = sorted(
-        path for path in INPUT_DIR.iterdir()
+def build_video_identity(video_path: Path, *, include_subfolders: bool = False) -> str:
+    if not include_subfolders:
+        return video_path.stem
+    try:
+        relative_path = video_path.relative_to(INPUT_DIR)
+    except ValueError:
+        relative_path = video_path if not video_path.is_absolute() else Path(video_path.name)
+    path_without_suffix = relative_path.with_suffix("")
+    sanitized_parts = [
+        re.sub(r"[^A-Za-z0-9._-]+", "_", part).strip("._-") or "part"
+        for part in path_without_suffix.parts
+    ]
+    return "__".join(sanitized_parts)
+
+
+def discover_input_video_files(*, include_subfolders: bool = False) -> list[Path]:
+    if not INPUT_DIR.exists():
+        return []
+    iterator = INPUT_DIR.rglob("*") if include_subfolders else INPUT_DIR.iterdir()
+    return sorted(
+        path for path in iterator
         if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_SUFFIXES
-    ) if INPUT_DIR.exists() else []
+    )
+
+
+def selected_input_video_files(selected_video: str | None = None, *, include_subfolders: bool = False) -> list[Path]:
+    all_video_files = discover_input_video_files(include_subfolders=include_subfolders)
     if not selected_video:
         return all_video_files
     selected_name = Path(selected_video).name.lower()
     exact_matches = [path for path in all_video_files if path.name.lower() == selected_name]
     if exact_matches:
         return exact_matches
+    selected_relative = selected_video.replace("\\", "/").lower()
+    relative_matches = [
+        path for path in all_video_files
+        if str(path.relative_to(INPUT_DIR)).replace("\\", "/").lower() == selected_relative
+    ]
+    if relative_matches:
+        return relative_matches
     selected_stem = Path(selected_video).stem.lower()
-    return [path for path in all_video_files if path.stem.lower() == selected_stem]
+    stem_matches = [path for path in all_video_files if path.stem.lower() == selected_stem]
+    if not include_subfolders:
+        return stem_matches
+    selected_identity = build_video_identity(Path(selected_video), include_subfolders=True).lower()
+    return [
+        path for path in all_video_files
+        if build_video_identity(path, include_subfolders=True).lower() == selected_identity
+    ] or stem_matches
 
 
-def selected_race_classes_for_videos(video_files: list[Path]) -> list[str]:
-    return [path.stem for path in video_files]
+def selected_race_classes_for_videos(video_files: list[Path], *, include_subfolders: bool = False) -> list[str]:
+    return [build_video_identity(path, include_subfolders=include_subfolders) for path in video_files]
 
 
 def resolve_project_python() -> str:
@@ -215,25 +252,37 @@ def merge_videos() -> None:
             temp_file.unlink()
 
 
-def run_extract(selected_video: str | None = None) -> None:
+def run_extract(selected_video: str | None = None, *, include_subfolders: bool = False) -> None:
     ensure_runtime_or_raise()
-    extra_args = ["--video", selected_video] if selected_video else None
+    extra_args = []
+    if selected_video:
+        extra_args.extend(["--video", selected_video])
+    if include_subfolders:
+        extra_args.append("--subfolders")
     run_python_module(EXTRACT_MODULE, extra_args=extra_args)
 
 
-def run_ocr(selected_video: str | None = None) -> None:
+def run_ocr(selected_video: str | None = None, *, include_subfolders: bool = False) -> None:
     ensure_runtime_or_raise(require_tesseract=True)
-    extra_args = ["--video", Path(selected_video).stem] if selected_video else None
+    extra_args = []
+    if selected_video:
+        selected_identifier = (
+            build_video_identity(Path(selected_video), include_subfolders=True)
+            if include_subfolders else Path(selected_video).stem
+        )
+        extra_args.extend(["--video", selected_identifier])
+    if include_subfolders:
+        extra_args.append("--subfolders")
     run_python_module(OCR_MODULE, extra_args=extra_args)
 
 
-def run_all(selected_video: str | None = None, selection_mode: bool = False) -> None:
+def run_all(selected_video: str | None = None, selection_mode: bool = False, *, include_subfolders: bool = False) -> None:
     ensure_runtime_or_raise(require_tesseract=True)
     from . import extract_frames, extract_text
 
     mode_label = "Run selection" if selection_mode else "Run all"
     LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
-    video_files = selected_input_video_files(selected_video=selected_video)
+    video_files = selected_input_video_files(selected_video=selected_video, include_subfolders=include_subfolders)
     if not video_files:
         target = selected_video or "Input_Videos"
         raise RuntimeError(f"No supported videos found for selection: {target}")
@@ -248,17 +297,31 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False) -> 
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
             source_length = frame_count / max(fps, 1)
             total_source_seconds += source_length
-            source_summaries.append(f"{video_path.name} ({extract_frames.format_duration(source_length)})")
+            display_name = (
+                str(video_path.relative_to(INPUT_DIR)).replace("\\", "/")
+                if include_subfolders else video_path.name
+            )
+            source_summaries.append(f"{display_name} ({extract_frames.format_duration(source_length)})")
         capture.release()
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, summary in enumerate(source_summaries, start=1):
         LOGGER.log("[Run - Input Summary]", f"{index}. {summary}")
-    selected_video_names = [path.name for path in video_files]
-    extract_result = extract_frames.extract_frames(return_frame_cache=True, selected_videos=selected_video_names or None)
+    selected_video_names = [
+        str(path.relative_to(INPUT_DIR)).replace("\\", "/") if include_subfolders else path.name
+        for path in video_files
+    ]
+    extract_result = extract_frames.extract_frames(
+        return_frame_cache=True,
+        selected_videos=selected_video_names or None,
+        include_subfolders=include_subfolders,
+    )
     LOGGER.blank_lines(2)
     frame_bundle_cache = extract_result["frame_bundle_cache"]
     extract_text.configure_tesseract(extract_text.pytesseract, extract_text.APP_CONFIG)
-    selected_race_classes = selected_race_classes_for_videos(video_files) if selection_mode else None
+    selected_race_classes = (
+        selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
+        if selection_mode else None
+    )
     ocr_result = extract_text.process_images_in_folder(
         str(FRAMES_DIR),
         in_memory_frame_bundles=frame_bundle_cache,
@@ -515,6 +578,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ocr", action="store_true", help="Run OCR/export only")
     parser.add_argument("--all", action="store_true", help="Run extraction and OCR/export")
     parser.add_argument("--selection", action="store_true", help="Run extraction and OCR only for the videos currently selected in Input_Videos")
+    parser.add_argument("--subfolders", action="store_true", help="Include supported videos from subfolders under Input_Videos during headless runs")
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     return parser.parse_args()
@@ -525,22 +589,22 @@ def main() -> int:
     if args.check:
         return print_runtime_status()
     if args.extract:
-        run_extract(selected_video=args.video)
+        run_extract(selected_video=args.video, include_subfolders=args.subfolders)
         return 0
     if args.scan_test:
-        run_extract(selected_video=args.video)
+        run_extract(selected_video=args.video, include_subfolders=args.subfolders)
         return 0
     if args.ocr:
-        run_ocr(selected_video=args.video)
+        run_ocr(selected_video=args.video, include_subfolders=args.subfolders)
         return 0
     if args.all:
         if args.profile:
             run_profiled_all(selected_video=args.video)
         else:
-            run_all(selected_video=args.video)
+            run_all(selected_video=args.video, include_subfolders=args.subfolders)
         return 0
     if args.selection:
-        run_all(selected_video=args.video, selection_mode=True)
+        run_all(selected_video=args.video, selection_mode=True, include_subfolders=args.subfolders)
         return 0
     return launch_gui()
 
