@@ -36,6 +36,8 @@ INITIAL_SCAN_MIN_SEGMENT_FRAMES = APP_CONFIG.pass1_min_segment_frames
 INITIAL_SCAN_PROGRESS_REPORT_SECONDS = 2.0
 INITIAL_SCAN_EOF_GUARD_SECONDS = 10.0
 INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
+INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS = 10.0
+INITIAL_SCAN_FFPROBE_COUNTFRAME_MIN_DELTA_FRAMES = 30
 
 # Score-screen selection always runs on the fixed 1280x720 working image, so these
 # ROIs can stay as constants instead of being rebuilt for every frame.
@@ -380,11 +382,43 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             video_start = time.perf_counter()
             video_stats = defaultdict(float)
             video_stats["template_load_s"] = template_load_time_s
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
+            capture_poisoned = False
+
+            probe = cv2.VideoCapture(video_path)
+            if not probe.isOpened():
                 LOGGER.log(f"[Video {video_index}/{total_videos} - Start]", f"Could not open video: {video_path}", color_name="red")
                 continue
-            #Determine the FPS
+            nominal_total_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+            nominal_fps = probe.get(cv2.CAP_PROP_FPS) or 1
+            nominal_duration_s = nominal_total_frames / max(nominal_fps, 1)
+            corrupt_check_status = "checked"
+            preflight_result = video_io.sample_video_readability(video_path, nominal_total_frames, stats=video_stats)
+            corrupt_check_status = str(preflight_result.get("status", "checked"))
+            probe.release()
+            if preflight_result is not None and preflight_result.get("is_suspect"):
+                LOGGER.log(
+                    f"[Video {video_index}/{total_videos} - Start]",
+                    f"Corrupt preflight flagged file: {preflight_result.get('reason', 'sample probe failed')}",
+                    color_name="yellow",
+                )
+            processing_video_path = video_io.repair_video_if_needed(
+                video_path,
+                nominal_total_frames,
+                preflight_result,
+                duration_s=nominal_duration_s,
+                stats=video_stats,
+            )
+
+            processing_readable_frames = nominal_total_frames
+
+            cap = cv2.VideoCapture(processing_video_path)
+            if not cap.isOpened():
+                LOGGER.log(
+                    f"[Video {video_index}/{total_videos} - Start]",
+                    f"Could not open video: {processing_video_path}",
+                    color_name="red",
+                )
+                continue
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_skip = int(3 * max(1, int(fps)))
             score_candidates = []
@@ -395,18 +429,47 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 "capture": cap,
             }
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            processing_is_suspect = bool(preflight_result and preflight_result.get("is_suspect") and processing_video_path == video_path)
+            scan_worker_count = 1 if processing_is_suspect else INITIAL_SCAN_WORKERS
+            if processing_is_suspect:
+                LOGGER.log(
+                    f"[Video {video_index}/{total_videos} - Start]",
+                    "Using conservative single-process scan for suspect video",
+                    color_name="yellow",
+                )
             sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
             scales = []
-            video_name = os.path.basename(video_path)
+            video_name = os.path.basename(processing_video_path)
             LOGGER.log(
                 f"[Video {video_index}/{total_videos} - Start]",
                 f"{video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
                 color_name="cyan",
             )
             stage_start = time.perf_counter()
+            eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
             for frame_num in sample_frames:
                 video_io.seek_to_frame(cap, frame_num, video_stats)
-                ret, frame = video_io.read_video_frame(cap, video_stats)
+                read_timeout_s = (
+                    INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS
+                    if total_frames - int(frame_num) <= eof_guard_frames
+                    else None
+                )
+                if read_timeout_s is None:
+                    ret, frame = video_io.read_video_frame(cap, video_stats)
+                    timed_out = False
+                else:
+                    ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
+                if timed_out:
+                    LOGGER.log(
+                        f"[Video {video_index}/{total_videos} - Start]",
+                        (
+                            f"Aborting video after frame-read stall during scaling scan "
+                            f"(requested frame {int(frame_num)}/{total_frames})"
+                        ),
+                        color_name="yellow",
+                    )
+                    capture_poisoned = True
+                    break
                 if not ret:
                     continue
                 scale_x, scale_y, left, top, crop_width, crop_height = determine_scaling(frame)
@@ -414,7 +477,19 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             video_io.add_timing(video_stats, "scaling_scan_s", stage_start)
 
             if not scales:
-                LOGGER.log(f"[Video {video_index}/{total_videos} - Start]", f"No valid frames found for scaling: {video_path}", color_name="red")
+                if capture_poisoned:
+                    LOGGER.log(
+                        f"[Video {video_index}/{total_videos} - Start]",
+                        f"Skipping poisoned capture after read timeout: {processing_video_path}",
+                        color_name="yellow",
+                    )
+                else:
+                    LOGGER.log(
+                        f"[Video {video_index}/{total_videos} - Start]",
+                        f"No valid frames found for scaling: {processing_video_path}",
+                        color_name="red",
+                    )
+                    cap.release()
                 continue
 
             median_scale_x = np.median([s[0] for s in scales])
@@ -426,7 +501,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
 
             video_io.seek_to_frame(cap, 0, video_stats)
             detection_segment_tasks = initial_scan.build_detection_segment_tasks(
-                video_path,
+                processing_video_path,
                 total_frames,
                 fps,
                 templates,
@@ -436,7 +511,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 median_top,
                 median_crop_width,
                 median_crop_height,
-                INITIAL_SCAN_WORKERS,
+                scan_worker_count,
                 APP_CONFIG.write_debug_csv,
                 INITIAL_SCAN_SEGMENT_OVERLAP_FRAMES,
                 INITIAL_SCAN_MIN_SEGMENT_FRAMES,
@@ -458,7 +533,6 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 scan_progress.update(0)
                 while cap.isOpened() and frame_count < total_frames:
                     remaining_frames = max(0, total_frames - frame_count)
-                    eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
                     if (
                         total_frames > 0
                         and frame_count / total_frames >= INITIAL_SCAN_EOF_GUARD_PROGRESS
@@ -478,7 +552,30 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                     window_interrupted = False
 
                     for _ in range(INITIAL_SCAN_WINDOW_STEPS):
-                        ret, frame = video_io.read_video_frame(cap, video_stats)
+                        read_timeout_s = (
+                            INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS
+                            if remaining_frames <= eof_guard_frames
+                            else None
+                        )
+                        if read_timeout_s is None:
+                            ret, frame = video_io.read_video_frame(cap, video_stats)
+                            timed_out = False
+                        else:
+                            ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
+                        if timed_out:
+                            LOGGER.log(
+                                f"[Video {video_index}/{total_videos} - Scan]",
+                                (
+                                    f"Aborting video after frame-read stall near EOF "
+                                    f"({remaining_frames} frames remaining, "
+                                    f"{remaining_frames / max(fps, 1):.1f}s tail)"
+                                ),
+                                color_name="yellow",
+                            )
+                            frame_count = total_frames
+                            window_interrupted = True
+                            capture_poisoned = True
+                            break
                         if not ret:
                             window_interrupted = True
                             break
@@ -486,7 +583,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                         frames_to_skip = initial_scan.process_frame(
                             frame,
                             frame_count,
-                            video_path,
+                            processing_video_path,
                             templates,
                             fps,
                             csv_writer,
@@ -506,7 +603,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                             if frame_count < total_frames:
                                 video_io.seek_to_frame(cap, frame_count, video_stats)
                             window_interrupted = True
-                            scan_progress.update(min(frame_count, total_frames), f"Races found: {len(score_candidates)}")
+                            scan_progress.update(min(frame_count, total_frames), f"Score candidates: {len(score_candidates)}")
                             break
 
                         if not video_io.advance_frames_by_grab(cap, frame_skip - 1, video_stats):
@@ -519,12 +616,12 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                             window_interrupted = True
                             break
 
-                        scan_progress.update(frame_count, f"Races found: {len(score_candidates)}")
+                        scan_progress.update(frame_count, f"Score candidates: {len(score_candidates)}")
 
                     if window_interrupted and frame_count >= total_frames:
                         break
                 if scan_progress.last_percent < 100:
-                    scan_progress.update(total_frames, f"Races found: {len(score_candidates)}")
+                    scan_progress.update(total_frames, f"Score candidates: {len(score_candidates)}")
                 video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
             else:
                 stage_start = time.perf_counter()
@@ -575,7 +672,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                     LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", "", color_name="cyan")
                 initial_scan.save_auxiliary_detection_frames(
                     cap,
-                    video_path,
+                    processing_video_path,
                     auxiliary_detections,
                     score_frame_numbers,
                     median_left,
@@ -586,7 +683,15 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                     video_stats,
                     metadata_writer,
                 )
-            pre_pass2_counts = count_exported_detection_files(video_path)
+            if capture_poisoned:
+                LOGGER.log(
+                    f"[Video {video_index}/{total_videos} - Complete]",
+                    f"{video_name} | Aborted after timed-out read to avoid reusing a poisoned decoder",
+                    color_name="yellow",
+                )
+                video_stats["video_total_s"] = time.perf_counter() - video_start
+                continue
+            pre_pass2_counts = count_exported_detection_files(processing_video_path)
             scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
             scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
             scan_summary_lines = [
@@ -614,7 +719,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
             )
             total_score_progress.update(0)
             process_score_candidates(
-                video_path,
+                processing_video_path,
                 score_candidates,
                 templates,
                 fps,
@@ -631,11 +736,12 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                 total_videos=total_videos,
                 progress=total_score_progress,
             )
-            exported_counts = count_exported_detection_files(video_path)
+            exported_counts = count_exported_detection_files(processing_video_path)
             total_score_screens_found += exported_counts["score"]
             total_track_screens_found += exported_counts["track"]
             total_race_numbers_found += exported_counts["race"]
-            cap.release()
+            if not capture_poisoned:
+                cap.release()
             video_stats["video_total_s"] = time.perf_counter() - video_start
             if total_score_progress.last_percent < 100:
                 total_score_progress.update(len(score_candidates))
@@ -667,6 +773,10 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
                     "processing_duration_s": float(video_stats["video_total_s"]),
                     "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
                     "total_score_duration_s": float(video_stats.get("score_candidate_pass_s", 0.0)),
+                    "corrupt_check_duration_s": float(video_stats.get("corrupt_check_duration_s", 0.0)),
+                    "corrupt_check_status": corrupt_check_status,
+                    "repair_duration_s": float(video_stats.get("repair_duration_s", 0.0)),
+                    "repair_created": bool(video_stats.get("repair_created", 0)),
                     "track_screens": exported_counts["track"],
                     "race_numbers": exported_counts["race"],
                     "total_score_screens": exported_counts["total"],
@@ -695,6 +805,9 @@ def extract_frames(return_frame_cache=False, selected_videos=None):
         "track_screens": total_track_screens_found,
         "race_numbers": total_race_numbers_found,
         "total_score_screens": total_score_screens_found,
+        "corrupt_check_duration_s": sum(float(item.get("corrupt_check_duration_s", 0.0)) for item in per_video_summaries),
+        "repair_duration_s": sum(float(item.get("repair_duration_s", 0.0)) for item in per_video_summaries),
+        "repair_count": sum(1 for item in per_video_summaries if item.get("repair_created")),
         "per_video_summaries": per_video_summaries,
     }
     extract_lines = [

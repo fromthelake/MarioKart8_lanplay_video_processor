@@ -599,6 +599,12 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         f"OCR workers: {OCR_WORKERS} | Consensus frames: {OCR_CONSENSUS_FRAMES} | Input race groups: {len(sorted_grouped_images)}",
         color_name="magenta",
     )
+    if selected_classes is not None:
+        LOGGER.log(
+            "[OCR - Settings]",
+            f"Selection scope: {len(selected_classes)} video classes",
+            color_name="magenta",
+        )
     results = []
     race_summaries = []
     per_video_ocr_durations = defaultdict(float)

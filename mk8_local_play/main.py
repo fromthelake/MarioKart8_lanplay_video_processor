@@ -34,6 +34,28 @@ OCR_MODULE = "mk8_local_play.extract_text"
 PROFILE_OUTPUT = OUTPUT_DIR / "Debug" / "performance_profile.txt"
 
 
+SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
+
+
+def selected_input_video_files(selected_video: str | None = None) -> list[Path]:
+    all_video_files = sorted(
+        path for path in INPUT_DIR.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_SUFFIXES
+    ) if INPUT_DIR.exists() else []
+    if not selected_video:
+        return all_video_files
+    selected_name = Path(selected_video).name.lower()
+    exact_matches = [path for path in all_video_files if path.name.lower() == selected_name]
+    if exact_matches:
+        return exact_matches
+    selected_stem = Path(selected_video).stem.lower()
+    return [path for path in all_video_files if path.stem.lower() == selected_stem]
+
+
+def selected_race_classes_for_videos(video_files: list[Path]) -> list[str]:
+    return [path.stem for path in video_files]
+
+
 def resolve_project_python() -> str:
     """Prefer the repo-local virtualenv so CLI runs use the installed project dependencies."""
     candidate_paths = [
@@ -205,15 +227,16 @@ def run_ocr(selected_video: str | None = None) -> None:
     run_python_module(OCR_MODULE, extra_args=extra_args)
 
 
-def run_all(selected_video: str | None = None) -> None:
+def run_all(selected_video: str | None = None, selection_mode: bool = False) -> None:
     ensure_runtime_or_raise(require_tesseract=True)
     from . import extract_frames, extract_text
 
-    LOGGER.log("[Run - Phase Start]", "Run all", color_name="cyan")
-    video_files = sorted(INPUT_DIR.glob("*"))
-    if selected_video:
-        selected_name = Path(selected_video).name.lower()
-        video_files = [path for path in video_files if path.is_file() and path.name.lower() == selected_name]
+    mode_label = "Run selection" if selection_mode else "Run all"
+    LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
+    video_files = selected_input_video_files(selected_video=selected_video)
+    if not video_files:
+        target = selected_video or "Input_Videos"
+        raise RuntimeError(f"No supported videos found for selection: {target}")
     source_summaries = []
     total_source_seconds = 0.0
     for video_path in video_files:
@@ -230,11 +253,12 @@ def run_all(selected_video: str | None = None) -> None:
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, summary in enumerate(source_summaries, start=1):
         LOGGER.log("[Run - Input Summary]", f"{index}. {summary}")
-    extract_result = extract_frames.extract_frames(return_frame_cache=True, selected_videos=[selected_video] if selected_video else None)
+    selected_video_names = [path.name for path in video_files]
+    extract_result = extract_frames.extract_frames(return_frame_cache=True, selected_videos=selected_video_names or None)
     LOGGER.blank_lines(2)
     frame_bundle_cache = extract_result["frame_bundle_cache"]
     extract_text.configure_tesseract(extract_text.pytesseract, extract_text.APP_CONFIG)
-    selected_race_classes = [Path(selected_video).stem] if selected_video else None
+    selected_race_classes = selected_race_classes_for_videos(video_files) if selection_mode else None
     ocr_result = extract_text.process_images_in_folder(
         str(FRAMES_DIR),
         in_memory_frame_bundles=frame_bundle_cache,
@@ -249,6 +273,9 @@ def run_all(selected_video: str | None = None) -> None:
     ocr_per_video_summary = ocr_result.get("per_video_summary", {})
     total_ocr_duration_s = float(ocr_result.get("duration_s", 0.0))
     total_ocr_work_s = sum(float(value) for value in ocr_per_video_work_durations.values())
+    total_corrupt_check_s = float(extract_summary.get('corrupt_check_duration_s', 0.0))
+    total_repair_s = float(extract_summary.get('repair_duration_s', 0.0))
+    total_repairs = int(extract_summary.get('repair_count', 0))
     performance_lines = [
         f"Total processing time: {extract_frames.format_duration(total_processing_seconds)}",
         f"Total source video length: {extract_frames.format_duration(total_source_seconds)}",
@@ -257,6 +284,8 @@ def run_all(selected_video: str | None = None) -> None:
         "Phase durations",
         f"- Extract race and score screens: {extract_frames.format_duration(extract_summary.get('duration_s', 0.0))}",
         f"- OCR and workbook export: {extract_frames.format_duration(ocr_result.get('duration_s', 0.0))}",
+        f"- Corrupt preflight checks: {extract_frames.format_duration(total_corrupt_check_s)}",
+        f"- Repair file creation: {extract_frames.format_duration(total_repair_s)} ({total_repairs} {('video' if total_repairs == 1 else 'videos')})",
     ]
     if per_video_summaries:
         performance_lines.extend(["", "Per-video durations"])
@@ -268,6 +297,21 @@ def run_all(selected_video: str | None = None) -> None:
                     f"Processing: {extract_frames.format_duration(summary['processing_duration_s'])}"
                 )
             performance_lines.append(f"  - Scan: {extract_frames.format_duration(summary['scan_duration_s'])}")
+            corrupt_check_duration_s = float(summary.get('corrupt_check_duration_s', 0.0))
+            corrupt_check_status = summary.get('corrupt_check_status', 'skipped')
+            if corrupt_check_duration_s > 0:
+                performance_lines.append(
+                    f"  - Corrupt preflight: {extract_frames.format_duration(corrupt_check_duration_s)} ({corrupt_check_status})"
+                )
+            else:
+                performance_lines.append(f"  - Corrupt preflight: skipped ({corrupt_check_status})")
+            repair_duration_s = float(summary.get('repair_duration_s', 0.0))
+            if summary.get('repair_created'):
+                performance_lines.append(
+                    f"  - Repair file creation: {extract_frames.format_duration(repair_duration_s)}"
+                )
+            else:
+                performance_lines.append("  - Repair file creation: not needed")
             performance_lines.append(f"  - Total score screen: {extract_frames.format_duration(summary['total_score_duration_s'])}")
             ocr_work_s = float(ocr_per_video_work_durations.get(video_stem, 0.0))
             if total_ocr_work_s > 0:
@@ -467,8 +511,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mario Kart 8 local play video processing")
     parser.add_argument("--check", action="store_true", help="Print runtime/dependency status")
     parser.add_argument("--extract", action="store_true", help="Run frame extraction only")
+    parser.add_argument("--scan-test", action="store_true", help="Benchmark extraction/scan only without OCR")
     parser.add_argument("--ocr", action="store_true", help="Run OCR/export only")
     parser.add_argument("--all", action="store_true", help="Run extraction and OCR/export")
+    parser.add_argument("--selection", action="store_true", help="Run extraction and OCR only for the videos currently selected in Input_Videos")
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     return parser.parse_args()
@@ -481,6 +527,9 @@ def main() -> int:
     if args.extract:
         run_extract(selected_video=args.video)
         return 0
+    if args.scan_test:
+        run_extract(selected_video=args.video)
+        return 0
     if args.ocr:
         run_ocr(selected_video=args.video)
         return 0
@@ -489,6 +538,9 @@ def main() -> int:
             run_profiled_all(selected_video=args.video)
         else:
             run_all(selected_video=args.video)
+        return 0
+    if args.selection:
+        run_all(selected_video=args.video, selection_mode=True)
         return 0
     return launch_gui()
 
