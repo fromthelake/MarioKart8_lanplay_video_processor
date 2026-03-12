@@ -1369,6 +1369,8 @@ def build_consensus_rows(
     visible_rows: int,
     points_key: str,
     points_source_key: str,
+    secondary_points_key: str | None = None,
+    secondary_points_source_key: str | None = None,
     character_observations: List[Dict[str, object]] | None = None,
 ) -> List[Dict[str, object]]:
     """Collapse multiple nearby frames into one best-effort row list."""
@@ -1377,6 +1379,7 @@ def build_consensus_rows(
     for row_index in range(max(visible_rows, 1)):
         name_votes = []
         point_votes = []
+        secondary_point_votes = []
         character_votes = []
         character_method_votes = defaultdict(float)
         for observation in name_observations:
@@ -1388,6 +1391,11 @@ def build_consensus_rows(
             point_source_values = observation.get(points_source_key, [])
             point_source = point_source_values[row_index] if row_index < len(point_source_values) else "7-segment"
             point_votes.append((point_value, 1.0, point_source))
+            if secondary_points_key and secondary_points_source_key:
+                secondary_point_value = parse_detected_int(observation[secondary_points_key][row_index])
+                secondary_source_values = observation.get(secondary_points_source_key, [])
+                secondary_point_source = secondary_source_values[row_index] if row_index < len(secondary_source_values) else "7-segment"
+                secondary_point_votes.append((secondary_point_value, 1.0, secondary_point_source))
         for observation in character_observations:
             if row_index < len(observation.get("character_metrics", [])):
                 character_match = observation["character_metrics"][row_index]
@@ -1407,6 +1415,7 @@ def build_consensus_rows(
 
         player_name, name_confidence = weighted_name_vote(name_votes)
         detected_value, point_confidence, detected_value_source = weighted_vote_with_source(point_votes)
+        secondary_detected_value, _secondary_point_confidence, secondary_detected_value_source = weighted_vote_with_source(secondary_point_votes)
         character_vote, character_vote_confidence = weighted_vote(character_votes)
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
         if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
@@ -1433,6 +1442,8 @@ def build_consensus_rows(
                 "NameConfidence": round(name_confidence * 100, 1),
                 "DetectedValue": detected_value,
                 "DetectedValueSource": detected_value_source,
+                "DetectedSecondaryValue": secondary_detected_value,
+                "DetectedSecondaryValueSource": secondary_detected_value_source,
                 "DigitConfidence": round(point_confidence * 100, 1),
                 "Character": character_name,
                 "CharacterIndex": character_index,
@@ -1468,8 +1479,12 @@ def map_total_rows_to_race_rows(
                     "CharacterMatchMethod": score_row.get("CharacterMatchMethod", ""),
                     "DetectedRacePoints": score_row["DetectedValue"],
                     "DetectedRacePointsSource": score_row.get("DetectedValueSource", ""),
+                    "DetectedOldTotalScore": score_row.get("DetectedSecondaryValue"),
+                    "DetectedOldTotalScoreSource": score_row.get("DetectedSecondaryValueSource", ""),
                     "DetectedTotalScore": None,
+                    "DetectedNewTotalScore": None,
                     "DetectedTotalScoreSource": "",
+                    "DetectedNewTotalScoreSource": "",
                     "NameConfidence": score_row["NameConfidence"],
                     "DigitConsensus": score_row["DigitConfidence"],
                     "TotalScoreMappingMethod": "missing_total_rows",
@@ -1553,8 +1568,12 @@ def map_total_rows_to_race_rows(
                 "CharacterMatchMethod": mapped_character_method,
                 "DetectedRacePoints": score_row["DetectedValue"],
                 "DetectedRacePointsSource": score_row.get("DetectedValueSource", ""),
+                "DetectedOldTotalScore": score_row.get("DetectedSecondaryValue"),
+                "DetectedOldTotalScoreSource": score_row.get("DetectedSecondaryValueSource", ""),
                 "DetectedTotalScore": total_score,
+                "DetectedNewTotalScore": total_score,
                 "DetectedTotalScoreSource": total_row.get("DetectedValueSource", "") if matched_total_index is not None else "",
+                "DetectedNewTotalScoreSource": total_row.get("DetectedValueSource", "") if matched_total_index is not None else "",
                 "NameConfidence": score_row["NameConfidence"],
                 "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
                 "TotalScoreMappingMethod": mapping_method,
@@ -1693,6 +1712,8 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         visible_rows=position_guided_visible_rows,
         points_key="race_points",
         points_source_key="race_point_sources",
+        secondary_points_key="total_points",
+        secondary_points_source_key="total_point_sources",
         character_observations=score_character_observations,
     )
     total_rows = build_consensus_rows(
