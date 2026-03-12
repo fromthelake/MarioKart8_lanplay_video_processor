@@ -1,434 +1,184 @@
-# Mario Kart 8 Local Play Video Processor
+# Mario Kart 8 LAN Play Video Processor
 
-This project turns Mario Kart 8 local-play capture videos into a clean Excel results sheet.
+Short setup guide for Windows.
 
-In plain language:
-- you place one or more recorded match videos in `Input_Videos/`
-- the tool finds the important result screens
-- the tool reads track names, player names, race points, and total scores
-- the tool writes timestamped Excel files to `Output_Results/`
+GitHub:
+- https://github.com/fromthelake/MarioKart8_lanplay_video_processor
 
-The project is designed for hobby use from a Git clone and supports:
-- Windows
-- Linux
-- macOS
+## Step 1. Choose where the project should live
 
-If you want a full beginner walkthrough with terminal hotkeys, install checks, and step-by-step platform instructions, read:
-- [BEGINNER_SETUP.md](./BEGINNER_SETUP.md)
+Choose the folder where you want GitHub to create the project folder.
 
-## Start Here
+Example:
+- Desktop
+- Documents
+- a development folder such as `C:\Projects`
 
-### I just want to run it
+Open that parent folder in File Explorer.
 
-- Windows:
-  - `.\scripts\setup_windows.ps1`
-  - `.\.venv\Scripts\mk8-local-play.exe --all`
-- Linux/macOS:
-  - `chmod +x ./scripts/setup_unix.sh`
-  - `./scripts/setup_unix.sh`
-  - `.venv/bin/mk8-local-play --all`
+Then open PowerShell there:
+- hold `Shift`
+- right-click in the folder background
+- click `Open PowerShell window here` or `Open in Terminal`
 
-### I want to tweak settings
+Important:
+- the `git clone` command in Step 4 will create a new folder named `MarioKart8_lanplay_video_processor` inside the folder you opened
 
-- open `app_config.example.json`
-- copy it to `app_config.json`
-- change worker counts, debug flags, or `tesseract_cmd`
+## Step 2. Check Git
 
-### I want to benchmark changes
-
-- use the scripts in `scripts/`
-- compare against a curated baseline with `tools/validate_outputs.py`
-
-## Who This Is For
-
-This repo is for people who:
-- record Mario Kart 8 local-play sessions
-- want a faster way to convert result screens into tournament standings
-- want a tool they can inspect, tune, and benchmark themselves
-
-You do not need to understand the code to use it. If you can open a terminal and follow a short setup guide, you can run it.
-
-## What The Tool Actually Does
-
-The processing pipeline has two major stages.
-
-1. Frame extraction
-- scans each input video
-- finds the useful Mario Kart result screens
-- exports those screens into `Output_Results/Frames/`
-
-2. OCR and validation
-- reads the exported screenshots
-- combines nearby frames to reduce OCR mistakes
-- matches fuzzy player names across races
-- splits duplicate exact names with character-aware identity tracking when needed
-- checks race points and running totals
-- rebases the first visible race when earlier footage is missing
-- keeps tournament totals running through later connection resets while flagging the affected rows
-- rescues RaceScore player counts from a slightly later frame when the black results banner hides the bottom row
-- resolves tracks, cups, and future character metadata from one compact game catalog
-- writes an Excel workbook
-
-Metadata note:
-- the repo runtime uses `reference_data/game_catalog.json` as the single source of truth
-- that compact catalog is derived locally from `database/firestore-export.json`
-
-## Quick Start
-
-### Windows
+Run:
 
 ```powershell
-.\scripts\setup_windows.ps1
-.\.venv\Scripts\mk8-local-play.exe --all
+git --version
 ```
 
-### Linux or macOS
+If it works:
+- continue to Step 3
 
-```bash
-chmod +x ./scripts/setup_unix.sh
-./scripts/setup_unix.sh
-.venv/bin/mk8-local-play --all
+If it fails:
+- download and install Git for Windows:
+  - https://git-scm.com/download/win
+- open a new PowerShell window
+- run `git --version` again
+
+## Step 3. Check Python
+
+Run:
+
+```powershell
+python --version
 ```
 
-## What You Need
+If that fails, run:
 
-Required:
-- Python 3.10 or newer
-- Tesseract OCR
+```powershell
+py --version
+```
 
-Optional:
-- FFmpeg
-  - only needed for the merge-video feature
+If one of them works:
+- continue to Step 4
 
-Recommended:
-- Python 3.12
-- a local virtual environment in `.venv`
+If both fail:
+- download and install Python:
+  - https://www.python.org/downloads/windows/
+- during install, enable `Add Python to PATH` if shown
+- open a new PowerShell window
+- run `python --version` again
 
-## First-Time Setup
+## Step 4. Check Tesseract OCR
 
-### 1. Clone the repository
+Run:
 
-```bash
-git clone <your-repo-url>
+```powershell
+tesseract --version
+```
+
+If it works:
+- continue to Step 5
+
+If it fails:
+- install Tesseract for Windows:
+  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
+- open a new PowerShell window
+- run `tesseract --version` again
+
+## Step 5. Download the project
+
+Run:
+
+```powershell
+git clone https://github.com/fromthelake/MarioKart8_lanplay_video_processor
 cd MarioKart8_lanplay_video_processor
 ```
 
-### 2. Install Python dependencies
+## Step 6. Run setup
 
-Use one of the setup scripts:
-- Windows: `.\scripts\setup_windows.ps1`
-- Linux/macOS: `./scripts/setup_unix.sh`
+Run:
 
-These scripts:
-- create `.venv` if needed
-- install the project in editable mode with its dependencies
-- create `app_config.json` from `app_config.example.json` if needed
-- run the installed command with `--check`
-
-### 3. Install Tesseract OCR
-
-Windows:
-- install Tesseract OCR
-- default location usually works automatically
-- if not, set `tesseract_cmd` in `app_config.json`
-
-Linux:
-- usually package name `tesseract-ocr`
-
-macOS:
-- easiest route is Homebrew:
-
-```bash
-brew install tesseract
+```powershell
+.\scripts\setup_windows.ps1
 ```
 
-### 4. Run the built-in environment check
+If setup succeeds:
+- continue to Step 7
 
-```bash
-python main.py --check
+If setup fails:
+- read the error shown in PowerShell
+- fix the missing dependency
+- run `./scripts/setup_windows.ps1` again
+
+## Step 7. Run the environment check
+
+Run:
+
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --check
 ```
 
-Important detail:
-- `main.py` now prefers the repo-local `.venv` automatically when it exists
-- that means `python main.py ...` still uses the project environment even if your shell started from a different Python
-- after setup, you also get these commands inside the virtual environment:
-  - `mk8-local-play`
-  - `mk8-local-results`
-- on Windows, run them as `.venv\Scripts\mk8-local-play.exe`
-- on Linux/macOS, run them as `.venv/bin/mk8-local-play`
+If the check succeeds:
+- continue to Step 8
 
-## Normal Usage
+If the check says Tesseract is missing:
+- install Tesseract from:
+  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
+- run the check again
 
-### Put videos in the input folder
+## Step 8. Add your videos
 
-Place your recordings in:
-- `Input_Videos/`
+Put your video files in:
 
-### Run the full pipeline
+```text
+Input_Videos
+```
 
-Windows:
+## Step 9. Run the tool
+
+Process everything in `Input_Videos`:
 
 ```powershell
 .\.venv\Scripts\mk8-local-play.exe --all
 ```
 
-Linux/macOS:
+Process only the current selected input set:
 
-```bash
-.venv/bin/mk8-local-play --all
+```powershell
+.\.venv\Scripts\mk8-local-play.exe --selection
 ```
 
-### Run only extraction
+## Output
 
-Windows:
+Results are written to:
+
+```text
+Output_Results
+```
+
+## Optional commands
+
+Run extraction only:
 
 ```powershell
 .\.venv\Scripts\mk8-local-play.exe --extract
 ```
 
-Linux/macOS:
-
-```bash
-.venv/bin/mk8-local-play --extract
-```
-
-### Run only OCR/export
-
-Windows:
+Run OCR/export only:
 
 ```powershell
 .\.venv\Scripts\mk8-local-play.exe --ocr
 ```
 
-Linux/macOS:
-
-```bash
-.venv/bin/mk8-local-play --ocr
-```
-
-### Run only one video
-
-Windows:
+Run one video only:
 
 ```powershell
 .\.venv\Scripts\mk8-local-play.exe --all --video Demo_CaptureCard_Race.mp4
 ```
 
-Linux/macOS:
+## If you want more detail
 
-```bash
-.venv/bin/mk8-local-play --all --video Demo_CaptureCard_Race.mp4
-```
+For the longer beginner guide, read:
+- [BEGINNER_SETUP.md](./BEGINNER_SETUP.md)
 
-## GUI
+## Technical Reference
 
-GUI support:
-- Windows: supported
-- Linux: supported when Tk is available in the Python build
-- macOS: supported when Tk is available in the Python build
-
-Start the GUI with:
-
-Windows:
-
-```powershell
-.\.venv\Scripts\mk8-local-play.exe
-```
-
-Linux/macOS:
-
-```bash
-.venv/bin/mk8-local-play
-```
-
-If Tk is not available, the CLI still works.
-
-## Expected Input
-
-Best results come from:
-- Mario Kart 8 local play
-- vertical split-screen layout
-- clear capture-card footage
-- no heavy stream overlays
-- no cropped game image
-
-Less reliable inputs:
-- heavily compressed videos
-- webcam overlays
-- unusual layouts
-- aggressive cropping
-
-## Known Limitations
-
-- best results come from vertical split-screen local-play captures
-- stream overlays and webcam boxes can hide OCR targets
-- strong compression can reduce name and score accuracy
-- this project is tuned for the Mario Kart 8 result layout it knows about, not arbitrary video layouts
-
-## Output
-
-Main output:
-- the newest timestamped workbook in `Output_Results/*_Tournament_Results.xlsx`
-- includes the resolved `Character` and `Position After Race` columns
-
-Additional outputs:
-- timestamped debug workbooks in `Output_Results/Debug/*_Tournament_Results_Debug.xlsx`
-- extracted frame screenshots in `Output_Results/Frames/`
-- optional debug artifacts in `Output_Results/Debug/`
-
-## Repository Layout
-
-- `main.py`
-  - thin root launcher for the main CLI and GUI
-- `extract_frames.py`
-  - thin root launcher for extraction-only runs
-- `extract_text.py`
-  - thin root launcher for OCR-only runs
-- `mk8_local_play/`
-  - real application package
-  - contains the extraction, OCR, runtime, and orchestration modules
-- `assets/`
-  - GUI images and detection templates
-- `scripts/`
-  - setup and benchmark helpers
-- `benchmarks/baselines/`
-  - curated comparison baselines for performance and regression checks
-- `reference_data/`
-  - track metadata and manual reference images kept with the repo
-- `tools/validate_outputs.py`
-  - compare current outputs against a baseline
-- `docs/`
-  - maintainer-facing project documentation
-
-## Configuration
-
-Copy `app_config.example.json` to `app_config.json` if you want to tune behavior manually.
-
-Main settings:
-- `tesseract_cmd`
-- `execution_mode`
-- `ocr_workers`
-- `score_analysis_workers`
-- `pass1_scan_workers`
-- `ocr_consensus_frames`
-- `write_debug_csv`
-- `write_debug_score_images`
-- `write_debug_linking_excel`
-
-Environment variables can also override these settings.
-
-## Why The Project Also Supports `pip install -e .`
-
-This repo still works fine as plain Python scripts.
-
-The editable install mainly improves the hobbyist experience:
-- installs dependencies in one standard step
-- exposes human-readable commands
-- makes Windows, Linux, and macOS usage more consistent
-- keeps the code linked to your Git checkout, which is ideal for local tuning and benchmarking
-- makes updates easy after a `git pull`
-
-Recommended update flow from a Git checkout:
-
-Windows:
-
-```powershell
-git pull
-.\scripts\setup_windows.ps1
-```
-
-Linux/macOS:
-
-```bash
-git pull
-./scripts/setup_unix.sh
-```
-
-If you prefer to reinstall manually instead of rerunning the setup script:
-
-- Windows: `.\.venv\Scripts\python.exe -m pip install -e .`
-- Linux/macOS: `.venv/bin/python -m pip install -e .`
-
-The primary command names are:
-- `mk8-local-play`
-- `mk8-local-results`
-
-Both commands run the same CLI as `main.py`.
-
-## Benchmarking And Regression Checks
-
-Benchmark baselines stay in the repo on purpose.
-
-They are useful when:
-- testing OCR changes
-- measuring speedups
-- checking whether frame exports changed
-
-Useful scripts:
-- `scripts/quick_benchmark.ps1`
-- `scripts/quick_benchmark.sh`
-- `scripts/release_benchmark.ps1`
-- `scripts/release_benchmark.sh`
-
-Validation tool:
-
-```bash
-python tools/validate_outputs.py --baseline-dir benchmarks/baselines/<your-baseline>
-```
-
-## Troubleshooting
-
-### `Tesseract: MISSING`
-
-Install Tesseract or set `tesseract_cmd` in `app_config.json`.
-
-### GUI does not start
-
-Use the CLI instead:
-
-```bash
-python main.py --all
-```
-
-On Linux and macOS, GUI support depends on Tk being present in the Python build.
-
-### OCR works from `.venv` but not from `python`
-
-This should now be handled automatically by `main.py`, which prefers the repo-local `.venv`.
-
-### Output looks wrong
-
-Check:
-- the video layout matches the expected local-play format
-- overlays are not covering names or points
-- the extracted screenshots in `Output_Results/Frames/` look correct
-
-Validation notes:
-- if the first recorded race is already mid-session, the tool now marks that race as a session rebase and uses its OCR totals as the baseline for later races
-- if totals later drop together because of a connection reset, the tool keeps the tournament totals running and flags those rows instead of resetting the standings
-- if two players share the same name, the tool now tries to split them with character-icon matching and outputs names such as `Pieter_1` and `Pieter_2`
-
-## Extra Documentation
-
-- [ReadMe.txt](./ReadMe.txt): plain-text pointer to the main documentation
-- [BEGINNER_SETUP.md](./BEGINNER_SETUP.md): step-by-step beginner installation guide for Windows, Linux, and macOS
-- [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md): development and repo hygiene notes
-- [docs/PROJECT_STRUCTURE.md](./docs/PROJECT_STRUCTURE.md): what each module does
-- [docs/RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md): pre-release sanity checklist
-- [docs/CHANGELOG.md](./docs/CHANGELOG.md): notable project changes
-- [LICENSE](./LICENSE): hobby/private-use license and liability disclaimer
-
-## Legal Note
-
-This repository only provides the program code around the processing workflow.
-
-- It does not claim ownership of Nintendo intellectual property.
-- It is meant for hobby and private-use scenarios.
-- Users remain responsible for respecting all third-party rights when using it.
-
-## Primary Entry Points
-
-Use these files:
-- `main.py`
-- `extract_frames.py`
-- `extract_text.py`
+If you want the pipeline, templates, ROIs, and metadata documented for development or reproduction, read:
+- [docs/TECHNICAL_PIPELINE.md](./docs/TECHNICAL_PIPELINE.md)

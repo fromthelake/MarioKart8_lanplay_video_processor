@@ -3,33 +3,33 @@ Mario Kart 8 Local Play Video Processor
 If this is the first file you opened:
 
 Do this first:
-- open `BEGINNER_SETUP.md`
+- open README.md
 
 Why:
-- that file explains everything step by step
-- it is written for beginners
-- it explains Windows, Linux, and macOS separately
-- it also explains how to check whether Git, Python, and Tesseract are installed
+- README.md now contains the short step-by-step setup guide
+- it starts by telling you where to open PowerShell
+- it explains that `git clone` creates the `MarioKart8_lanplay_video_processor` folder for you
+- it tells you which checks to run first
+- it tells you what to download if a check fails
+- it tells you the exact commands to run next
 
-If you are not technical:
-- do not start with the code files
-- do not worry about the folder names
-- just open `BEGINNER_SETUP.md` and follow the steps for your computer
+If you want more detail:
+- open BEGINNER_SETUP.md
 
-If you want the shorter project overview:
-- open `README.md`
+Use BEGINNER_SETUP.md if:
+- you want a slower beginner walkthrough
+- you want more explanation for each step
+- you want extra platform detail
 
 What this project does:
-- you put Mario Kart videos into the `Input_Videos` folder
+- you put Mario Kart videos into the Input_Videos folder
 - the tool finds the race result screens
 - the tool reads names and scores
-- the tool writes a timestamped result workbook to `Output_Results`
-
-Beginner note:
-- when a guide shows a command, copy it exactly
-- paste it into PowerShell or Terminal
-- then press Enter
-- if a step shows an error, stop there and fix that step first
+- the tool writes a timestamped result workbook to Output_Results
 
 Most important next step:
-- open `BEGINNER_SETUP.md`
+- open README.md
+
+
+If you want the technical pipeline details:
+- open docs/TECHNICAL_PIPELINE.md
