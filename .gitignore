@@ -20,6 +20,7 @@ Output_Results/Debug/*
 Output_Results/Debug/Score_Frames/*
 !Output_Results/Debug/Score_Frames/.gitkeep
 Output_Results/*_Tournament_Results.xlsx
+Output_Results/*_Tournament_Results.csv
 Output_Results/*_Tournament_Results_Debug.xlsx
 Output_Results/_temp_*.xlsx
 
