@@ -70,6 +70,7 @@ The format is intentionally simple and human-readable.
 - Debug exports now expose explicit score-read sources for RacePoints, old totals, and new totals (`7-segment` vs `ocr_fallback`).
 - RacePoints runtime seven-segment detection now uses the tuned fixed ROI layout with `white_threshold=180` and `active_ratio_threshold=0.45`.
 - Session rebases remain visible in validation/debug output as an attention point, but no longer count as OCR review failures by themselves.
+- Initial scan phase summaries now report confirmed track/race detection counts consistently during parallel scanning.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
@@ -87,4 +88,5 @@ The format is intentionally simple and human-readable.
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.
 - Project structure is now documented in plain language.
+- Technical pipeline docs now explain that AAC `decode_pce` console warnings are usually noisy audio-stream warnings, not immediate video-decoding failures.
 - Contributing expectations now explicitly cover naming, comments, cross-platform behavior, and validation.

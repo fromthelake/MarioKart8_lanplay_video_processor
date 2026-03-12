@@ -537,6 +537,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
 
             LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", "", color_name="cyan")
             scan_progress = None
+            scan_track_count = 0
+            scan_race_count = 0
             if not detection_segment_tasks:
                 frame_count = 0
                 stage_start = time.perf_counter()
@@ -641,6 +643,9 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 if scan_progress.last_percent < 100:
                     scan_progress.update(total_frames, f"Score candidates: {len(score_candidates)}")
                 video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
+                pre_pass2_counts = count_exported_detection_files(processing_video_path if not include_subfolders else video_label)
+                scan_track_count = pre_pass2_counts["track"]
+                scan_race_count = pre_pass2_counts["race"]
             else:
                 stage_start = time.perf_counter()
                 scan_progress = ProgressPrinter(
@@ -688,6 +693,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 auxiliary_detections.sort(key=lambda item: item["frame_number"])
                 if auxiliary_detections:
                     LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", "", color_name="cyan")
+                scan_track_count = len(merged_track_detections)
+                scan_race_count = len(merged_race_detections)
                 initial_scan.save_auxiliary_detection_frames(
                     cap,
                     processing_video_path,
@@ -711,7 +718,6 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 )
                 video_stats["video_total_s"] = time.perf_counter() - video_start
                 continue
-            pre_pass2_counts = count_exported_detection_files(processing_video_path)
             scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
             scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
             scan_summary_lines = [
@@ -719,8 +725,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 f"Source length: {format_duration(total_frames / max(fps, 1))}",
                 f"Frames scanned: {total_frames:,}",
                 f"Scan speed: {scan_speed:,.0f} frames/s",
-                f"Track screens found: {pre_pass2_counts['track']}",
-                f"Race numbers found: {pre_pass2_counts['race']}",
+                f"Track screens found: {scan_track_count}",
+                f"Race numbers found: {scan_race_count}",
                 f"Total score screens queued: {len(score_candidates)}",
             ]
             if scan_progress is not None:

@@ -94,6 +94,11 @@ A file is marked suspect if a probe:
 
 If suspect, the file is repaired with `ffmpeg` to a working `.mp4`.
 
+Console note:
+- some OpenCV/FFmpeg builds print AAC warnings such as `decode_pce: Input buffer exhausted before END element found`
+- in this project those messages usually come from the audio stream, not the video frames
+- if preflight, scan, and OCR continue normally, treat them as noisy warnings rather than proof of a video-decoding failure
+
 ## 5. Repair Pipeline
 
 Repair is handled in:
