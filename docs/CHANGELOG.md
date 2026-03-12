@@ -39,7 +39,6 @@ The format is intentionally simple and human-readable.
 - Setup scripts now install the project in editable mode.
 - New console command names:
   - `mk8-local-play`
-  - `mk8-local-results`
 - The application source code now lives in the `mk8_local_play/` package.
 - The package entrypoints now route through `mk8_local_play.main`.
 - Maintainer documentation is now grouped under `docs/`.

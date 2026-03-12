@@ -19,9 +19,9 @@ echo "Using Python interpreter: .venv/bin/python"
 ".venv/bin/python" -m pip install --upgrade pip
 ".venv/bin/python" -m pip install -e .
 
-if [[ ! -f "app_config.json" ]]; then
-  cp app_config.example.json app_config.json
-  echo "Created app_config.json from app_config.example.json"
+if [[ ! -f "config/app_config.json" ]]; then
+  echo "Missing config/app_config.json. Restore it from git before running setup." >&2
+  exit 1
 fi
 
 ".venv/bin/mk8-local-play" --check

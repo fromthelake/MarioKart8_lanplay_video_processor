@@ -199,8 +199,8 @@ The compact catalog is derived from a larger local source export mentioned elsew
 ## 9. Main Config Inputs
 
 Runtime config comes from:
-- `app_config.json`
-- or `app_config.example.json` as the starting template
+- `config/app_config.json`
+- `config/app_config.json`
 
 Loaded by:
 - [app_runtime.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/app_runtime.py)

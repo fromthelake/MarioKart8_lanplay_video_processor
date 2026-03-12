@@ -27,23 +27,21 @@ if ($CreateVenv -or -not (Test-Path ".venv\Scripts\python.exe")) {
 
 $python = ".\.venv\Scripts\python.exe"
 $playExe = ".\.venv\Scripts\mk8-local-play.exe"
-$resultsExe = ".\.venv\Scripts\mk8-local-results.exe"
 Write-Host "Using Python interpreter: $python"
 & $python -m pip install --upgrade pip setuptools wheel
 & $python -m pip install -e .
 
-if (-not (Test-Path $playExe) -or -not (Test-Path $resultsExe)) {
+if (-not (Test-Path $playExe)) {
     Write-Host "Console launchers missing after editable install, retrying with forced reinstall..."
     & $python -m pip install --force-reinstall -e .
 }
 
-if (-not (Test-Path $playExe) -or -not (Test-Path $resultsExe)) {
-    throw "Setup completed dependency install, but mk8-local-play.exe / mk8-local-results.exe were not created in .venv\Scripts."
+if (-not (Test-Path $playExe)) {
+    throw "Setup completed dependency install, but mk8-local-play.exe was not created in .venv\Scripts."
 }
 
-if (-not (Test-Path "app_config.json")) {
-    Copy-Item "app_config.example.json" "app_config.json"
-    Write-Host "Created app_config.json from app_config.example.json"
+if (-not (Test-Path "config\app_config.json")) {
+    throw "Missing config\app_config.json. Restore it from git before running setup."
 }
 
 & $playExe --check

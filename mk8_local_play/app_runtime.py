@@ -58,7 +58,7 @@ def _load_json_config(config_path: Path) -> dict:
 
 def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     base_dir = Path(base_dir or PROJECT_ROOT)
-    config_path = base_dir / "app_config.json"
+    config_path = base_dir / "config" / "app_config.json"
     json_config = _load_json_config(config_path)
 
     default_ocr_workers = max(1, min(16, os.cpu_count() or 1))
@@ -220,7 +220,7 @@ def check_runtime(config: AppConfig, require_tesseract: bool = False, require_ff
     issues = []
     if require_tesseract and not resolve_tesseract_cmd(config):
         issues.append(
-            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / app_config.json:tesseract_cmd."
+            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
         )
     if require_ffmpeg and not find_executable("ffmpeg"):
         issues.append("FFmpeg was not found on PATH.")
@@ -231,7 +231,7 @@ def configure_tesseract(pytesseract_module, config: AppConfig) -> str:
     tesseract_cmd = resolve_tesseract_cmd(config)
     if not tesseract_cmd:
         raise RuntimeError(
-            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / app_config.json:tesseract_cmd."
+            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
         )
     pytesseract_module.pytesseract.tesseract_cmd = tesseract_cmd
     return tesseract_cmd

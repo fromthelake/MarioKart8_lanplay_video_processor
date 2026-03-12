@@ -60,11 +60,11 @@ The project has two main phases:
 ## Runtime And Configuration
 
 - `mk8_local_play/app_runtime.py`
-  - loads `app_config.json`
+  - loads `config/app_config.json`
   - resolves Tesseract
   - checks runtime dependencies
   - detects OpenCV GPU/OpenCL availability
-- `app_config.example.json`
+- `config/app_config.json`
   - example config for local overrides
 - `mk8_local_play/console_logging.py`
   - consistent operator-style logging and resource reporting

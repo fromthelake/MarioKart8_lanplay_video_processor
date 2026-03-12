@@ -31,7 +31,6 @@ dependencies = [
 
 [project.scripts]
 mk8-local-play = "mk8_local_play.main:main"
-mk8-local-results = "mk8_local_play.main:main"
 
 [tool.setuptools.packages.find]
 include = ["mk8_local_play", "mk8_local_play_data"]

@@ -213,7 +213,7 @@ Copy and paste this into PowerShell:
 What this does:
 - creates a local Python environment in `.venv`
 - installs the project and dependencies
-- creates `app_config.json` if missing
+- uses `config/app_config.json` from the repo
 - checks the runtime with the real installed command
 
 Expected output:
