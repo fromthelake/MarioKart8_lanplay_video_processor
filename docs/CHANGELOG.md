@@ -25,7 +25,7 @@ The format is intentionally simple and human-readable.
   - `ocr_common.py`
 - New documentation:
   - `README.md`
-  - `ReadMe.txt`
+  - `README.md`
   - `docs/PROJECT_STRUCTURE.md`
   - `docs/CONTRIBUTING.md`
 - New release history file:

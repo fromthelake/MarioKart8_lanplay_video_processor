@@ -94,7 +94,7 @@ When changing performance-sensitive code:
 
 If you change workflow, setup, commands, config, or repo structure, update:
 - `README.md`
-- `ReadMe.txt`
+- `README.md`
 - `docs/PROJECT_STRUCTURE.md`
 - `docs/CHANGELOG.md`
 

@@ -176,7 +176,7 @@ Run one video only:
 ## If you want more detail
 
 For the longer beginner guide, read:
-- [BEGINNER_SETUP.md](./BEGINNER_SETUP.md)
+- [BEGINNER_SETUP.md](./docs/BEGINNER_SETUP.md)
 
 ## Technical Reference
 
