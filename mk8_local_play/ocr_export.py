@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 
 POSITION_TEMPLATE_COEFF_COLUMN_MAP = {
@@ -91,8 +92,16 @@ def build_debug_export_df(df):
     return ordered_df.rename(columns=DEBUG_EXPORT_COLUMN_MAP)
 
 
+def autosize_worksheet_columns(worksheet, dataframe, padding: int = 2, max_width: int = 60):
+    for column_index, column_name in enumerate(dataframe.columns, start=1):
+        values = [column_name]
+        values.extend("" if value is None else str(value) for value in dataframe.iloc[:, column_index - 1])
+        width = min(max_width, max(len(value) for value in values) + padding)
+        worksheet.column_dimensions[get_column_letter(column_index)].width = max(8, width)
+
+
 def write_results_workbooks(df, folder_path):
-    """Write a clean user workbook and a full debug workbook, both timestamped."""
+    """Write clean workbook and CSV exports for both user and debug output."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(folder_path).resolve().parent
     debug_output_dir = output_dir / "Debug"
@@ -103,16 +112,24 @@ def write_results_workbooks(df, folder_path):
 
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
     debug_output_excel_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
+    output_csv_path = output_dir / f"{timestamp}_Tournament_Results.csv"
+    debug_output_csv_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.csv"
 
     with pd.ExcelWriter(output_excel_path) as writer:
         user_df.to_excel(writer, index=False, sheet_name="Results")
+        autosize_worksheet_columns(writer.sheets["Results"], user_df)
     with pd.ExcelWriter(debug_output_excel_path) as writer:
         debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
+        autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
+    user_df.to_csv(output_csv_path, index=False)
+    debug_df.to_csv(debug_output_csv_path, index=False)
     return {
         "user_df": user_df,
         "debug_df": debug_df,
         "output_excel_path": output_excel_path,
         "debug_output_excel_path": debug_output_excel_path,
+        "output_csv_path": output_csv_path,
+        "debug_output_csv_path": debug_output_csv_path,
     }
 
 
@@ -182,9 +199,11 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
     lines.extend(
         [
             "",
-            "Output workbooks:",
+            "Output files:",
             str(workbook_payload["output_excel_path"]),
             str(workbook_payload["debug_output_excel_path"]),
+            str(workbook_payload["output_csv_path"]),
+            str(workbook_payload["debug_output_csv_path"]),
         ]
     )
 
@@ -194,6 +213,8 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
         "lines": lines,
         "output_excel_path": str(workbook_payload["output_excel_path"]),
         "debug_output_excel_path": str(workbook_payload["debug_output_excel_path"]),
+        "output_csv_path": str(workbook_payload["output_csv_path"]),
+        "debug_output_csv_path": str(workbook_payload["debug_output_csv_path"]),
         "race_count": race_count,
         "per_video_summary": per_video_summary,
         "per_video_durations": dict(per_video_durations),
