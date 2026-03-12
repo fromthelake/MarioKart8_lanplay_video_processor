@@ -217,6 +217,13 @@ Current score-screen bundle usage:
 - `RaceScore` loads `APP_CONFIG.ocr_consensus_frames` frames, currently `7`
 - `TotalScore` loads and uses `3` center frames
 
+Current digit-read strategy:
+- the primary score reader is a fixed 7-segment-style pixel signature check
+- each expected white sample now uses a small neighborhood check instead of a single exact pixel
+- OCR fallback is only used when the recognized digits contain a real gap inside the digit block or the parsed value is invalid
+- normal left or right padding in a digit row no longer triggers OCR fallback by itself
+- this applies to `DetectedRacePoints`, `DetectedOldTotalScore`, and `DetectedNewTotalScore`
+
 ## 10. Output Files
 
 Primary generated outputs:
