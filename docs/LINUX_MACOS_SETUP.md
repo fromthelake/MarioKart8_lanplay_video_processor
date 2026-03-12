@@ -1,8 +1,6 @@
-# Mario Kart 8 LAN Play Video Processor
+# Linux and macOS Setup
 
-Short setup guide for Windows.
-
-Linux or macOS? Read [docs/LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md).
+Short setup guide for Linux and macOS.
 
 GitHub:
 - https://github.com/fromthelake/MarioKart8_lanplay_video_processor
@@ -12,10 +10,9 @@ GitHub:
 For this project itself:
 - everything runs from the local `.venv` inside this project folder
 - do not install this app globally with `pip install ...`
-- do not add `mk8-local-play` to your system PATH
+- do not add `mk8-local-play` to your shell PATH
 - always run the app from this project folder by using the local `.venv` command:
-  - `.\.venv\Scripts\mk8-local-play.exe` on Windows
-  - `.venv/bin/mk8-local-play` on Linux/macOS
+  - `.venv/bin/mk8-local-play`
 
 System-wide installs are only for external tools such as:
 - Git
@@ -24,28 +21,20 @@ System-wide installs are only for external tools such as:
 
 ## Step 1. Choose where the project should live
 
-Choose the folder where you want GitHub to create the project folder.
+Open a terminal in the parent folder where you want Git to create the project folder.
 
-Example:
-- Desktop
-- Documents
-- a development folder such as `C:\Projects`
-
-Open that parent folder in File Explorer.
-
-Then open PowerShell there:
-- hold `Shift`
-- right-click in the folder background
-- click `Open PowerShell window here` or `Open in Terminal`
+Examples:
+- `~/Projects`
+- `~/Documents`
 
 Important:
-- the `git clone` command in Step 4 will create a new folder named `MarioKart8_lanplay_video_processor` inside the folder you opened
+- the `git clone` command in Step 5 will create a new folder named `MarioKart8_lanplay_video_processor` inside the folder you opened
 
 ## Step 2. Check Git
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
 git --version
 --------------
@@ -54,44 +43,51 @@ If it works:
 - continue to Step 3
 
 If it fails:
-- download and install Git for Windows:
-  - https://git-scm.com/download/win
-- open a new PowerShell window
-- run `git --version` again
+- install Git with your system package manager or developer tools
+- then run `git --version` again
 
-## Step 3. Check Python
+Typical install commands:
+
+Linux:
+Terminal Command:
+--------------
+sudo apt-get update
+sudo apt-get install git
+--------------
+
+macOS:
+- run `git --version` and allow the Command Line Tools install if prompted
+
+## Step 3. Check Python 3.12
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
-python --version
---------------
-
-If that fails, run:
-
-PowerShell Command:
---------------
-py --version
+python3 --version
 --------------
 
-If one of them works:
+If it shows Python 3.12:
 - continue to Step 4
 
-If both fail:
-- on most Windows 10/11 systems, first try:
+If Python is missing or not Python 3.12:
+- install Python 3.12
+- then open a new terminal and run `python3 --version` again
 
-PowerShell Command:
+Typical install commands:
+
+Linux:
+Terminal Command:
 --------------
-winget install Python.Python.3.12
+sudo apt-get update
+sudo apt-get install python3 python3-venv python3-pip
 --------------
 
-- if `winget` is not available or fails, download Python 3.12 manually from:
-  - https://www.python.org/downloads/windows/
-- use Python 3.12, not a newer version, to avoid unexpected compatibility issues
-- during install, enable `Add Python to PATH` if shown
-- open a new PowerShell window
-- run `python --version` again
+macOS:
+Terminal Command:
+--------------
+brew install python@3.12
+--------------
 
 Important:
 - this installs Python on your system
@@ -102,7 +98,7 @@ Important:
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
 tesseract --version
 --------------
@@ -111,16 +107,45 @@ If it works:
 - continue to Step 5
 
 If it fails:
-- install Tesseract for Windows:
-  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
-- open a new PowerShell window
-- run `tesseract --version` again
+- install Tesseract
+- then run `tesseract --version` again
+
+Typical install commands:
+
+Linux:
+Terminal Command:
+--------------
+sudo apt-get update
+sudo apt-get install tesseract-ocr
+--------------
+
+macOS:
+Terminal Command:
+--------------
+brew install tesseract
+--------------
+
+Optional:
+- install `ffmpeg` only if you want merge-video features or manual repair workflows
+
+Linux:
+Terminal Command:
+--------------
+sudo apt-get update
+sudo apt-get install ffmpeg
+--------------
+
+macOS:
+Terminal Command:
+--------------
+brew install ffmpeg
+--------------
 
 ## Step 5. Download the project
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
 git clone https://github.com/fromthelake/MarioKart8_lanplay_video_processor
 cd MarioKart8_lanplay_video_processor
@@ -130,9 +155,10 @@ cd MarioKart8_lanplay_video_processor
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\scripts\setup_windows.ps1
+chmod +x ./scripts/setup_unix.sh
+./scripts/setup_unix.sh
 --------------
 
 This setup script:
@@ -145,29 +171,28 @@ If setup succeeds:
 - continue to Step 7
 
 If setup fails:
-- read the error shown in PowerShell
+- read the terminal error
 - fix the missing dependency
-- run `./scripts/setup_windows.ps1` again
+- run `./scripts/setup_unix.sh` again
 
 ## Step 7. Run the environment check
 
 Run:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --check
+.venv/bin/mk8-local-play --check
 --------------
 
 If the check succeeds:
 - continue to Step 8
 
 If the check says Tesseract is missing:
-- install Tesseract from:
-  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
+- install Tesseract for your platform
 - run the check again
 
 If the check succeeds, the project is ready to run entirely from:
-- `.\.venv\Scripts\mk8-local-play.exe`
+- `.venv/bin/mk8-local-play`
 
 ## Step 8. Add your videos
 
@@ -179,16 +204,16 @@ Put your video files in folder:
 
 Process everything in `Input_Videos`:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --all
+.venv/bin/mk8-local-play --all
 --------------
 
 Process only the current selected input set:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --selection
+.venv/bin/mk8-local-play --selection
 --------------
 
 ## Output
@@ -201,9 +226,9 @@ Results are written to folder:
 
 Open the GUI interface:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe
+.venv/bin/mk8-local-play
 --------------
 
 What it does:
@@ -212,9 +237,9 @@ What it does:
 
 Run everything:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --all
+.venv/bin/mk8-local-play --all
 --------------
 
 What it does:
@@ -230,9 +255,9 @@ What it does not do:
 
 Run only the current selected input set:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --selection
+.venv/bin/mk8-local-play --selection
 --------------
 
 What it does:
@@ -248,9 +273,9 @@ What it does not do:
 
 Run extraction only:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --extract
+.venv/bin/mk8-local-play --extract
 --------------
 
 What it does:
@@ -259,9 +284,9 @@ What it does:
 
 Run OCR/export only:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --ocr
+.venv/bin/mk8-local-play --ocr
 --------------
 
 What it does:
@@ -273,9 +298,9 @@ What it does not do:
 
 Run one video only with scoped OCR:
 
-PowerShell Command:
+Terminal Command:
 --------------
-.\.venv\Scripts\mk8-local-play.exe --selection --video Demo_CaptureCard_Race.mp4
+.venv/bin/mk8-local-play --selection --video Demo_CaptureCard_Race.mp4
 --------------
 
 What it does:
@@ -286,12 +311,18 @@ Recommended use:
 - use this when you want a true one-video run
 - prefer this over `--all --video ...`, because `--all` can still include older frame groups during OCR
 
-## If you want more detail
+## Troubleshooting
 
-For the Linux/macOS setup guide, read:
-- [LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md)
+First try these checks:
 
-## Technical Reference
+Terminal Command:
+--------------
+git --version
+python3 --version
+tesseract --version
+.venv/bin/mk8-local-play --check
+--------------
 
-If you want the pipeline, templates, ROIs, and metadata documented for development or reproduction, read:
-- [docs/TECHNICAL_PIPELINE.md](./docs/TECHNICAL_PIPELINE.md)
+Then read:
+- [README.md](../README.md)
+- [TECHNICAL_PIPELINE.md](./TECHNICAL_PIPELINE.md)

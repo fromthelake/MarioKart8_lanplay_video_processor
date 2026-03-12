@@ -11,11 +11,11 @@ The project has two main phases:
 
 ## Entry Points
 
-- `main.py`
-  - thin root launcher for the packaged CLI and GUI
 - `mk8_local_play/`
   - real application package
-  - contains the implementation modules that power the root launchers
+  - contains the implementation modules that power the packaged CLI
+- `pyproject.toml`
+  - defines the packaged `mk8-local-play` command
 
 ## Extraction Modules
 
@@ -65,7 +65,7 @@ The project has two main phases:
   - checks runtime dependencies
   - detects OpenCV GPU/OpenCL availability
 - `config/app_config.json`
-  - example config for local overrides
+  - tracked runtime config used by setup and local runs
 - `mk8_local_play/console_logging.py`
   - consistent operator-style logging and resource reporting
 
@@ -107,6 +107,8 @@ The project has two main phases:
   - first-time Windows setup
 - `scripts/setup_unix.sh`
   - first-time Linux/macOS setup
+- `docs/LINUX_MACOS_SETUP.md`
+  - short Linux/macOS setup guide
 - `scripts/quick_benchmark.*`
   - lightweight benchmarking helpers
 - `scripts/release_benchmark.*`

@@ -13,7 +13,7 @@ function Resolve-PythonBootstrap {
     if (Get-Command python -ErrorAction SilentlyContinue) {
         return @("python")
     }
-    throw "No Python launcher was found. Install Python 3.10+ first."
+    throw "No Python launcher was found. Install Python 3.12 first."
 }
 
 if ($CreateVenv -or -not (Test-Path ".venv\Scripts\python.exe")) {
@@ -48,6 +48,8 @@ if (-not (Test-Path "config\app_config.json")) {
 
 Write-Host ""
 Write-Host "Setup finished."
+Write-Host "This app runs from the local .venv in this project folder."
+Write-Host "No global Python package install or PATH change is required for mk8-local-play."
 Write-Host "Next steps:"
 Write-Host "1. Install Tesseract if --check reports it missing."
 Write-Host "2. Put videos into Input_Videos."
