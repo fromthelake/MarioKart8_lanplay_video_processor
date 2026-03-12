@@ -209,9 +209,13 @@ Important settings include:
 - OCR worker count
 - score-analysis worker count
 - pass-1 scan worker count
-- OCR consensus frame count
+- RaceScore consensus frame count
 - debug output toggles
 - optional Tesseract path override
+
+Current score-screen bundle usage:
+- `RaceScore` loads `APP_CONFIG.ocr_consensus_frames` frames, currently `7`
+- `TotalScore` loads and uses `3` center frames
 
 ## 10. Output Files
 

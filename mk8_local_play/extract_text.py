@@ -21,6 +21,7 @@ from .ocr_export import build_completion_payload
 from .ocr_name_matching import preprocess_name, standardize_player_names, weighted_similarity
 from .ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
 from .ocr_scoreboard_consensus import (
+    TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
     build_consensus_observation,
     build_race_warning_messages,
     character_shortlist_summary_lines,
@@ -467,7 +468,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         total_score_image or race_score_image,
         total_metadata,
         input_videos_folder,
-        OCR_CONSENSUS_FRAMES,
+        TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
         in_memory_frames=(in_memory_frame_bundles or {}).get(total_bundle_key),
     )
     consensus = build_consensus_observation(
