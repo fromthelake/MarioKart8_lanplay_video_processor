@@ -29,6 +29,8 @@ def build_review_reason_messages(
     detected_race,
     expected_session_total,
     detected_total,
+    detected_race_source,
+    detected_total_source,
     authoritative_total_before_race,
     authoritative_total_after_race,
     name_confidence,
@@ -46,15 +48,17 @@ def build_review_reason_messages(
     for code in review_reason_codes:
         if code == "race_points_mismatch":
             messages.append(
-                f"Race points should be {race_points}, but OCR read {detected_race if detected_race is not None else 'nothing'}."
+                f"Race points should be {race_points}, but OCR read {detected_race if detected_race is not None else 'nothing'}"
+                f" via {detected_race_source or 'unknown_source'}."
             )
         elif code == "race_points_out_of_range":
             messages.append(
-                f"OCR race points {detected_race if detected_race is not None else 'nothing'} are outside the expected range 1..15."
+                f"OCR race points {detected_race if detected_race is not None else 'nothing'} via {detected_race_source or 'unknown_source'} are outside the expected range 1..15."
             )
         elif code == "total_score_mismatch":
             messages.append(
-                f"Expected total after race is {expected_session_total}, but OCR total score read {detected_total if detected_total is not None else 'nothing'}."
+                f"Expected total after race is {expected_session_total}, but OCR total score read {detected_total if detected_total is not None else 'nothing'}"
+                f" via {detected_total_source or 'unknown_source'}."
             )
         elif code == "session_rebased":
             messages.append(str(session_rebase_reason or "Session rebased from this race because earlier footage is missing."))
@@ -89,7 +93,7 @@ def build_review_reason_messages(
             )
         elif code == "total_score_out_of_range":
             messages.append(
-                f"OCR total score {detected_total if detected_total is not None else 'nothing'} is outside the expected range 1..999."
+                f"OCR total score {detected_total if detected_total is not None else 'nothing'} via {detected_total_source or 'unknown_source'} is outside the expected range 1..999."
             )
         else:
             messages.append(str(code).replace("_", " ").capitalize())
@@ -241,6 +245,8 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                         "session_new_total": session_old_total + race_points,
                         "detected_race": parse_detected_int(row["DetectedRacePoints"]),
                         "detected_total": parse_detected_int(row["DetectedTotalScore"]),
+                        "detected_race_source": str(row.get("DetectedRacePointsSource", "")),
+                        "detected_total_source": str(row.get("DetectedTotalScoreSource", "")),
                     }
                 )
 
@@ -335,6 +341,8 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     detected_race=detected_race,
                     expected_session_total=session_new_total,
                     detected_total=detected_total,
+                    detected_race_source=row.get("detected_race_source", ""),
+                    detected_total_source=row.get("detected_total_source", ""),
                     authoritative_total_before_race=old_total,
                     authoritative_total_after_race=new_total,
                     name_confidence=float(row["NameConfidence"]),

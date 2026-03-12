@@ -507,7 +507,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             row.get("CharacterMatchMethod", ""),
             race_points_fix,
             row["DetectedRacePoints"],
+            row.get("DetectedRacePointsSource", ""),
             row["DetectedTotalScore"],
+            row.get("DetectedTotalScoreSource", ""),
             row.get("PositionAfterRace"),
             *[row.get(column_name) for column_name in POSITION_TEMPLATE_COEFF_COLUMNS],
             row["NameConfidence"],
@@ -673,7 +675,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
-        "RacePoints", "DetectedRacePoints", "DetectedTotalScore", "PositionAfterRace",
+        "RacePoints", "DetectedRacePoints", "DetectedRacePointsSource", "DetectedTotalScore", "DetectedTotalScoreSource", "PositionAfterRace",
         *POSITION_TEMPLATE_COEFF_COLUMNS,
         "NameConfidence",
         "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",

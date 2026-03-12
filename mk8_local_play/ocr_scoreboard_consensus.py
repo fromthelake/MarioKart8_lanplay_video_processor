@@ -1032,8 +1032,9 @@ def ocr_digit_row_fallback(
 
 def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int]], row_offset: int,
                            box_dims: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]],
-                           num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int) -> List[str]:
+                           num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int) -> Tuple[List[str], List[str]]:
     coordinate_set = []
+    coordinate_sources = []
     draw = ImageDraw.Draw(image)
     for row_index in range(num_rows):
         y_offset = row_index * row_offset
@@ -1065,6 +1066,7 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
         should_fallback = numeric_value is None or not (valid_min <= int(numeric_value) <= valid_max)
         if has_unknown_digit and not contiguous_digit_block:
             should_fallback = True
+        row_source = "7-segment"
         if should_fallback:
             fallback_value = ocr_digit_row_fallback(
                 image,
@@ -1078,8 +1080,10 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
             )
             if fallback_value:
                 row_number = fallback_value
+                row_source = "ocr_fallback"
         coordinate_set.append(row_number)
-    return coordinate_set
+        coordinate_sources.append(row_source)
+    return coordinate_set, coordinate_sources
 
 
 def scale_coords(coords, scale_factor):
@@ -1167,11 +1171,11 @@ def extract_scoreboard_observation(
     layout = score_digit_layout(scale_factor)
 
     stage_start = time.perf_counter()
-    race_points = detect_digits_in_image(scaled_image, *layout["race_points"], valid_min=1, valid_max=15)
+    race_points, race_point_sources = detect_digits_in_image(scaled_image, *layout["race_points"], valid_min=1, valid_max=15)
     record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
-    total_points = detect_digits_in_image(scaled_image, *layout["total_points"], valid_min=0, valid_max=999)
+    total_points, total_point_sources = detect_digits_in_image(scaled_image, *layout["total_points"], valid_min=0, valid_max=999)
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -1217,7 +1221,9 @@ def extract_scoreboard_observation(
         "names": names,
         "name_confidences": confidence_scores,
         "race_points": race_points,
+        "race_point_sources": race_point_sources,
         "total_points": total_points,
+        "total_point_sources": total_point_sources,
         "character_metrics": character_metrics,
         "row_metrics": row_metrics,
         "row_metrics_summary": summarize_row_metrics(row_metrics),
@@ -1319,6 +1325,24 @@ def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
     return best_value, (best_weight / total_weight if total_weight > 0 else 0.0)
 
 
+def weighted_vote_with_source(values: List[Tuple[object, float, str]]) -> Tuple[object, float, str]:
+    score_by_value = defaultdict(float)
+    source_scores_by_value = defaultdict(lambda: defaultdict(float))
+    total_weight = 0.0
+    for value, weight, source in values:
+        if value in (None, ""):
+            continue
+        numeric_weight = max(0.0, float(weight))
+        score_by_value[value] += numeric_weight
+        source_scores_by_value[value][str(source or "7-segment")] += numeric_weight
+        total_weight += numeric_weight
+    if not score_by_value:
+        return None, 0.0, ""
+    best_value, best_weight = max(score_by_value.items(), key=lambda item: item[1])
+    best_source = max(source_scores_by_value[best_value].items(), key=lambda item: item[1])[0]
+    return best_value, (best_weight / total_weight if total_weight > 0 else 0.0), best_source
+
+
 TOTAL_SCORE_CONSENSUS_WINDOW_SIZE = 3
 
 
@@ -1344,6 +1368,7 @@ def build_consensus_rows(
     point_observations: List[Dict[str, object]],
     visible_rows: int,
     points_key: str,
+    points_source_key: str,
     character_observations: List[Dict[str, object]] | None = None,
 ) -> List[Dict[str, object]]:
     """Collapse multiple nearby frames into one best-effort row list."""
@@ -1359,7 +1384,10 @@ def build_consensus_rows(
             name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
             name_votes.append((name, max(1.0, float(name_conf))))
         for observation in point_observations:
-            point_votes.append((parse_detected_int(observation[points_key][row_index]), 1.0))
+            point_value = parse_detected_int(observation[points_key][row_index])
+            point_source_values = observation.get(points_source_key, [])
+            point_source = point_source_values[row_index] if row_index < len(point_source_values) else "7-segment"
+            point_votes.append((point_value, 1.0, point_source))
         for observation in character_observations:
             if row_index < len(observation.get("character_metrics", [])):
                 character_match = observation["character_metrics"][row_index]
@@ -1378,7 +1406,7 @@ def build_consensus_rows(
                     character_method_votes[(character_key, str(character_match.get("CharacterMatchMethod", "")))] += character_weight
 
         player_name, name_confidence = weighted_name_vote(name_votes)
-        detected_value, point_confidence = weighted_vote(point_votes)
+        detected_value, point_confidence, detected_value_source = weighted_vote_with_source(point_votes)
         character_vote, character_vote_confidence = weighted_vote(character_votes)
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
         if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
@@ -1404,6 +1432,7 @@ def build_consensus_rows(
                 "PlayerName": player_name or "",
                 "NameConfidence": round(name_confidence * 100, 1),
                 "DetectedValue": detected_value,
+                "DetectedValueSource": detected_value_source,
                 "DigitConfidence": round(point_confidence * 100, 1),
                 "Character": character_name,
                 "CharacterIndex": character_index,
@@ -1438,7 +1467,9 @@ def map_total_rows_to_race_rows(
                     "CharacterMatchConfidence": score_row.get("CharacterMatchConfidence", 0.0),
                     "CharacterMatchMethod": score_row.get("CharacterMatchMethod", ""),
                     "DetectedRacePoints": score_row["DetectedValue"],
+                    "DetectedRacePointsSource": score_row.get("DetectedValueSource", ""),
                     "DetectedTotalScore": None,
+                    "DetectedTotalScoreSource": "",
                     "NameConfidence": score_row["NameConfidence"],
                     "DigitConsensus": score_row["DigitConfidence"],
                     "TotalScoreMappingMethod": "missing_total_rows",
@@ -1521,7 +1552,9 @@ def map_total_rows_to_race_rows(
                 "CharacterMatchConfidence": mapped_character_confidence,
                 "CharacterMatchMethod": mapped_character_method,
                 "DetectedRacePoints": score_row["DetectedValue"],
+                "DetectedRacePointsSource": score_row.get("DetectedValueSource", ""),
                 "DetectedTotalScore": total_score,
+                "DetectedTotalScoreSource": total_row.get("DetectedValueSource", "") if matched_total_index is not None else "",
                 "NameConfidence": score_row["NameConfidence"],
                 "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
                 "TotalScoreMappingMethod": mapping_method,
@@ -1659,6 +1692,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         point_observations=score_point_observations,
         visible_rows=position_guided_visible_rows,
         points_key="race_points",
+        points_source_key="race_point_sources",
         character_observations=score_character_observations,
     )
     total_rows = build_consensus_rows(
@@ -1666,6 +1700,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         point_observations=total_consensus_observations,
         visible_rows=total_position_guided_visible_rows,
         points_key="total_points",
+        points_source_key="total_point_sources",
         character_observations=total_consensus_observations,
     )
     rows = map_total_rows_to_race_rows(
