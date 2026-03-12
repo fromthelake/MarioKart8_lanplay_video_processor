@@ -1,5 +1,6 @@
 .venv/
 .codex_tmp/
+.pip_tmp/
 __pycache__/
 .idea/
 *.egg-info/
