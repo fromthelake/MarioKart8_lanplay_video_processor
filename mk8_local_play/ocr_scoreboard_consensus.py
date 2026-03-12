@@ -5,7 +5,7 @@ import time
 import threading
 from collections import Counter, defaultdict
 from functools import lru_cache
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
@@ -942,55 +942,157 @@ def is_white_box(
     return white_pixels >= max(1, int(total_pixels * min_white_ratio))
 
 
-def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
-    """Use a fixed pixel-signature because MK8 digits are visually stable after preprocessing.
+SEGMENT_LABELS_HORIZONTAL = {"top_middle", "center", "middle_bottom_edge"}
+SEGMENT_LABELS_VERTICAL = {
+    "left_middle",
+    "right_middle",
+    "left_bottom",
+    "right_bottom",
+    "middle_middle",
+    "middle_bottom",
+}
+DIGIT_PATTERNS = [
+    (8, {"top_middle", "left_middle", "right_middle", "center", "right_bottom", "left_bottom", "middle_bottom_edge"}),
+    (0, {"top_middle", "left_middle", "right_middle", "left_bottom", "right_bottom", "middle_bottom_edge"}),
+    (6, {"top_middle", "left_middle", "center", "right_bottom", "left_bottom", "middle_bottom_edge"}),
+    (9, {"top_middle", "left_middle", "right_middle", "center", "right_bottom", "middle_bottom_edge"}),
+    (2, {"top_middle", "right_middle", "center", "left_bottom", "middle_bottom_edge"}),
+    (3, {"top_middle", "right_middle", "center", "right_bottom", "middle_bottom_edge"}),
+    (5, {"top_middle", "left_middle", "center", "right_bottom", "middle_bottom_edge"}),
+    (4, {"right_middle", "left_middle", "center", "right_bottom"}),
+    (7, {"top_middle", "right_middle", "right_bottom"}),
+    (1, {"middle_middle", "middle_bottom"}),
+]
 
-    If the exact signature misses by one segment, fall back to the closest stable digit
-    instead of dropping the digit entirely. This is especially important for 3-digit
-    total scores where a missed middle digit can turn ``161`` into ``11``.
-    """
-    white_pixels = {
-        label: is_white_box(image, (box_top_left[0] + x, box_top_left[1] + y))
-        for label, (x, y) in red_pixels.items()
+
+def segment_roi_bounds(
+    box_top_left: Tuple[int, int],
+    point_offset: Union[Tuple[int, int], Dict[str, int]],
+    label: str,
+) -> Tuple[int, int, int, int]:
+    if isinstance(point_offset, dict):
+        return (
+            box_top_left[0] + point_offset["x"],
+            box_top_left[1] + point_offset["y"],
+            box_top_left[0] + point_offset["x"] + point_offset["width"],
+            box_top_left[1] + point_offset["y"] + point_offset["height"],
+        )
+
+    anchor_x = box_top_left[0] + point_offset[0]
+    anchor_y = box_top_left[1] + point_offset[1]
+    if label in SEGMENT_LABELS_HORIZONTAL:
+        half_width = 8
+        half_height = 3
+    elif label in SEGMENT_LABELS_VERTICAL:
+        half_width = 2
+        half_height = 8
+    else:
+        half_width = 3
+        half_height = 3
+    extra_right = 0
+    if label in {"left_middle", "right_middle", "left_bottom", "right_bottom"}:
+        extra_right = 12
+    return (
+        anchor_x - half_width,
+        anchor_y - half_height,
+        anchor_x + half_width + 1 + extra_right,
+        anchor_y + half_height + 1,
+    )
+
+
+def segment_roi_stats(
+    image: Image.Image,
+    bounds: Tuple[int, int, int, int],
+    *,
+    white_threshold: int = 180,
+) -> Dict[str, float]:
+    x1, y1, x2, y2 = bounds
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(image.width, x2)
+    y2 = min(image.height, y2)
+    white_pixels = 0
+    black_pixels = 0
+    total_pixels = 0
+    for pixel_x in range(x1, x2):
+        for pixel_y in range(y1, y2):
+            total_pixels += 1
+            r, g, b = image.getpixel((pixel_x, pixel_y))
+            if r > white_threshold and g > white_threshold and b > white_threshold:
+                white_pixels += 1
+            else:
+                black_pixels += 1
+    if total_pixels == 0:
+        return {"white_ratio": 0.0, "black_ratio": 1.0}
+    return {
+        "white_ratio": white_pixels / total_pixels,
+        "black_ratio": black_pixels / total_pixels,
     }
-    digit_patterns = [
-        (8, {"top_middle", "left_middle", "right_middle", "center", "right_bottom", "left_bottom", "middle_bottom_edge"}),
-        (0, {"top_middle", "left_middle", "right_middle", "left_bottom", "right_bottom", "middle_bottom_edge"}),
-        (6, {"top_middle", "left_middle", "center", "right_bottom", "left_bottom", "middle_bottom_edge"}),
-        (9, {"top_middle", "left_middle", "right_middle", "center", "right_bottom", "middle_bottom_edge"}),
-        (2, {"top_middle", "right_middle", "center", "left_bottom", "middle_bottom_edge"}),
-        (3, {"top_middle", "right_middle", "center", "right_bottom", "middle_bottom_edge"}),
-        (5, {"top_middle", "left_middle", "center", "right_bottom", "middle_bottom_edge"}),
-        (4, {"right_middle", "left_middle", "center", "right_bottom"}),
-        (7, {"top_middle", "right_middle", "right_bottom"}),
-        (1, {"middle_middle", "middle_bottom"}),
-    ]
-    active_labels = {label for label, is_white in white_pixels.items() if is_white}
-    for digit, pattern in digit_patterns:
-        if pattern.issubset(active_labels):
+
+
+def score_digit_candidate(
+    segment_stats: Dict[str, Dict[str, float]],
+    pattern: set[str],
+    *,
+    active_black_penalty: float,
+) -> float:
+    score = 0.0
+    for label, stats in segment_stats.items():
+        white_ratio = stats["white_ratio"]
+        black_ratio = stats["black_ratio"]
+        if label in pattern:
+            score += white_ratio
+            score -= black_ratio * active_black_penalty
+        else:
+            score += (1.0 - white_ratio) * 0.08
+            score -= white_ratio * 0.45
+    return score
+
+
+def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
+    """Identify a digit from segment ROIs instead of single-point hits."""
+    segment_stats = {
+        label: segment_roi_stats(image, segment_roi_bounds(box_top_left, offset, label))
+        for label, offset in red_pixels.items()
+    }
+    strong_active_labels = {
+        label for label, stats in segment_stats.items() if stats["white_ratio"] >= 0.45
+    }
+    for digit, pattern in DIGIT_PATTERNS:
+        if pattern.issubset(strong_active_labels):
             return digit
-    if not active_labels:
+    if not strong_active_labels:
         return -1
 
-    best_digit = -1
-    best_score = -1.0
-    for digit, pattern in digit_patterns:
-        matched_required = len(pattern & active_labels)
-        missing_required = len(pattern - active_labels)
-        extra_active = len(active_labels - pattern)
-        score = matched_required - (missing_required * 0.75) - (extra_active * 0.35)
-        if score > best_score:
-            best_score = score
-            best_digit = digit
+    method_votes: list[int] = []
+    aggregate_scores: Dict[int, float] = {}
+    pattern_lookup = {digit: pattern for digit, pattern in DIGIT_PATTERNS}
+    for active_black_penalty in (1.0, 2.0, 3.0):
+        best_digit = -1
+        best_score = float("-inf")
+        for digit, pattern in DIGIT_PATTERNS:
+            candidate_score = score_digit_candidate(
+                segment_stats,
+                pattern,
+                active_black_penalty=active_black_penalty,
+            )
+            aggregate_scores[digit] = aggregate_scores.get(digit, 0.0) + candidate_score
+            if candidate_score > best_score:
+                best_score = candidate_score
+                best_digit = digit
+        if best_digit != -1:
+            method_votes.append(best_digit)
 
-    # Only accept the soft match when most required segments line up.
-    for digit, pattern in digit_patterns:
-        if digit == best_digit:
-            matched_ratio = len(pattern & active_labels) / max(1, len(pattern))
-            if matched_ratio >= 0.6:
-                return best_digit
-            break
-    return -1
+    if method_votes:
+        vote_counts = Counter(method_votes)
+        best_digit, best_count = vote_counts.most_common(1)[0]
+        if best_count >= 2:
+            return best_digit
+
+    best_digit = max(aggregate_scores.items(), key=lambda item: item[1])[0]
+    best_pattern = pattern_lookup[best_digit]
+    matched_ratio = len(best_pattern & strong_active_labels) / max(1, len(best_pattern))
+    return best_digit if matched_ratio >= 0.5 else -1
 
 
 def ocr_digit_row_fallback(
@@ -1049,10 +1151,9 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
             else:
                 row_digits.append('')
                 has_unknown_digit = True
-            for _label, (x, y) in red_pixels.items():
-                rect_top_left = (top_left[0] + x, top_left[1] + y)
-                rect_bottom_right = (rect_top_left[0] + 3, rect_top_left[1] + 2)
-                draw.rectangle([rect_top_left, rect_bottom_right], outline="red", fill="red")
+            for label, offset in red_pixels.items():
+                roi_bounds = segment_roi_bounds(top_left, offset, label)
+                draw.rectangle(roi_bounds, outline="red")
         row_number = ''.join(row_digits)
         numeric_value = parse_detected_int(row_number)
         recognized_indices = [index for index, digit_text in enumerate(row_digits) if digit_text]
@@ -1118,14 +1219,17 @@ def parse_detected_int(value: str) -> int | None:
 
 def score_digit_layout(scale_factor: int = 5):
     start_coords_run1 = scale_coords([(830, 71), (843, 71)], scale_factor)
-    red_pixels_run1 = scale_pixel_positions(
-        {
-            "top_middle": (7, 2), "left_middle": (2, 5), "middle_middle": (7, 5),
-            "right_middle": (11, 5), "left_bottom": (2, 13), "middle_bottom": (7, 13),
-            "right_bottom": (11, 13), "middle_bottom_edge": (7, 17), "center": (7, 9),
-        },
-        scale_factor,
-    )
+    red_pixels_run1 = {
+        "top_middle": {"x": 28, "y": 8, "width": 17, "height": 9},
+        "left_middle": {"x": 9, "y": 17, "width": 16, "height": 23},
+        "middle_middle": {"x": 32, "y": 21, "width": 9, "height": 18},
+        "right_middle": {"x": 51, "y": 17, "width": 15, "height": 23},
+        "left_bottom": {"x": 9, "y": 57, "width": 16, "height": 23},
+        "middle_bottom": {"x": 32, "y": 59, "width": 9, "height": 18},
+        "right_bottom": {"x": 51, "y": 57, "width": 16, "height": 23},
+        "middle_bottom_edge": {"x": 28, "y": 82, "width": 17, "height": 9},
+        "center": {"x": 24, "y": 44, "width": 25, "height": 9},
+    }
     start_coords_run2 = scale_coords([(916, 66), (933, 66), (950, 66)], scale_factor)
     red_pixels_run2 = scale_pixel_positions(
         {

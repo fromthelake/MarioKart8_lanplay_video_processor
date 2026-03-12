@@ -219,10 +219,27 @@ Current score-screen bundle usage:
 
 Current digit-read strategy:
 - the primary score reader is a fixed 7-segment-style pixel signature check
-- each expected white sample now uses a small neighborhood check instead of a single exact pixel
 - OCR fallback is only used when the recognized digits contain a real gap inside the digit block or the parsed value is invalid
 - normal left or right padding in a digit row no longer triggers OCR fallback by itself
 - this applies to `DetectedRacePoints`, `DetectedOldTotalScore`, and `DetectedNewTotalScore`
+
+Current `RacePoints` runtime segment settings:
+- `white_threshold = 180`
+- `active_ratio_threshold = 0.45`
+- `top_middle: x=28, y=8, width=17, height=9`
+- `left_middle: x=9, y=17, width=16, height=23`
+- `middle_middle: x=32, y=21, width=9, height=18`
+- `right_middle: x=51, y=17, width=15, height=23`
+- `left_bottom: x=9, y=57, width=16, height=23`
+- `middle_bottom: x=32, y=59, width=9, height=18`
+- `right_bottom: x=51, y=57, width=16, height=23`
+- `middle_bottom_edge: x=28, y=82, width=17, height=9`
+- `center: x=24, y=44, width=25, height=9`
+
+Validation / review behavior:
+- session rebases remain visible in the debug export as an attention point
+- session rebases no longer count as OCR review failures by themselves
+- actual score mismatches, out-of-range values, and non-monotonic total-score rows still produce review reasons
 
 ## 10. Output Files
 

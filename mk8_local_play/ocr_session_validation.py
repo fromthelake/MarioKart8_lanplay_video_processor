@@ -292,7 +292,6 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 score_status = "computed_only"
 
                 if session_rebased:
-                    review_reasons.append("session_rebased")
                     score_status = "rebased"
                 if detected_race is not None:
                     if not (1 <= int(detected_race) <= 15):

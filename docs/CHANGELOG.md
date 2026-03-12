@@ -66,6 +66,10 @@ The format is intentionally simple and human-readable.
   - character matching uses the last 3 frames
   - left-side position matching uses the last 3 frames
   - RaceScore player count uses the first 3 frames
+- TotalScore consensus now loads and uses only 3 center frames instead of loading a wider bundle first.
+- Debug exports now expose explicit score-read sources for RacePoints, old totals, and new totals (`7-segment` vs `ocr_fallback`).
+- RacePoints runtime seven-segment detection now uses the tuned fixed ROI layout with `white_threshold=180` and `active_ratio_threshold=0.45`.
+- Session rebases remain visible in validation/debug output as an attention point, but no longer count as OCR review failures by themselves.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
@@ -78,6 +82,7 @@ The format is intentionally simple and human-readable.
 - Review-reason parsing no longer turns values like `15.0` into incorrect messages such as `150`.
 - Position-guided player count detection now treats rows with `Coeff < 0.60` as empty, preventing false extra rows in stable 10-player cases.
 - `Digit confidence is low` and race-points mismatches caused by late RaceScore frames drifting downward are now eliminated on validated multi-video OCR runs.
+- False RacePoints and TotalScore regressions caused by padded digit rows no longer trigger unnecessary OCR fallback on validated races.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.
