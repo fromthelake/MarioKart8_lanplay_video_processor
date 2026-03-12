@@ -907,17 +907,39 @@ def process_image(image_source) -> np.ndarray:
     return processed_image
 
 
-def is_white_box(image: Image.Image, top_left: Tuple[int, int], box_size: Tuple[int, int] = (3, 2)) -> bool:
+def is_white_box(
+    image: Image.Image,
+    top_left: Tuple[int, int],
+    box_size: Tuple[int, int] = (3, 2),
+    *,
+    neighborhood_radius: int = 1,
+    white_threshold: int = 180,
+    min_white_ratio: float = 0.35,
+) -> bool:
     x, y = top_left
     width, height = box_size
     white_pixels = 0
     total_pixels = width * height
     for offset_x in range(width):
         for offset_y in range(height):
-            r, g, b = image.getpixel((x + offset_x, y + offset_y))
-            if r > 180 and g > 180 and b > 180:
+            sample_x = x + offset_x
+            sample_y = y + offset_y
+            found_white = False
+            for delta_x in range(-neighborhood_radius, neighborhood_radius + 1):
+                for delta_y in range(-neighborhood_radius, neighborhood_radius + 1):
+                    pixel_x = sample_x + delta_x
+                    pixel_y = sample_y + delta_y
+                    if pixel_x < 0 or pixel_y < 0 or pixel_x >= image.width or pixel_y >= image.height:
+                        continue
+                    r, g, b = image.getpixel((pixel_x, pixel_y))
+                    if r > white_threshold and g > white_threshold and b > white_threshold:
+                        found_white = True
+                        break
+                if found_white:
+                    break
+            if found_white:
                 white_pixels += 1
-    return white_pixels >= total_pixels / 2
+    return white_pixels >= max(1, int(total_pixels * min_white_ratio))
 
 
 def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
@@ -1032,7 +1054,18 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
                 draw.rectangle([rect_top_left, rect_bottom_right], outline="red", fill="red")
         row_number = ''.join(row_digits)
         numeric_value = parse_detected_int(row_number)
-        if has_unknown_digit or numeric_value is None or not (valid_min <= int(numeric_value) <= valid_max):
+        recognized_indices = [index for index, digit_text in enumerate(row_digits) if digit_text]
+        contiguous_digit_block = False
+        if recognized_indices:
+            first_recognized_index = recognized_indices[0]
+            last_recognized_index = recognized_indices[-1]
+            contiguous_digit_block = all(
+                digit_text != '' for digit_text in row_digits[first_recognized_index:last_recognized_index + 1]
+            )
+        should_fallback = numeric_value is None or not (valid_min <= int(numeric_value) <= valid_max)
+        if has_unknown_digit and not contiguous_digit_block:
+            should_fallback = True
+        if should_fallback:
             fallback_value = ocr_digit_row_fallback(
                 image,
                 start_coords,
