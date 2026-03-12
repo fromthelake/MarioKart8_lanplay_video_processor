@@ -35,14 +35,14 @@ rm -f "$PROJECT_ROOT"/Output_Results/*_Tournament_Results.xlsx
 rm -f "$PROJECT_ROOT/Output_Results/Tournament_Results.xlsx"
 rm -f "$PROJECT_ROOT/Output_Results/~\$Tournament_Results.xlsx"
 
-"$PYTHON_BIN" main.py --check
+"$PYTHON_BIN" -m mk8_local_play.main --check
 
 extract_start="$(date +%s.%N)"
-"$PYTHON_BIN" main.py --extract --video "$VIDEO_NAME"
+"$PYTHON_BIN" -m mk8_local_play.main --extract --video "$VIDEO_NAME"
 extract_end="$(date +%s.%N)"
 
 ocr_start="$(date +%s.%N)"
-"$PYTHON_BIN" main.py --ocr --video "$VIDEO_NAME"
+"$PYTHON_BIN" -m mk8_local_play.main --ocr --video "$VIDEO_NAME"
 ocr_end="$(date +%s.%N)"
 
 "$PYTHON_BIN" tools/validate_outputs.py --baseline-dir "$BASELINE_DIR"

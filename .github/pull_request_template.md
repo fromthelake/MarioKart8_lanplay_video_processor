@@ -9,7 +9,7 @@ Describe the change in a few sentences.
 ## Validation
 
 - [ ] `python -m compileall ...`
-- [ ] `python main.py --check`
+- [ ] `python -m mk8_local_play.main --check`
 - [ ] extraction run checked
 - [ ] OCR run checked
 

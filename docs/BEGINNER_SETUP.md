@@ -668,7 +668,7 @@ First try these checks:
 - `git --version`
 - `python --version` or `python3 --version`
 - `tesseract --version`
-- `python main.py --check`
+- `python -m mk8_local_play.main --check`
 
 Then read:
 - [README.md](./README.md)

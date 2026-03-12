@@ -4,10 +4,10 @@ Use this checklist before calling the repo release-ready.
 
 ## Code
 
-- Run `python -m compileall main.py extract_frames.py extract_text.py`
-- Run `python main.py --check`
-- Run `python main.py --extract --video Demo_CaptureCard_Race.mp4`
-- Run `python main.py --ocr --video Demo_CaptureCard_Race.mp4`
+- Run `python -m compileall mk8_local_play`
+- Run `python -m mk8_local_play.main --check`
+- Run `python -m mk8_local_play.main --extract --video Demo_CaptureCard_Race.mp4`
+- Run `python -m mk8_local_play.main --ocr --video Demo_CaptureCard_Race.mp4`
 
 ## Output
 

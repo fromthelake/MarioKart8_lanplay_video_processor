@@ -13,10 +13,6 @@ The project has two main phases:
 
 - `main.py`
   - thin root launcher for the packaged CLI and GUI
-- `extract_frames.py`
-  - thin root launcher for extraction-only runs
-- `extract_text.py`
-  - thin root launcher for OCR-only runs
 - `mk8_local_play/`
   - real application package
   - contains the implementation modules that power the root launchers

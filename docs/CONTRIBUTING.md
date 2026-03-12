@@ -52,15 +52,15 @@ That means:
 Minimum checks:
 
 ```bash
-python -m compileall main.py extract_frames.py extract_text.py
-python main.py --check
+python -m compileall mk8_local_play
+python -m mk8_local_play.main --check
 ```
 
 Useful functional checks:
 
 ```bash
-python main.py --extract --video Demo_CaptureCard_Race.mp4
-python main.py --ocr --video Demo_CaptureCard_Race.mp4
+python -m mk8_local_play.main --extract --video Demo_CaptureCard_Race.mp4
+python -m mk8_local_play.main --ocr --video Demo_CaptureCard_Race.mp4
 ```
 
 If you change output logic, also compare against a baseline:

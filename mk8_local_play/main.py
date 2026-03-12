@@ -444,12 +444,12 @@ def exit_application(root_window) -> None:
 
 def launch_gui() -> int:
     if tk is None or messagebox is None or filedialog is None:
-        print("Tkinter is not available. Use headless mode, for example: python main.py --all", file=sys.stderr)
+        print("Tkinter is not available. Use headless mode, for example: python -m mk8_local_play.main --all", file=sys.stderr)
         return 1
     try:
         from PIL import ImageTk
     except Exception as exc:
-        print(f"GUI image support is unavailable ({exc}). Use headless mode, for example: python main.py --all", file=sys.stderr)
+        print(f"GUI image support is unavailable ({exc}). Use headless mode, for example: python -m mk8_local_play.main --all", file=sys.stderr)
         return 1
 
     root = tk.Tk()
