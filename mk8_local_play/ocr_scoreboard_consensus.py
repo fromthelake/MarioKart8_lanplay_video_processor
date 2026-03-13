@@ -752,54 +752,22 @@ def build_row_presence_metrics(names: List[str], confidence_scores: List[int], r
 
 
 def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]], occupancy_threshold: float = 1.0) -> int:
-    """Count visible rows using occupancy plus the position-number templates.
+    """Count visible rows using occupancy plus the expected per-row position template.
 
-    This is now the preferred player-count method:
-    - OCR/name/points evidence says whether a row looks occupied
-    - position templates confirm that a real rank number is visible
-    - the chosen rank sequence may stay equal or increase as the table goes down
-
-    The position presence gate is intentionally hard now:
-    - `Coeff >= 0.60` means the row is visually present
-    - below that threshold the row is treated as empty
-
-    This keeps noisy lower rows from surviving on weak OCR evidence alone.
+    The row count should not collapse just because one middle row has a weak position-strip
+    match. Instead of stopping at the first miss, scan from the bottom upward and return the
+    highest row whose expected rank template is convincingly present.
     """
-    visible_rows = 0
-    last_confirmed_rank = None
-    for metric in row_metrics:
+    for metric in reversed(row_metrics):
         row_number = int(metric.get("row_number", 0))
-        best_position_score = float(metric.get("best_position_score", 0.0))
-        best_rank = int(metric.get("best_position_template", 0))
-        coeff_ranked_templates = [int(value) for value in metric.get("coeff_ranked_templates", [])]
+        expected_position_score = float(metric.get("expected_position_score", 0.0))
         occupancy_score = float(metric.get("occupancy_score", 0.0))
 
-        row_supported = best_position_score >= POSITION_PRESENT_COEFF_THRESHOLD
-        if (
-            not row_supported
-            and row_number == 1
-            and best_rank == 1
-            and occupancy_score >= 2.0
-            and best_position_score >= POSITION_PRESENT_ROW1_COEFF_THRESHOLD
-        ):
-            row_supported = True
-
-        # Ranking rows should never decrease as the table goes downward. If the preferred
-        # template drops below the previous row, try the next logical high-coefficient
-        # candidate first instead of stopping immediately. This helps with near-neighbours
-        # such as 3 vs 8 while still enforcing a non-decreasing rank sequence.
-        if row_supported and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
-            fallback_rank = next((template_rank for template_rank in coeff_ranked_templates if template_rank >= last_confirmed_rank), 0)
-            if fallback_rank > 0:
-                best_rank = fallback_rank
-            else:
-                row_supported = False
-
-        if not row_supported:
-            break
-        last_confirmed_rank = best_rank
-        visible_rows = int(metric["row_number"])
-    return visible_rows
+        threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
+        row_supported = occupancy_score >= occupancy_threshold and expected_position_score >= threshold
+        if row_supported:
+            return row_number
+    return 0
 
 
 def summarize_row_metrics(row_metrics: List[Dict[str, object]]) -> str:

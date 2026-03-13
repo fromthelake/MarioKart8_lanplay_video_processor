@@ -24,6 +24,7 @@ class AppConfig:
     write_debug_csv: bool
     write_debug_score_images: bool
     write_debug_linking_excel: bool
+    low_res_max_source_height: int
 
 
 def _parse_bool(value, default: bool) -> bool:
@@ -114,6 +115,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         os.environ.get("MK8_WRITE_DEBUG_LINKING_EXCEL", json_config.get("write_debug_linking_excel")),
         True,
     )
+    low_res_max_source_height = _parse_int(
+        os.environ.get("MK8_LOW_RES_MAX_SOURCE_HEIGHT", json_config.get("low_res_max_source_height")),
+        479,
+    )
 
     return AppConfig(
         tesseract_cmd=tesseract_cmd,
@@ -127,6 +132,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         write_debug_csv=write_debug_csv,
         write_debug_score_images=write_debug_score_images,
         write_debug_linking_excel=write_debug_linking_excel,
+        low_res_max_source_height=low_res_max_source_height,
     )
 
 

@@ -322,9 +322,10 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     review_reasons.append("connection_reset")
                     score_status = "connection_reset"
 
-                if row["NameConfidence"] < 45:
+                is_low_res = bool(row.get("IsLowRes", False))
+                if not is_low_res and row["NameConfidence"] < 45:
                     review_reasons.append("low_name_confidence")
-                if row["DigitConsensus"] < 55:
+                if not is_low_res and row["DigitConsensus"] < 55:
                     review_reasons.append("low_digit_consensus")
                 if row["RowCountConfidence"] < 60:
                     review_reasons.append("unstable_row_count")

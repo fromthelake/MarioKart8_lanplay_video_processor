@@ -40,6 +40,7 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "FixPlayerName": "Standardized Player",
     "IdentityLabel": "Identity Label",
     "IdentityResolutionMethod": "Identity Resolution Method",
+    "IsLowRes": "Is Low Res",
     "Character": "Character",
     "CharacterIndex": "Character Index",
     "CharacterMatchConfidence": "Character Match Confidence",

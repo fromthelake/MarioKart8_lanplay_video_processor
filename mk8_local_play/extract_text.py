@@ -13,13 +13,16 @@ import openpyxl
 import re
 import threading
 from collections import defaultdict
+from functools import lru_cache
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from .app_runtime import configure_tesseract, load_app_config
+from .extract_common import build_video_identity
 from .console_logging import LOGGER
 from .ocr_export import build_completion_payload
 from .ocr_name_matching import preprocess_name, standardize_player_names, weighted_similarity
 from .ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
+from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .ocr_scoreboard_consensus import (
     TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
     build_consensus_observation,
@@ -208,6 +211,45 @@ def pluralize(count: int, singular: str, plural: str | None = None) -> str:
     if count == 1:
         return singular
     return plural or f"{singular}s"
+
+@lru_cache(maxsize=128)
+def resolve_video_dimensions(video_value: str, input_videos_folder: str) -> tuple[int | None, int | None]:
+    video_path = Path(str(video_value))
+    if not video_path.is_absolute():
+        video_path = Path(input_videos_folder) / video_path
+    if not video_path.exists():
+        return None, None
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return None, None
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    capture.release()
+    return (width or None, height or None)
+
+
+@lru_cache(maxsize=128)
+def resolve_video_path_for_race_class(race_class: str, input_videos_folder: str) -> str | None:
+    input_root = Path(input_videos_folder)
+    for video_path in input_root.rglob('*'):
+        if not video_path.is_file():
+            continue
+        if build_video_identity(video_path, input_root=input_root, include_subfolders=True) == race_class:
+            return str(video_path)
+    return None
+
+
+def resolve_low_res_metadata(metadata_entry, input_videos_folder: Path, race_class: str) -> tuple[int | None, int | None, bool]:
+    video_value = None
+    if metadata_entry is not None:
+        video_value = str(metadata_entry.get('video', '')).strip() or None
+    if not video_value:
+        video_value = resolve_video_path_for_race_class(race_class, str(input_videos_folder))
+    if not video_value:
+        return None, None, False
+    width, height = resolve_video_dimensions(video_value, str(input_videos_folder))
+    return width, height, is_low_res_height(height, APP_CONFIG.low_res_max_source_height)
+
 
 def get_race_points(position: int, num_players: int) -> int:
     """Return the points based on position and number of players."""
@@ -451,6 +493,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     race_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "RaceScore")
     total_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "TotalScore") if total_score_image else None
 
+    source_video_width, source_video_height, is_low_res = resolve_low_res_metadata(race_metadata, input_videos_folder, race_class)
+
     annotate_path = None
     if APP_CONFIG.write_debug_score_images:
         annotate_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
@@ -534,6 +578,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus.get("race_score_recovery_source", ""),
             consensus.get("race_score_recovery_count", race_score_players),
             row.get("TotalScoreMappingMethod", ""),
+            source_video_width,
+            source_video_height,
+            is_low_res,
             ";".join(review_reasons),
         ])
 
@@ -687,7 +734,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
         "RaceScoreRowSignals", "TotalScoreRowSignals",
         "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
-        "TotalScoreMappingMethod", "ReviewReason"
+        "TotalScoreMappingMethod", "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     if df.empty:
@@ -700,7 +747,26 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     # Add the TrackID column
     df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
 
-    df = standardize_player_names(df, linking_data_folder, APP_CONFIG.write_debug_linking_excel)
+    low_res_mask = df["IsLowRes"].fillna(False).astype(bool)
+    standardized_frames = []
+    high_res_df = df.loc[~low_res_mask].copy()
+    if not high_res_df.empty:
+        standardized_frames.append(standardize_player_names(high_res_df, linking_data_folder, APP_CONFIG.write_debug_linking_excel))
+    low_res_df = df.loc[low_res_mask].copy()
+    if not low_res_df.empty:
+        frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
+        for race_class, low_res_group in low_res_df.groupby('RaceClass', sort=False):
+            standardized_frames.append(
+                apply_low_res_identity_pipeline(
+                    low_res_group,
+                    frames_folder,
+                    race_class,
+                    write_debug_outputs=APP_CONFIG.write_debug_csv,
+                    debug_dir=linking_data_folder,
+                )
+            )
+    df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
 
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
 

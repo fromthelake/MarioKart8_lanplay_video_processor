@@ -175,8 +175,10 @@ The row windows currently use fixed starts:
 
 Current row-count gating notes:
 - the normal position-template presence threshold stays at `Coeff >= 0.60`
-- row 1 now has a guarded exception at `Coeff >= 0.40` when template `1` still wins and the row is strongly occupied
-- this specifically protects first place when the Nintendo screenshot toast partly covers the top-left position strip
+- row 1 now has a guarded exception at `Coeff >= 0.40` when the row is strongly occupied
+- player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
+- for counting, the row index decides the player count; the winning template label on that row is debug signal only
+- this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 
 ### Character icons
 Defined in:
@@ -252,6 +254,14 @@ Current `RacePoints` runtime segment settings:
 - `right_bottom: x=51, y=57, width=16, height=23`
 - `middle_bottom_edge: x=28, y=82, width=17, height=9`
 - `center: x=24, y=44, width=25, height=9`
+
+Low-resolution behavior:
+- videos with source height `<= 479` use a dedicated low-res name pipeline
+- low-res keeps the normal frame selection and player-count detection
+- low-res replaces only player identity / name resolution with fixed name ROI + character ROI + global assignment
+- low-res does not use OCR race points or OCR total scores
+- low-res computes race points from position/player count and rebuilds totals cumulatively
+- unresolved low-res identities remain `PlayerNameMissing_X`
 
 Validation / review behavior:
 - session rebases remain visible in the debug export as an attention point
