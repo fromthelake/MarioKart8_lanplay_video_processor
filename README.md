@@ -59,7 +59,7 @@ If it fails:
 - open a new PowerShell window
 - run `git --version` again
 
-## Step 3. Check Python
+## Step 3. Check Python 3.12
 
 Run:
 
@@ -68,17 +68,17 @@ PowerShell Command:
 python --version
 --------------
 
-If that fails, run:
+If that does not show Python 3.12, run:
 
 PowerShell Command:
 --------------
-py --version
+py -3.12 --version
 --------------
 
-If one of them works:
+If either command shows Python 3.12:
 - continue to Step 4
 
-If both fail:
+If Python 3.12 is missing:
 - on most Windows 10/11 systems, first try:
 
 PowerShell Command:
@@ -91,7 +91,7 @@ winget install Python.Python.3.12
 - use Python 3.12 exactly for setup; newer Python versions such as 3.13 or 3.14 are not supported yet
 - during install, enable `Add Python to PATH` if shown
 - open a new PowerShell window
-- run `python --version` again
+- run `py -3.12 --version` again
 
 Important:
 - this installs Python on your system
