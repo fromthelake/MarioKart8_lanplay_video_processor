@@ -117,8 +117,8 @@ If it fails:
 - Windows installer source used by the official docs:
   - https://github.com/UB-Mannheim/tesseract/wiki
 - open a new PowerShell window
-- if `tesseract --version` still fails, either add the Tesseract install folder to PATH or set `config/app_config.json` `tesseract_cmd` to the full `tesseract.exe` path
-- then run `./.venv/Scripts/mk8-local-play.exe --check` after setup to confirm the app can resolve Tesseract
+- run `tesseract --version` again
+- if it still fails, continue anyway and use the post-setup `--check` guidance in Step 7
 
 ## Step 5. Download the project
 
