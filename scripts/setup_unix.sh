@@ -4,9 +4,16 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "Python executable not found: $PYTHON_BIN" >&2
+  echo "Install Python 3.12 and rerun this script, or set PYTHON_BIN to your Python 3.12 executable." >&2
+  exit 1
+fi
+
+PYTHON_VERSION="$($PYTHON_BIN -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$PYTHON_VERSION" != "3.12" ]]; then
+  echo "This project requires Python 3.12. Current interpreter is $PYTHON_VERSION at $PYTHON_BIN" >&2
   echo "Set PYTHON_BIN to a Python 3.12 interpreter and rerun this script." >&2
   exit 1
 fi
@@ -15,7 +22,15 @@ if [[ ! -x ".venv/bin/python" ]]; then
   "$PYTHON_BIN" -m venv .venv
 fi
 
-echo "Using Python interpreter: .venv/bin/python"
+VENV_PYTHON=".venv/bin/python"
+VENV_VERSION="$($VENV_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$VENV_VERSION" != "3.12" ]]; then
+  echo "This project requires Python 3.12. Current .venv interpreter is $VENV_VERSION at $VENV_PYTHON" >&2
+  echo "Delete .venv, set PYTHON_BIN to Python 3.12, and rerun this script." >&2
+  exit 1
+fi
+
+echo "Using Python interpreter: $VENV_PYTHON"
 ".venv/bin/python" -m pip install --upgrade pip
 ".venv/bin/python" -m pip install -e .
 

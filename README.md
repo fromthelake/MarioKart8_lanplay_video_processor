@@ -88,7 +88,7 @@ winget install Python.Python.3.12
 
 - if `winget` is not available or fails, download Python 3.12 manually from:
   - https://www.python.org/downloads/windows/
-- use Python 3.12, not a newer version, to avoid unexpected compatibility issues
+- use Python 3.12 exactly for setup; newer Python versions such as 3.13 or 3.14 are not supported yet
 - during install, enable `Add Python to PATH` if shown
 - open a new PowerShell window
 - run `python --version` again

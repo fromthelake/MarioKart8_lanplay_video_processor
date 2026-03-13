@@ -64,15 +64,15 @@ Run:
 
 Terminal Command:
 --------------
-python3 --version
+python3.12 --version
 --------------
 
-If it shows Python 3.12:
+If `python3.12 --version` shows Python 3.12:
 - continue to Step 4
 
 If Python is missing or not Python 3.12:
 - install Python 3.12
-- then open a new terminal and run `python3 --version` again
+- then open a new terminal and run `python3.12 --version` again
 
 Typical install commands:
 
@@ -80,7 +80,7 @@ Linux:
 Terminal Command:
 --------------
 sudo apt-get update
-sudo apt-get install python3 python3-venv python3-pip
+sudo apt-get install python3.12 python3.12-venv python3-pip
 --------------
 
 macOS:
@@ -163,6 +163,7 @@ chmod +x ./scripts/setup_unix.sh
 
 This setup script:
 - creates or reuses the local `.venv` in this project folder
+- uses `python3.12` by default and stops if the interpreter is not Python 3.12
 - installs the app into that local `.venv`
 - does not require a global install of this app
 - does not require adding `mk8-local-play` to PATH
@@ -172,7 +173,8 @@ If setup succeeds:
 
 If setup fails:
 - read the terminal error
-- fix the missing dependency
+- if the script reports the wrong Python version, delete `.venv`, set `PYTHON_BIN` to Python 3.12, and rerun it
+- fix any other missing dependency
 - run `./scripts/setup_unix.sh` again
 
 ## Step 7. Run the environment check
@@ -363,7 +365,7 @@ First try these checks:
 Terminal Command:
 --------------
 git --version
-python3 --version
+python3.12 --version
 tesseract --version
 .venv/bin/mk8-local-play --check
 --------------
