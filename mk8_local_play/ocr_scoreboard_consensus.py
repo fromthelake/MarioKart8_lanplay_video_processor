@@ -32,12 +32,13 @@ POSITION_STRIP_PADDING_Y = 2
 POSITION_ROW_PADDING_X = 1
 POSITION_ROW_PADDING_TOP = 1
 POSITION_ROW_PADDING_BOTTOM = 4
-POSITION_TEMPLATE_FILENAME = "Score_template_fix.png"
+POSITION_TEMPLATE_FILENAME = "Score_template.png"
 POSITION_TEMPLATE_WIDTH = 56
 POSITION_TEMPLATE_HEIGHT = 36
 POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
 POSITION_PRESENT_COEFF_THRESHOLD = 0.60
+POSITION_PRESENT_ROW1_COEFF_THRESHOLD = 0.40
 POSITION_TEMPLATE_FAST_PATH_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_FAST_PATH_ENABLED", "1").lower() not in {"0", "false", "no"}
 POSITION_TEMPLATE_BEAM_WIDTH = max(1, int(os.environ.get("MK8_POSITION_TEMPLATE_BEAM_WIDTH", "3")))
 CHARACTER_ROI_LEFT = 377
@@ -179,7 +180,7 @@ def slice_position_templates(template_binary: np.ndarray) -> List[np.ndarray]:
 
     Each template row keeps the full 56 px width and a fixed 36 px height.
     The top positions come from the manually tuned row starts provided for
-    Score_template_fix.png: 0, 50, 102, 154, ... with 52 px spacing after row 1.
+    Score_template.png: 0, 50, 102, 154, ... with 52 px spacing after row 1.
     """
     template_rows = []
     image_height, image_width = template_binary.shape[:2]
@@ -767,11 +768,21 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
     visible_rows = 0
     last_confirmed_rank = None
     for metric in row_metrics:
+        row_number = int(metric.get("row_number", 0))
         best_position_score = float(metric.get("best_position_score", 0.0))
         best_rank = int(metric.get("best_position_template", 0))
         coeff_ranked_templates = [int(value) for value in metric.get("coeff_ranked_templates", [])]
+        occupancy_score = float(metric.get("occupancy_score", 0.0))
 
         row_supported = best_position_score >= POSITION_PRESENT_COEFF_THRESHOLD
+        if (
+            not row_supported
+            and row_number == 1
+            and best_rank == 1
+            and occupancy_score >= 2.0
+            and best_position_score >= POSITION_PRESENT_ROW1_COEFF_THRESHOLD
+        ):
+            row_supported = True
 
         # Ranking rows should never decrease as the table goes downward. If the preferred
         # template drops below the previous row, try the next logical high-coefficient

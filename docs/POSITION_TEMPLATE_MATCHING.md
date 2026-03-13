@@ -15,7 +15,7 @@ It does **not** replace the other OCR signals by itself.
 
 ## Current ROI
 
-Each row uses the same window structure as `Score_template_fix.png`.
+Each row uses the same window structure as `Score_template.png`.
 
 - Template size: `56 x 36`
 - Match ROI size: `58 x 41`
@@ -30,7 +30,7 @@ The row starts come from the fixed template slicing:
 
 The current position templates are sliced from:
 
-- `assets/templates/Score_template_fix.png`
+- `assets/templates/Score_template.png`
 
 Each exported `template_row_*.png` is `56 x 36`.
 

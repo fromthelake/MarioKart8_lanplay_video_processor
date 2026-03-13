@@ -267,7 +267,10 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
                 )
 
+    previous_total_score_players = None
     for result in sorted(results, key=lambda item: item["candidate"]["race_number"]):
+        expected_players = previous_total_score_players if int(result["candidate"].get("race_number", 0) or 0) >= 2 else None
+        result = score_screen_selection.refine_race_score_result_for_expected_players(result, expected_players)
         for key, value in result["stats"].items():
             stats[key] += value
         for row in result["debug_rows"]:
@@ -292,6 +295,9 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             frame_to_timecode,
             video_source_path=video_source_path,
         )
+        total_score_image = result.get("total_score_image")
+        if total_score_image is not None:
+            previous_total_score_players = score_screen_selection.count_visible_position_rows(total_score_image)
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
 def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False):

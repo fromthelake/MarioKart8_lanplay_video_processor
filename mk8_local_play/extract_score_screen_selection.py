@@ -1,11 +1,18 @@
 import os
 import time
+from collections import defaultdict
 
 import cv2
 import numpy as np
 
 from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, crop_to_gray_and_upscale_image, match_template, preprocess_roi
 from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
+from .ocr_scoreboard_consensus import (
+    POSITION_PRESENT_COEFF_THRESHOLD,
+    POSITION_PRESENT_ROW1_COEFF_THRESHOLD,
+    build_position_signal_metrics,
+    process_image,
+)
 from .project_paths import PROJECT_ROOT
 
 
@@ -31,6 +38,138 @@ def capture_export_frame(capture, target_frame, left, top, crop_width, crop_heig
     actual_frame = actual_frame_after_read(capture)
     upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
     return actual_frame, enhance_export_frame(upscaled_image, scale_x, scale_y)
+
+
+def fps_scaled_frames(base_frames_30fps, fps):
+    return max(1, int(round(float(base_frames_30fps) * (max(float(fps), 1.0) / 30.0))))
+
+
+RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS = 1
+
+
+def _position_metrics_for_frame(frame_image):
+    processed_image = process_image(frame_image)
+    return build_position_signal_metrics(processed_image)
+
+
+def _count_visible_rows_from_position_metrics(position_metrics):
+    visible_rows = 0
+    last_confirmed_rank = None
+    for metric in position_metrics:
+        row_number = int(metric.get('row_number', 0))
+        best_position_score = float(metric.get('best_position_score', 0.0))
+        best_rank = int(metric.get('best_position_template', 0))
+        coeff_ranked_templates = [int(value) for value in metric.get('coeff_ranked_templates', [])]
+        row_supported = best_position_score >= POSITION_PRESENT_COEFF_THRESHOLD
+        if (
+            not row_supported
+            and row_number == 1
+            and best_rank == 1
+            and best_position_score >= POSITION_PRESENT_ROW1_COEFF_THRESHOLD
+        ):
+            row_supported = True
+        if row_supported and last_confirmed_rank is not None and best_rank < last_confirmed_rank:
+            fallback_rank = next((template_rank for template_rank in coeff_ranked_templates if template_rank >= last_confirmed_rank), 0)
+            if fallback_rank > 0:
+                best_rank = fallback_rank
+            else:
+                row_supported = False
+        if not row_supported:
+            break
+        last_confirmed_rank = best_rank
+        visible_rows = row_number
+    return visible_rows
+
+
+def _row_has_expected_template(position_metrics, row_number, min_score=0.4):
+    if row_number <= 0 or row_number > len(position_metrics):
+        return False
+    metric = position_metrics[row_number - 1]
+    return (
+        int(metric.get('best_position_template', 0)) == int(row_number)
+        and float(metric.get('best_position_score', 0.0)) >= float(min_score)
+    )
+
+
+def count_visible_position_rows(frame_image):
+    return _count_visible_rows_from_position_metrics(_position_metrics_for_frame(frame_image))
+
+
+def refine_race_score_result_for_expected_players(result, expected_players):
+    race_score_image = result.get('race_score_image')
+    if race_score_image is None:
+        return result
+
+    candidate = result.get('candidate', {})
+    fps = float(candidate.get('fps', 0) or 0)
+    race_number = int(candidate.get('race_number', 0) or 0)
+    position_metrics = _position_metrics_for_frame(race_score_image)
+    visible_rows = _count_visible_rows_from_position_metrics(position_metrics)
+    row11_present = _row_has_expected_template(position_metrics, 11, POSITION_PRESENT_COEFF_THRESHOLD)
+    row12_present = _row_has_expected_template(position_metrics, 12, POSITION_PRESENT_COEFF_THRESHOLD)
+
+    should_search = False
+    if expected_players == 12:
+        should_search = not row12_present
+    elif race_number == 1 and visible_rows == 11 and row11_present:
+        should_search = not row12_present
+
+    if not should_search:
+        return result
+
+    extra_search_frames = fps_scaled_frames(10, fps)
+    video_path = candidate.get('video_path')
+    left = candidate.get('left')
+    top = candidate.get('top')
+    crop_width = candidate.get('crop_width')
+    crop_height = candidate.get('crop_height')
+    scale_x = candidate.get('scale_x')
+    scale_y = candidate.get('scale_y')
+    consensus_frame_count = int(candidate.get('ocr_consensus_frames', 0) or 0)
+    stats = defaultdict(float, result.get('stats') or {})
+    result['stats'] = stats
+    start_frame = int(result.get('race_score_frame', 0) or 0)
+
+    local_cap = cv2.VideoCapture(video_path)
+    if not local_cap.isOpened():
+        return result
+
+    try:
+        for frame_offset in range(1, extra_search_frames + 1):
+            candidate_frame = start_frame + frame_offset
+            actual_frame, refined_image = capture_export_frame(
+                local_cap, candidate_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+            )
+            if actual_frame is None or refined_image is None:
+                continue
+            refined_metrics = _position_metrics_for_frame(refined_image)
+            if not _row_has_expected_template(refined_metrics, 12, POSITION_PRESENT_COEFF_THRESHOLD):
+                continue
+            final_frame = candidate_frame + fps_scaled_frames(RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS, fps)
+            final_actual_frame, final_image = capture_export_frame(
+                local_cap, final_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
+            )
+            if final_actual_frame is None or final_image is None:
+                final_frame = candidate_frame
+                final_actual_frame = actual_frame
+                final_image = refined_image
+            result['race_score_frame'] = final_frame
+            result['actual_race_score_frame'] = final_actual_frame
+            result['race_score_image'] = final_image
+            result['race_consensus_frames'] = collect_consensus_frames_from_capture(
+                local_cap,
+                final_actual_frame,
+                left,
+                top,
+                crop_width,
+                crop_height,
+                consensus_frame_count,
+            )
+            break
+    finally:
+        local_cap.release()
+
+    return result
 
 
 def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_roi, frame_to_timecode):
@@ -128,7 +267,7 @@ def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_r
                 player12 = 1
 
             if player12 == 1 and max_val2 < 0.1:
-                race_score_frame = detail_frame_number + int(16)
+                race_score_frame = detail_frame_number + fps_scaled_frames(16 + RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS, fps)
                 detail_frame_number += int(3.9 * fps)
                 seek_to_frame(local_cap, detail_frame_number, stats)
                 check_player_12 = 2

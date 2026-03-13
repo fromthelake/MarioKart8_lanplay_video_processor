@@ -132,6 +132,13 @@ Current constants:
 These are used by:
 - [extract_score_screen_selection.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_score_screen_selection.py)
 
+Current RaceScore selection behavior:
+- the first score-screen hit still seeds a provisional RaceScore export time
+- when the 12th-place validation template is seen, the later RaceScore offset is now FPS-scaled instead of using a raw fixed-frame jump
+- for races after race 1, if the previous TotalScore implies a 12-player field, the selector may walk a few frames later to find a valid 12th row before finalizing RaceScore
+- for race 1, that same late-frame search is only attempted when the fixed-offset RaceScore frame looks like a plausible 11-of-12 case
+- TotalScore timing itself is unchanged by this refinement
+
 ## 7. OCR Regions
 
 Main OCR logic lives in:
@@ -161,10 +168,15 @@ This is refined using:
 - per-row padding
 
 Position templates come from:
-- `assets/templates/Score_template_fix.png`
+- `assets/templates/Score_template.png`
 
 The row windows currently use fixed starts:
 - `0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570`
+
+Current row-count gating notes:
+- the normal position-template presence threshold stays at `Coeff >= 0.60`
+- row 1 now has a guarded exception at `Coeff >= 0.40` when template `1` still wins and the row is strongly occupied
+- this specifically protects first place when the Nintendo screenshot toast partly covers the top-left position strip
 
 ### Character icons
 Defined in:
