@@ -19,7 +19,7 @@ except Exception:
 
 from PIL import Image
 
-from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path
+from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path, resolve_tesseract_cmd, tesseract_resolution_hint
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .project_paths import PROJECT_ROOT
@@ -470,7 +470,9 @@ def print_runtime_status() -> int:
     print(f"Input folder: {INPUT_DIR}")
     print(f"Frames folder: {FRAMES_DIR}")
     print(f"Latest results file: {find_latest_results_xlsx(OUTPUT_DIR)}")
+    resolved_tesseract = resolve_tesseract_cmd(APP_CONFIG)
     print(f"Tesseract: {'OK' if not tesseract_issues else 'MISSING'}")
+    print(f"Tesseract path: {resolved_tesseract or 'not resolved'}")
     print(f"FFmpeg: {'OK' if not ffmpeg_issues else 'MISSING'}")
     print(f"GUI runtime: {'OK' if gui_available else 'UNAVAILABLE'}")
     print(f"GUI detail: {gui_reason}")
@@ -497,6 +499,8 @@ def print_runtime_status() -> int:
         print("\nRuntime issues:")
         for issue in issues:
             print(f"- {issue}")
+        if tesseract_issues:
+            print(f"- {tesseract_resolution_hint(APP_CONFIG)}")
         return 1
     return 0
 

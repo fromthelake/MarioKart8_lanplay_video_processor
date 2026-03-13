@@ -108,7 +108,8 @@ If it works:
 
 If it fails:
 - install Tesseract
-- then run `tesseract --version` again
+- if `tesseract --version` still fails, either fix your shell PATH or set `config/app_config.json` `tesseract_cmd` to the full executable path
+- then run `.venv/bin/mk8-local-play --check` after setup to confirm the app can resolve Tesseract
 
 Typical install commands:
 
@@ -191,6 +192,7 @@ If the check succeeds:
 
 If the check says Tesseract is missing:
 - install Tesseract for your platform
+- if your shell still cannot resolve `tesseract`, set `config/app_config.json` `tesseract_cmd` to the full executable path
 - run the check again
 
 If the check succeeds, the project is ready to run entirely from:

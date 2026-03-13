@@ -166,6 +166,17 @@ def resolve_tesseract_cmd(config: AppConfig) -> Optional[str]:
     return find_executable("tesseract", _tesseract_candidates())
 
 
+def tesseract_resolution_hint(config: AppConfig) -> str:
+    configured = config.tesseract_cmd
+    if configured:
+        return f"Configured path: {configured}"
+    candidates = _tesseract_candidates()
+    return (
+        "Set MK8_TESSERACT_CMD or config/app_config.json:tesseract_cmd. "
+        f"Common locations checked: {', '.join(candidates)}"
+    )
+
+
 def detect_gpu_runtime(config: AppConfig) -> dict:
     cuda_module = getattr(cv2, "cuda", None) if "cv2" in sys.modules else None
     cuda_devices = 0
@@ -220,7 +231,7 @@ def check_runtime(config: AppConfig, require_tesseract: bool = False, require_ff
     issues = []
     if require_tesseract and not resolve_tesseract_cmd(config):
         issues.append(
-            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
+            "Tesseract was not found. Install it, add it to PATH, or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
         )
     if require_ffmpeg and not find_executable("ffmpeg"):
         issues.append("FFmpeg was not found on PATH.")
@@ -231,7 +242,7 @@ def configure_tesseract(pytesseract_module, config: AppConfig) -> str:
     tesseract_cmd = resolve_tesseract_cmd(config)
     if not tesseract_cmd:
         raise RuntimeError(
-            "Tesseract was not found. Install it or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
+            "Tesseract was not found. Install it, add it to PATH, or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
         )
     pytesseract_module.pytesseract.tesseract_cmd = tesseract_cmd
     return tesseract_cmd
