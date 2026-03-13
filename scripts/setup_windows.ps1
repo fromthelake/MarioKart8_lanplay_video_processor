@@ -8,12 +8,30 @@ Set-Location $projectRoot
 
 function Resolve-PythonBootstrap {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        return @("py", "-3")
+        try {
+            & py -3.12 --version *> $null
+            if ($LASTEXITCODE -eq 0) {
+                return @("py", "-3.12")
+            }
+        } catch {
+        }
+        throw "Python 3.12 was not found. Install Python 3.12 first."
     }
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        return @("python")
+        $versionText = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($versionText -eq "3.12") {
+            return @("python")
+        }
+        throw "Python 3.12 was not found. Install Python 3.12 first."
     }
     throw "No Python launcher was found. Install Python 3.12 first."
+}
+
+function Assert-Python312($pythonExe) {
+    $versionText = & $pythonExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    if ($versionText -ne "3.12") {
+        throw "This project requires Python 3.12. Current interpreter is $versionText at $pythonExe"
+    }
 }
 
 if ($CreateVenv -or -not (Test-Path ".venv\Scripts\python.exe")) {
@@ -27,6 +45,7 @@ if ($CreateVenv -or -not (Test-Path ".venv\Scripts\python.exe")) {
 
 $python = ".\.venv\Scripts\python.exe"
 $playExe = ".\.venv\Scripts\mk8-local-play.exe"
+Assert-Python312 $python
 Write-Host "Using Python interpreter: $python"
 & $python -m pip install --upgrade pip setuptools wheel
 & $python -m pip install -e .

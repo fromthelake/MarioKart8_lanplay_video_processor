@@ -137,6 +137,7 @@ PowerShell Command:
 
 This setup script:
 - creates or reuses the local `.venv` in this project folder
+- uses Python 3.12 specifically and stops if only a newer Python is installed
 - installs the app into that local `.venv`
 - does not require a global install of this app
 - does not require adding `mk8-local-play` to PATH
