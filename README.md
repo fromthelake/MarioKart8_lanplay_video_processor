@@ -111,8 +111,11 @@ If it works:
 - continue to Step 5
 
 If it fails:
-- install Tesseract for Windows:
-  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
+- install Tesseract for Windows
+- recommended starting point (official docs):
+  - https://tesseract-ocr.github.io/tessdoc/Installation.html
+- Windows installer source used by the official docs:
+  - https://github.com/UB-Mannheim/tesseract/wiki
 - open a new PowerShell window
 - if `tesseract --version` still fails, either add the Tesseract install folder to PATH or set `config/app_config.json` `tesseract_cmd` to the full `tesseract.exe` path
 - then run `./.venv/Scripts/mk8-local-play.exe --check` after setup to confirm the app can resolve Tesseract
@@ -164,8 +167,11 @@ If the check succeeds:
 - continue to Step 8
 
 If the check says Tesseract is missing:
-- install Tesseract from:
-  - https://ub-mannheim.github.io/Tesseract_Dokumentation/Tesseract_Doku_Windows.html
+- install Tesseract for Windows
+- recommended starting point (official docs):
+  - https://tesseract-ocr.github.io/tessdoc/Installation.html
+- Windows installer source used by the official docs:
+  - https://github.com/UB-Mannheim/tesseract/wiki
 - if PowerShell still cannot run `tesseract`, set `config/app_config.json` `tesseract_cmd` to the full executable path, for example `C:\Program Files\Tesseract-OCR\tesseract.exe`
 - run the check again
 
