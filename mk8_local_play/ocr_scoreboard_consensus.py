@@ -752,19 +752,19 @@ def build_row_presence_metrics(names: List[str], confidence_scores: List[int], r
 
 
 def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]], occupancy_threshold: float = 1.0) -> int:
-    """Count visible rows using occupancy plus the expected per-row position template.
+    """Count visible rows using occupancy plus position-strip presence.
 
-    The row count should not collapse just because one middle row has a weak position-strip
-    match. Instead of stopping at the first miss, scan from the bottom upward and return the
-    highest row whose expected rank template is convincingly present.
+    Player count should be based on whether a row visibly contains a plausible rank badge,
+    not on whether the exact row-number template wins there. This avoids undercounting on
+    ties or near-neighbour confusions such as row 12 visually preferring template 11.
     """
     for metric in reversed(row_metrics):
         row_number = int(metric.get("row_number", 0))
-        expected_position_score = float(metric.get("expected_position_score", 0.0))
+        best_position_score = float(metric.get("best_position_score", 0.0))
         occupancy_score = float(metric.get("occupancy_score", 0.0))
 
         threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
-        row_supported = occupancy_score >= occupancy_threshold and expected_position_score >= threshold
+        row_supported = occupancy_score >= occupancy_threshold and best_position_score >= threshold
         if row_supported:
             return row_number
     return 0

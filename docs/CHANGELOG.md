@@ -87,7 +87,7 @@ The format is intentionally simple and human-readable.
 - `Digit confidence is low` and race-points mismatches caused by late RaceScore frames drifting downward are now eliminated on validated multi-video OCR runs.
 - False RacePoints and TotalScore regressions caused by padded digit rows no longer trigger unnecessary OCR fallback on validated races.
 - Low-resolution videos now use a dedicated player-identity path with `PlayerNameMissing_X` placeholders, fixed name/character ROI matching, and computed race points / totals instead of OCR score digits.
-- Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count even when template `11` visually wins there.
+- Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.

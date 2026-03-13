@@ -177,7 +177,8 @@ Current row-count gating notes:
 - the normal position-template presence threshold stays at `Coeff >= 0.60`
 - row 1 now has a guarded exception at `Coeff >= 0.40` when the row is strongly occupied
 - player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
-- for counting, the row index decides the player count; the winning template label on that row is debug signal only
+- for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
+- the winning template label on that row is debug signal only
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 
 ### Character icons
