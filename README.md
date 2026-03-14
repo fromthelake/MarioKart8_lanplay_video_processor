@@ -1,5 +1,13 @@
 # Mario Kart 8 LAN Play Video Processor
 
+This program analyzes recordings of Mario Kart 8 LAN-play tournament sessions and turns the detected race results into Excel output.
+
+In practice it:
+- scans videos for race score screens and total score screens
+- extracts player names, points, positions, tracks, and characters
+- rebuilds tournament progress race by race
+- exports the results into structured workbook files for review and sharing
+
 Short setup guide for Windows.
 
 Linux or macOS? Read [docs/LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md).
