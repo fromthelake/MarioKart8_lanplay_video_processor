@@ -198,6 +198,7 @@ Low-resolution identity fallback notes:
 - low-resolution character matching uses a fixed net ROI per row and `51x52` resized character templates
 - race 1 uses full character search; later races reuse the previous race as the shortlist basis
 - when a low-resolution race score screen falls to `11` rows but the video context still implies `12`, a combined `character + player-name` blob ROI can restore row 12 as a fallback
+- the low-resolution ROI/template tuning values and blob thresholds are runtime-configurable through `config/app_config.json`
 
 ### Track name OCR
 Defined in:

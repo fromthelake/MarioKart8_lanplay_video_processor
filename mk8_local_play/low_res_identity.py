@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from .app_runtime import load_app_config
 from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote
 from .ocr_scoreboard_consensus import (
     PLAYER_NAME_COORDS,
@@ -25,16 +26,17 @@ LOW_RES_CHARACTER_WEIGHT = 0.25
 LOW_RES_UNKNOWN_CHARACTER_SCORE = 0.5
 LOW_RES_MISMATCH_CHARACTER_SCORE = 0.0
 LOW_RES_MATCH_CHARACTER_SCORE = 1.0
-LOW_RES_CHARACTER_ROI_PAD_X = 4
-LOW_RES_CHARACTER_ROI_PAD_Y = 4
-LOW_RES_CHARACTER_TEMPLATE_WIDTH = 51
-LOW_RES_CHARACTER_TEMPLATE_HEIGHT = 52
-LOW_RES_CHARACTER_OFFSET_X = 4
-LOW_RES_CHARACTER_OFFSET_Y = 5
+APP_CONFIG = load_app_config()
+LOW_RES_CHARACTER_ROI_PAD_X = APP_CONFIG.low_res_character_roi_pad_x
+LOW_RES_CHARACTER_ROI_PAD_Y = APP_CONFIG.low_res_character_roi_pad_y
+LOW_RES_CHARACTER_TEMPLATE_WIDTH = APP_CONFIG.low_res_character_template_width
+LOW_RES_CHARACTER_TEMPLATE_HEIGHT = APP_CONFIG.low_res_character_template_height
+LOW_RES_CHARACTER_OFFSET_X = APP_CONFIG.low_res_character_offset_x
+LOW_RES_CHARACTER_OFFSET_Y = APP_CONFIG.low_res_character_offset_y
 LOW_RES_CHARACTER_ROI_LEFT_SHIFT = LOW_RES_CHARACTER_OFFSET_X - LOW_RES_CHARACTER_ROI_PAD_X
 LOW_RES_CHARACTER_ROI_TOP_SHIFT = LOW_RES_CHARACTER_OFFSET_Y - LOW_RES_CHARACTER_ROI_PAD_Y
-ULTRA_LOW_RES_BLOB_MATCH_MIN_SCORE = 0.58
-ULTRA_LOW_RES_BLOB_MATCH_MIN_MARGIN = 0.10
+ULTRA_LOW_RES_BLOB_MATCH_MIN_SCORE = APP_CONFIG.ultra_low_res_blob_match_min_score
+ULTRA_LOW_RES_BLOB_MATCH_MIN_MARGIN = APP_CONFIG.ultra_low_res_blob_match_min_margin
 
 
 def is_low_res_height(source_height: int | None, max_source_height: int) -> bool:

@@ -91,6 +91,7 @@ The format is intentionally simple and human-readable.
 - Low-resolution character matching now uses the tuned fixed ROI and `51x52` template sizing validated on multiple `640x360 -> 1280x720` captures.
 - Low-resolution `11 vs 12` last-row misses can now recover row 12 from the combined `character + player-name` blob when the rest of the video clearly indicates a 12-player race.
 - Placeholder identities no longer resolve to other `PlayerNameMissing_X` labels, preventing duplicate placeholder names inside one race.
+- Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
 
 ### Documentation

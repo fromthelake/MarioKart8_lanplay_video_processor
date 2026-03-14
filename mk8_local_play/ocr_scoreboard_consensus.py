@@ -12,9 +12,11 @@ import numpy as np
 import pytesseract
 from PIL import Image, ImageDraw
 
+from .app_runtime import load_app_config
 from .data_paths import resolve_asset_file
 from .game_catalog import load_game_catalog
 
+APP_CONFIG = load_app_config()
 
 PLAYER_NAME_COORDS = [
     ((428, 52), (620, 96)), ((428, 104), (620, 148)),
@@ -58,12 +60,12 @@ CHARACTER_SHORTLIST_MIN_MARGIN = 5.0
 CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 76.0
 CHARACTER_PRIOR_STABLE_MIN_SEEN = 2
 CHARACTER_PRIOR_MAX_FAST_ACCEPTS = 6
-LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE = 75.0
-LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE = 0.45
+LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE = APP_CONFIG.low_res_row12_character_fallback_min_confidence
+LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE = APP_CONFIG.low_res_row12_character_fallback_min_position_score
 ULTRA_LOW_RES_ROW_LEFT = CHARACTER_ROI_LEFT
 ULTRA_LOW_RES_ROW_RIGHT = PLAYER_NAME_COORDS[0][1][0]
-ULTRA_LOW_RES_ROW_MIN_STDDEV = 18.0
-ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY = 0.035
+ULTRA_LOW_RES_ROW_MIN_STDDEV = APP_CONFIG.ultra_low_res_row_min_stddev
+ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY = APP_CONFIG.ultra_low_res_row_min_edge_density
 
 
 def record_observation_stage(label: str, duration_s: float) -> None:

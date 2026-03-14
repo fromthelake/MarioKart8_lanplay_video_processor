@@ -9,5 +9,18 @@
   "pass1_min_segment_frames": 27000,
   "write_debug_csv": true,
   "write_debug_score_images": true,
-  "write_debug_linking_excel": true
+  "write_debug_linking_excel": true,
+  "low_res_max_source_height": 479,
+  "low_res_character_roi_pad_x": 4,
+  "low_res_character_roi_pad_y": 4,
+  "low_res_character_template_width": 51,
+  "low_res_character_template_height": 52,
+  "low_res_character_offset_x": 4,
+  "low_res_character_offset_y": 5,
+  "low_res_row12_character_fallback_min_confidence": 75,
+  "low_res_row12_character_fallback_min_position_score": 0.45,
+  "ultra_low_res_row_min_stddev": 18.0,
+  "ultra_low_res_row_min_edge_density": 0.035,
+  "ultra_low_res_blob_match_min_score": 0.58,
+  "ultra_low_res_blob_match_min_margin": 0.10
 }

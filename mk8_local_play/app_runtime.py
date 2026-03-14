@@ -25,6 +25,18 @@ class AppConfig:
     write_debug_score_images: bool
     write_debug_linking_excel: bool
     low_res_max_source_height: int
+    low_res_character_roi_pad_x: int
+    low_res_character_roi_pad_y: int
+    low_res_character_template_width: int
+    low_res_character_template_height: int
+    low_res_character_offset_x: int
+    low_res_character_offset_y: int
+    low_res_row12_character_fallback_min_confidence: int
+    low_res_row12_character_fallback_min_position_score: float
+    ultra_low_res_row_min_stddev: float
+    ultra_low_res_row_min_edge_density: float
+    ultra_low_res_blob_match_min_score: float
+    ultra_low_res_blob_match_min_margin: float
 
 
 def _parse_bool(value, default: bool) -> bool:
@@ -47,6 +59,13 @@ def _parse_execution_mode(value, default: str = "cpu") -> str:
     if candidate in {"auto", "gpu", "cpu"}:
         return candidate
     return default
+
+
+def _parse_float(value, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _load_json_config(config_path: Path) -> dict:
@@ -119,6 +138,72 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         os.environ.get("MK8_LOW_RES_MAX_SOURCE_HEIGHT", json_config.get("low_res_max_source_height")),
         479,
     )
+    low_res_character_roi_pad_x = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_ROI_PAD_X", json_config.get("low_res_character_roi_pad_x")),
+        4,
+        minimum=0,
+    )
+    low_res_character_roi_pad_y = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_ROI_PAD_Y", json_config.get("low_res_character_roi_pad_y")),
+        4,
+        minimum=0,
+    )
+    low_res_character_template_width = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_TEMPLATE_WIDTH", json_config.get("low_res_character_template_width")),
+        51,
+        minimum=1,
+    )
+    low_res_character_template_height = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_TEMPLATE_HEIGHT", json_config.get("low_res_character_template_height")),
+        52,
+        minimum=1,
+    )
+    low_res_character_offset_x = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_OFFSET_X", json_config.get("low_res_character_offset_x")),
+        4,
+        minimum=0,
+    )
+    low_res_character_offset_y = _parse_int(
+        os.environ.get("MK8_LOW_RES_CHARACTER_OFFSET_Y", json_config.get("low_res_character_offset_y")),
+        5,
+        minimum=0,
+    )
+    low_res_row12_character_fallback_min_confidence = _parse_int(
+        os.environ.get(
+            "MK8_LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE",
+            json_config.get("low_res_row12_character_fallback_min_confidence"),
+        ),
+        75,
+        minimum=0,
+    )
+    low_res_row12_character_fallback_min_position_score = _parse_float(
+        os.environ.get(
+            "MK8_LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE",
+            json_config.get("low_res_row12_character_fallback_min_position_score"),
+        ),
+        0.45,
+        minimum=0.0,
+    )
+    ultra_low_res_row_min_stddev = _parse_float(
+        os.environ.get("MK8_ULTRA_LOW_RES_ROW_MIN_STDDEV", json_config.get("ultra_low_res_row_min_stddev")),
+        18.0,
+        minimum=0.0,
+    )
+    ultra_low_res_row_min_edge_density = _parse_float(
+        os.environ.get("MK8_ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY", json_config.get("ultra_low_res_row_min_edge_density")),
+        0.035,
+        minimum=0.0,
+    )
+    ultra_low_res_blob_match_min_score = _parse_float(
+        os.environ.get("MK8_ULTRA_LOW_RES_BLOB_MATCH_MIN_SCORE", json_config.get("ultra_low_res_blob_match_min_score")),
+        0.58,
+        minimum=0.0,
+    )
+    ultra_low_res_blob_match_min_margin = _parse_float(
+        os.environ.get("MK8_ULTRA_LOW_RES_BLOB_MATCH_MIN_MARGIN", json_config.get("ultra_low_res_blob_match_min_margin")),
+        0.10,
+        minimum=0.0,
+    )
 
     return AppConfig(
         tesseract_cmd=tesseract_cmd,
@@ -133,6 +218,18 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         write_debug_score_images=write_debug_score_images,
         write_debug_linking_excel=write_debug_linking_excel,
         low_res_max_source_height=low_res_max_source_height,
+        low_res_character_roi_pad_x=low_res_character_roi_pad_x,
+        low_res_character_roi_pad_y=low_res_character_roi_pad_y,
+        low_res_character_template_width=low_res_character_template_width,
+        low_res_character_template_height=low_res_character_template_height,
+        low_res_character_offset_x=low_res_character_offset_x,
+        low_res_character_offset_y=low_res_character_offset_y,
+        low_res_row12_character_fallback_min_confidence=low_res_row12_character_fallback_min_confidence,
+        low_res_row12_character_fallback_min_position_score=low_res_row12_character_fallback_min_position_score,
+        ultra_low_res_row_min_stddev=ultra_low_res_row_min_stddev,
+        ultra_low_res_row_min_edge_density=ultra_low_res_row_min_edge_density,
+        ultra_low_res_blob_match_min_score=ultra_low_res_blob_match_min_score,
+        ultra_low_res_blob_match_min_margin=ultra_low_res_blob_match_min_margin,
     )
 
 
