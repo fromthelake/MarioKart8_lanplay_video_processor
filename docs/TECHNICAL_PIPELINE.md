@@ -184,6 +184,7 @@ Current row-count gating notes:
 ### Character icons
 Defined in:
 - [ocr_scoreboard_consensus.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/ocr_scoreboard_consensus.py)
+- [low_res_identity.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/low_res_identity.py)
 
 Current character icon settings:
 - left edge: `377`
@@ -191,6 +192,12 @@ Current character icon settings:
 - row step: `52`
 
 Character template images are loaded from the asset folder using the character metadata catalog.
+
+Low-resolution identity fallback notes:
+- low-resolution runs now keep position-confirmed visible rows even when OCR is too weak to supply a usable name or score
+- low-resolution character matching uses a fixed net ROI per row and `51x52` resized character templates
+- race 1 uses full character search; later races reuse the previous race as the shortlist basis
+- when a low-resolution race score screen falls to `11` rows but the video context still implies `12`, a combined `character + player-name` blob ROI can restore row 12 as a fallback
 
 ### Track name OCR
 Defined in:

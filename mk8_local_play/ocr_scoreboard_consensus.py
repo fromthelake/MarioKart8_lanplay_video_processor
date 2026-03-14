@@ -58,6 +58,12 @@ CHARACTER_SHORTLIST_MIN_MARGIN = 5.0
 CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 76.0
 CHARACTER_PRIOR_STABLE_MIN_SEEN = 2
 CHARACTER_PRIOR_MAX_FAST_ACCEPTS = 6
+LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE = 75.0
+LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE = 0.45
+ULTRA_LOW_RES_ROW_LEFT = CHARACTER_ROI_LEFT
+ULTRA_LOW_RES_ROW_RIGHT = PLAYER_NAME_COORDS[0][1][0]
+ULTRA_LOW_RES_ROW_MIN_STDDEV = 18.0
+ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY = 0.035
 
 
 def record_observation_stage(label: str, duration_s: float) -> None:
@@ -137,6 +143,15 @@ def character_row_roi(row_index: int) -> Tuple[Tuple[int, int], Tuple[int, int]]
     return (
         (CHARACTER_ROI_LEFT, row_top - CHARACTER_ROW_PADDING_TOP),
         (CHARACTER_ROI_LEFT + CHARACTER_TEMPLATE_SIZE, row_top + CHARACTER_TEMPLATE_SIZE + CHARACTER_ROW_PADDING_BOTTOM),
+    )
+
+
+def ultra_low_res_combined_row_roi(row_index: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    (cx1, cy1), (_cx2, cy2) = character_row_roi(row_index)
+    (_nx1, ny1), (nx2, ny2) = PLAYER_NAME_COORDS[row_index]
+    return (
+        (int(ULTRA_LOW_RES_ROW_LEFT), int(min(cy1, ny1))),
+        (int(max(ULTRA_LOW_RES_ROW_RIGHT, nx2)), int(max(cy2, ny2))),
     )
 
 
@@ -411,12 +426,27 @@ def _best_template_overlap_metrics(source_image: np.ndarray, template_image: np.
 def _evaluate_position_template(row_image: np.ndarray, template_index: int, template: np.ndarray) -> Dict[str, float]:
     coefficient = _template_match_score(row_image, template)
     overlap_metrics = _best_template_overlap_metrics(row_image, template)
+    best_coefficient = float(coefficient)
+    best_overlap_metrics = overlap_metrics
+    if int(template_index) == 12:
+        inverse_template = cv2.bitwise_not(template)
+        inverse_coefficient = _template_match_score(row_image, inverse_template)
+        inverse_overlap_metrics = _best_template_overlap_metrics(row_image, inverse_template)
+        if (
+            float(inverse_coefficient) > best_coefficient
+            or (
+                float(inverse_coefficient) == best_coefficient
+                and float(inverse_overlap_metrics["weighted_white_iou"]) > float(best_overlap_metrics["weighted_white_iou"])
+            )
+        ):
+            best_coefficient = float(inverse_coefficient)
+            best_overlap_metrics = inverse_overlap_metrics
     return {
         "template_index": int(template_index),
-        "coefficient": float(coefficient),
-        "white_iou": float(overlap_metrics["white_iou"]),
-        "weighted_white_iou": float(overlap_metrics["weighted_white_iou"]),
-        "white_f1": float(overlap_metrics["white_f1"]),
+        "coefficient": float(best_coefficient),
+        "white_iou": float(best_overlap_metrics["white_iou"]),
+        "weighted_white_iou": float(best_overlap_metrics["weighted_white_iou"]),
+        "white_f1": float(best_overlap_metrics["white_f1"]),
     }
 
 
@@ -768,6 +798,71 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
         if row_supported:
             return row_number
     return 0
+
+
+def _observation_supports_low_res_row12_character_fallback(observation: Dict[str, object]) -> bool:
+    row_metrics = observation.get("row_metrics") or []
+    character_metrics = observation.get("character_metrics") or []
+    if len(row_metrics) < 12 or len(character_metrics) < 12:
+        return False
+
+    row11 = row_metrics[10]
+    row12 = row_metrics[11]
+    row11_threshold = POSITION_PRESENT_COEFF_THRESHOLD
+    row11_supported = float(row11.get("best_position_score", 0.0)) >= row11_threshold
+    if not row11_supported:
+        return False
+
+    row12_character = character_metrics[11]
+    if row12_character.get("CharacterIndex") is None:
+        return False
+
+    row12_character_confidence = float(row12_character.get("CharacterMatchConfidence", 0.0))
+    if row12_character_confidence < LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE:
+        return False
+
+    row12_position_score = max(
+        float(row12.get("expected_position_score", 0.0)),
+        float(row12.get("best_position_score", 0.0)),
+        float(row12.get("any_position_score", 0.0)),
+    )
+    return row12_position_score >= LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE
+
+
+def _frame_supports_low_res_row12_character_fallback(frame_image: np.ndarray, video_context: str | None = None) -> bool:
+    processed_image = process_image(frame_image)
+    position_metrics = build_position_signal_metrics(processed_image)
+    character_metrics = build_character_match_metrics(frame_image, video_context=video_context)
+    observation = {
+        "row_metrics": [
+            {
+                "best_position_score": float(metric.get("best_position_score", 0.0)),
+                "expected_position_score": float(metric.get("expected_position_score", 0.0)),
+                "any_position_score": float(metric.get("any_position_score", 0.0)),
+            }
+            for metric in position_metrics
+        ],
+        "character_metrics": character_metrics,
+    }
+    return _observation_supports_low_res_row12_character_fallback(observation)
+
+
+def _frame_supports_ultra_low_res_row12_blob_fallback(frame_image: np.ndarray) -> bool:
+    image_height, image_width = frame_image.shape[:2]
+    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(11)
+    crop_x1 = max(0, min(image_width, x1))
+    crop_x2 = max(crop_x1, min(image_width, x2))
+    crop_y1 = max(0, min(image_height, y1))
+    crop_y2 = max(crop_y1, min(image_height, y2))
+    row_roi = frame_image[crop_y1:crop_y2, crop_x1:crop_x2]
+    if row_roi.size == 0:
+        return False
+
+    gray = cv2.cvtColor(row_roi, cv2.COLOR_BGR2GRAY)
+    stddev = float(gray.std())
+    edges = cv2.Canny(gray, 80, 160)
+    edge_density = float(np.count_nonzero(edges)) / float(edges.size) if edges.size else 0.0
+    return stddev >= ULTRA_LOW_RES_ROW_MIN_STDDEV and edge_density >= ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY
 
 
 def summarize_row_metrics(row_metrics: List[Dict[str, object]]) -> str:
@@ -1455,6 +1550,7 @@ def build_consensus_rows(
     secondary_points_key: str | None = None,
     secondary_points_source_key: str | None = None,
     character_observations: List[Dict[str, object]] | None = None,
+    keep_all_visible_rows: bool = False,
 ) -> List[Dict[str, object]]:
     """Collapse multiple nearby frames into one best-effort row list."""
     character_observations = character_observations or point_observations
@@ -1503,7 +1599,10 @@ def build_consensus_rows(
         stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
         if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
             if detected_value is None:
-                continue
+                if not keep_all_visible_rows:
+                    continue
+                if not player_name:
+                    player_name = f"PlayerNameMissing_{row_index + 1}"
 
         character_index = None
         character_name = ""
@@ -1714,7 +1813,7 @@ def select_race_score_recovery(
 
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
-                                video_context: str | None = None) -> Dict[str, object]:
+                                video_context: str | None = None, is_low_res: bool = False) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
@@ -1772,6 +1871,42 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
     )
 
+    low_res_row12_character_support_votes = 0
+    low_res_center_frame_row12_support = False
+    ultra_low_res_center_frame_row12_support = False
+    if (
+        is_low_res
+        and position_guided_visible_rows == 11
+        and total_position_guided_visible_rows >= 12
+    ):
+        if frames:
+            center_frame = frames[len(frames) // 2]
+            low_res_center_frame_row12_support = _frame_supports_low_res_row12_character_fallback(
+                center_frame,
+                video_context=video_context,
+            )
+            ultra_low_res_center_frame_row12_support = _frame_supports_ultra_low_res_row12_blob_fallback(center_frame)
+        if score_observations:
+            low_res_row12_character_support_votes = sum(
+                1
+                for observation in score_observations
+                if _observation_supports_low_res_row12_character_fallback(observation)
+            )
+        if (
+            low_res_center_frame_row12_support
+            or low_res_row12_character_support_votes >= 1
+            or ultra_low_res_center_frame_row12_support
+        ):
+            position_guided_visible_rows = 12
+            position_guided_row_count_confidence = max(
+                position_guided_row_count_confidence,
+                max(
+                    (low_res_row12_character_support_votes / len(score_observations)) if score_observations else 0.0,
+                    1.0 if low_res_center_frame_row12_support else 0.0,
+                    1.0 if ultra_low_res_center_frame_row12_support else 0.0,
+                ),
+            )
+
     recovery = select_race_score_recovery(
         score_position_observations,
         current_score_rows=position_guided_visible_rows,
@@ -1798,6 +1933,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         secondary_points_key="total_points",
         secondary_points_source_key="total_point_sources",
         character_observations=score_character_observations,
+        keep_all_visible_rows=is_low_res,
     )
     total_rows = build_consensus_rows(
         name_observations=total_consensus_observations,
@@ -1806,6 +1942,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         points_key="total_points",
         points_source_key="total_point_sources",
         character_observations=total_consensus_observations,
+        keep_all_visible_rows=is_low_res,
     )
     rows = map_total_rows_to_race_rows(
         score_rows,
@@ -1835,7 +1972,23 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "representative_score_observation": representative_score_observation,
         "representative_total_observation": representative_total_observation,
         "race_score_recovery_used": bool(recovery["used"]),
-        "race_score_recovery_source": str(recovery.get("source", "")),
+        "race_score_recovery_source": str(recovery.get("source", "")) or (
+            (
+                "ultra_low_res_row12_blob_fallback_center_frame"
+                if ultra_low_res_center_frame_row12_support
+                else
+                "low_res_row12_character_fallback_center_frame"
+                if low_res_center_frame_row12_support
+                else f"low_res_row12_character_fallback_{low_res_row12_character_support_votes}of{len(score_observations)}"
+            )
+            if (
+                ultra_low_res_center_frame_row12_support
+                or low_res_center_frame_row12_support
+                or low_res_row12_character_support_votes
+            )
+            and position_guided_visible_rows == 12 and not recovery["used"]
+            else ""
+        ),
         "race_score_recovery_count": int(recovery.get("count", position_guided_visible_rows)),
         "name_confidence": round((sum(name_confidences) / len(name_confidences)) * 100, 1) if name_confidences else 0.0,
         "digit_consensus": round((sum(digit_confidences) / len(digit_confidences)) * 100, 1) if digit_confidences else 0.0,

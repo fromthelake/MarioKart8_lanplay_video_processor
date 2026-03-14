@@ -523,6 +523,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         weighted_similarity,
         annotate_path,
         video_context=race_class,
+        is_low_res=is_low_res,
     )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
