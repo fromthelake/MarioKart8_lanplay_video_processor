@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import cv2
+import colorsys
 from pathlib import Path
 
 try:
@@ -224,20 +225,35 @@ def open_frames_folder() -> None:
 
 
 def clear_all_races_found() -> None:
+    deleted_anything = False
     if FRAMES_DIR.exists():
         png_files = glob.glob(str(FRAMES_DIR / "*.png"))
         if png_files:
             for file in png_files:
                 try:
                     os.remove(file)
+                    deleted_anything = True
                 except Exception as exc:
                     show_error("Error", f"Unable to delete file {file}: {exc}")
                     return
-            show_info("Success", "All .png files have been deleted.")
-        else:
-            show_info("Info", "No .png files found to delete.")
     else:
         show_warning("Warning", "The frames folder does not exist.")
+        return
+
+    if DEBUG_SCORE_FRAMES_DIR.exists():
+        annotated_files = glob.glob(str(DEBUG_SCORE_FRAMES_DIR / "annotated_*.png"))
+        for file in annotated_files:
+            try:
+                os.remove(file)
+                deleted_anything = True
+            except Exception as exc:
+                show_error("Error", f"Unable to delete file {file}: {exc}")
+                return
+
+    if deleted_anything:
+        show_info("Success", "Found race screenshots and annotated screenshots have been deleted.")
+    else:
+        show_info("Info", "No found race screenshots were present to delete.")
 
 
 def clear_output_results_gui() -> None:
@@ -558,6 +574,185 @@ def exit_application(root_window) -> None:
     root_window.destroy()
 
 
+GUI_THEME = {
+    "window_bg": "#06060f",
+    "panel_bg": "#0c1424",
+    "panel_border": "#243247",
+    "hero_overlay": "#08101fcc",
+    "title_fg": "#ffd34d",
+    "subtitle_fg": "#d7dde8",
+    "muted_fg": "#9aa7bb",
+    "divider_gold": "#ffd34d",
+    "divider_red": "#d73737",
+    "status_green": "#43A047",
+}
+
+
+def _bind_button_hover(button, *, normal_bg: str, hover_bg: str, normal_border: str, hover_border: str):
+    def on_enter(_event):
+        button.configure(bg=hover_bg, highlightbackground=hover_border, highlightcolor=hover_border)
+
+    def on_leave(_event):
+        button.configure(bg=normal_bg, highlightbackground=normal_border, highlightcolor=normal_border)
+
+    button.bind("<Enter>", on_enter)
+    button.bind("<Leave>", on_leave)
+
+
+def _create_gui_button(parent, *, text: str, command, bg: str, fg: str, active_bg: str, border: str,
+                       hover_bg: str | None = None, hover_border: str | None = None, font_size: int = 13):
+    button = tk.Button(
+        parent,
+        text=text,
+        command=command,
+        bg=bg,
+        fg=fg,
+        activebackground=active_bg,
+        activeforeground=fg,
+        relief=tk.FLAT,
+        bd=0,
+        highlightthickness=1,
+        highlightbackground=border,
+        highlightcolor=border,
+        cursor="hand2",
+        font=("TkDefaultFont", font_size, "bold"),
+        padx=14,
+        pady=10,
+        wraplength=300,
+    )
+    _bind_button_hover(
+        button,
+        normal_bg=bg,
+        hover_bg=hover_bg or active_bg,
+        normal_border=border,
+        hover_border=hover_border or border,
+    )
+    return button
+
+
+def _create_step_card(parent, *, step_number: str, title: str, description: str, accent_bg: str, accent_border: str,
+                      number_bg: str, number_fg: str, header_bg: str):
+    card = tk.Frame(parent, bg=GUI_THEME["panel_bg"], highlightthickness=1, highlightbackground=accent_border, bd=0)
+    card.grid_columnconfigure(0, weight=1)
+
+    header = tk.Frame(card, bg=header_bg)
+    header.grid(row=0, column=0, sticky="ew")
+    header.grid_columnconfigure(1, weight=1)
+
+    number_label = tk.Label(
+        header,
+        text=step_number,
+        bg=number_bg,
+        fg=number_fg,
+        font=("TkDefaultFont", 12, "bold"),
+        padx=8,
+        pady=4,
+    )
+    number_label.grid(row=0, column=0, padx=(14, 10), pady=(12, 6), sticky="w")
+
+    title_label = tk.Label(
+        header,
+        text=title,
+        bg=header_bg,
+        fg="white",
+        font=("TkDefaultFont", 16, "bold"),
+        anchor="w",
+        justify="left",
+    )
+    title_label.grid(row=0, column=1, padx=(0, 14), pady=(12, 6), sticky="w")
+
+    description_label = tk.Label(
+        header,
+        text=description,
+        bg=header_bg,
+        fg=GUI_THEME["muted_fg"],
+        font=("TkDefaultFont", 14),
+        anchor="w",
+        justify="left",
+        wraplength=460,
+    )
+    description_label.grid(row=1, column=0, columnspan=2, padx=14, pady=(2, 12), sticky="w")
+
+    body = tk.Frame(card, bg=GUI_THEME["panel_bg"])
+    body.grid(row=1, column=0, sticky="nsew", padx=16, pady=14)
+    body.grid_columnconfigure(0, weight=1)
+    card.grid_rowconfigure(1, weight=1)
+
+    return card, body
+
+
+def _create_gui_toggle(parent, *, text: str, variable, bg: str, fg: str, selectcolor: str, active_bg: str):
+    toggle = tk.Checkbutton(
+        parent,
+        text=text,
+        variable=variable,
+        onvalue=True,
+        offvalue=False,
+        bg=bg,
+        fg=fg,
+        activebackground=active_bg,
+        activeforeground=fg,
+        selectcolor=selectcolor,
+        relief=tk.FLAT,
+        bd=0,
+        highlightthickness=0,
+        cursor="hand2",
+        font=("TkDefaultFont", 10, "bold"),
+        padx=2,
+        pady=2,
+    )
+    return toggle
+
+
+def _tile_hero_background(canvas, image):
+    canvas.delete("bg_tile")
+    width = max(canvas.winfo_width(), 1)
+    height = max(canvas.winfo_height(), 1)
+    tile_width = max(image.width(), 1)
+    tile_height = max(image.height(), 1)
+    x_tiles = max(1, (width + tile_width - 1) // tile_width)
+    y_tiles = max(1, (height + tile_height - 1) // tile_height)
+    for y_index in range(y_tiles):
+        for x_index in range(x_tiles):
+            canvas.create_image(x_index * tile_width, y_index * tile_height, image=image, anchor="nw", tags="bg_tile")
+
+
+def _render_smooth_gradient_bar(canvas, *, image_factory, image_store: dict, offset: int):
+    width = max(canvas.winfo_width(), 1)
+    height = max(canvas.winfo_height(), 1)
+    gradient_image = image_factory(width, height, offset)
+    image_store["image"] = gradient_image
+    canvas.delete("rainbow")
+    canvas.create_image(0, 0, image=gradient_image, anchor="nw", tags="rainbow")
+
+
+def _start_rainbow_bar_animation(root, canvas, *, image_factory, image_store: dict, start_offset: int = 0, delay_ms: int = 45):
+    state = {"offset": start_offset}
+
+    def tick():
+        if not canvas.winfo_exists():
+            return
+        _render_smooth_gradient_bar(canvas, image_factory=image_factory, image_store=image_store, offset=state["offset"])
+        state["offset"] = (state["offset"] + 3) % 360
+        root.after(delay_ms, tick)
+
+    canvas.bind(
+        "<Configure>",
+        lambda _event: _render_smooth_gradient_bar(canvas, image_factory=image_factory, image_store=image_store, offset=state["offset"]),
+    )
+    tick()
+
+
+def _create_tinted_tile_image(base_image: Image.Image, *, tint_color: tuple[int, int, int], tint_alpha: int):
+    tiled_base = base_image.convert("RGBA")
+    tint_layer = Image.new("RGBA", tiled_base.size, (*tint_color, tint_alpha))
+    return Image.alpha_composite(tiled_base, tint_layer)
+
+
+def _fit_shell_width(viewport_width: int) -> int:
+    return max(860, min(1080, viewport_width - 56))
+
+
 def launch_gui() -> int:
     if tk is None or messagebox is None or filedialog is None:
         print("Tkinter is not available. Use headless mode, for example: python -m mk8_local_play.main --all", file=sys.stderr)
@@ -570,58 +765,387 @@ def launch_gui() -> int:
 
     root = tk.Tk()
     root.title("Mario Kart 8 Race Analysis")
+    root.configure(bg=GUI_THEME["window_bg"])
+    root.tk.call("tk", "scaling", 1.0)
+    root.geometry("1120x940")
+    root.minsize(980, 820)
+    root.grid_columnconfigure(0, weight=1)
+    root.grid_rowconfigure(0, weight=1)
 
-    mario_kart_image_path = resolve_asset_file("gui", "mariokart8_gui_background_50.jpg")
-    mario_kart_image = Image.open(mario_kart_image_path)
-    mario_kart_image = mario_kart_image.resize((746, 420), Image.LANCZOS)
-    mario_kart_image = ImageTk.PhotoImage(mario_kart_image)
+    include_subfolders_var = tk.BooleanVar(value=False)
 
-    root.geometry("746x420")
+    def gui_run_extract():
+        try:
+            run_extract(include_subfolders=include_subfolders_var.get())
+            show_info("Success", "Video analyzed and races found.")
+        except Exception as exc:
+            show_error("Error", str(exc))
 
-    image_label = tk.Label(root, image=mario_kart_image)
-    image_label.place(x=0, y=0)
+    def gui_run_selection():
+        try:
+            run_all(selection_mode=True, include_subfolders=include_subfolders_var.get())
+            show_info("Success", "Selection run completed.")
+        except Exception as exc:
+            show_error("Error", str(exc))
 
-    top_spacing = 0.005
-    button_height = (1 - top_spacing) / 9
+    def gui_run_ocr():
+        try:
+            run_ocr(include_subfolders=include_subfolders_var.get())
+            show_info("Success", "Races exported to Excel.")
+        except Exception as exc:
+            show_error("Error", str(exc))
 
-    open_videos_button = tk.Button(root, text="Step 1 - Ensure Videos are in Input Folder", command=open_videos_folder, font=("Helvetica", 16))
-    open_videos_button.config(bg="#ffcc00", fg="#000000")
-    open_videos_button.place(relx=0.5, rely=top_spacing + button_height * 0.5, anchor=tk.CENTER)
+    mario_kart_image_path = resolve_asset_file("gui", "bg.jpg")
+    base_background_image = Image.open(mario_kart_image_path)
+    outer_background_image = ImageTk.PhotoImage(base_background_image)
+    hero_background_source = _create_tinted_tile_image(base_background_image, tint_color=(6, 10, 18), tint_alpha=150)
+    hero_tile_image = ImageTk.PhotoImage(hero_background_source)
 
-    merge_videos_button = tk.Button(root, text="Merge Videos", command=merge_videos, font=("Helvetica", 16))
-    merge_videos_button.config(bg="#d3d3d3", fg="#000000")
-    merge_videos_button.place(relx=0.5, rely=top_spacing + button_height * 1.4, anchor=tk.CENTER)
+    def create_rainbow_gradient_image(width: int, height: int, offset: int):
+        gradient = Image.new("RGB", (width, height))
+        pixels = gradient.load()
+        for x_index in range(width):
+            hue = (((x_index * 1.6) + offset) % 360) / 360.0
+            red, green, blue = colorsys.hsv_to_rgb(hue, 0.85, 1.0)
+            rgb = (int(red * 255), int(green * 255), int(blue * 255))
+            for y_index in range(height):
+                pixels[x_index, y_index] = rgb
+        return ImageTk.PhotoImage(gradient)
 
-    merge_videos_note = tk.Label(root, text="(optional only needed for multiple clips which should be treated as a single Race Poule)", font=("Helvetica", 10), bg="#d3d3d3", fg="#000000")
-    merge_videos_note.place(relx=0.5, rely=top_spacing + button_height * 2.0, anchor=tk.CENTER)
+    stripe_top_image = {}
+    stripe_bottom_image = {}
 
-    analyze_button = tk.Button(root, text="Step 2 - Analyse Videos and Find Races", command=select_video, font=("Helvetica", 16))
-    analyze_button.config(bg="#ffcc00", fg="#000000")
-    analyze_button.place(relx=0.5, rely=top_spacing + button_height * 2.7, anchor=tk.CENTER)
+    background_canvas = tk.Canvas(root, bg=GUI_THEME["window_bg"], bd=0, highlightthickness=0)
+    background_canvas.grid(row=0, column=0, sticky="nsew")
 
-    view_races_button = tk.Button(root, text="View Races Found", command=open_frames_folder, font=("Helvetica", 16))
-    view_races_button.config(bg="#d3d3d3", fg="#000000")
-    view_races_button.place(relx=0.5, rely=top_spacing + button_height * 3.6, anchor=tk.CENTER)
+    shell = tk.Frame(background_canvas, bg=GUI_THEME["window_bg"], padx=28, pady=24)
+    shell.grid_columnconfigure(0, weight=1)
+    shell.grid_rowconfigure(1, weight=1)
+    shell_window_id = background_canvas.create_window(0, 0, anchor="n", window=shell)
 
-    clear_races_button = tk.Button(root, text="Delete All Races Found", command=clear_all_races_found, font=("Helvetica", 16))
-    clear_races_button.config(bg="#ff4444", fg="#ffffff")
-    clear_races_button.place(relx=0.5, rely=top_spacing + button_height * 4.5, anchor=tk.CENTER)
+    app_frame = tk.Frame(shell, bg=GUI_THEME["panel_bg"], highlightthickness=1, highlightbackground=GUI_THEME["panel_border"], bd=0)
+    app_frame.grid(row=0, column=0, sticky="nsew")
+    app_frame.grid_columnconfigure(0, weight=1)
+    app_frame.grid_rowconfigure(2, weight=1)
 
-    clear_output_button = tk.Button(root, text="Clear Output Results", command=clear_output_results_gui, font=("Helvetica", 16))
-    clear_output_button.config(bg="#ff4444", fg="#ffffff")
-    clear_output_button.place(relx=0.5, rely=top_spacing + button_height * 5.35, anchor=tk.CENTER)
+    stripe_top = tk.Canvas(app_frame, height=6, bg=GUI_THEME["panel_bg"], bd=0, highlightthickness=0)
+    stripe_top.grid(row=0, column=0, sticky="ew")
 
-    export_button = tk.Button(root, text="Step 3 - Export Found Races into Excel", command=export_to_excel, font=("Helvetica", 16))
-    export_button.config(bg="#ffcc00", fg="#000000")
-    export_button.place(relx=0.5, rely=top_spacing + button_height * 6.2, anchor=tk.CENTER)
+    hero_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], height=124)
+    hero_frame.grid(row=1, column=0, sticky="ew")
+    hero_frame.grid_columnconfigure(0, weight=1)
+    hero_frame.grid_rowconfigure(0, weight=1)
+    hero_frame.grid_propagate(False)
 
-    open_excel_button = tk.Button(root, text="Open Excel Scores", command=open_excel_scores, font=("Helvetica", 16))
-    open_excel_button.config(bg="#d3d3d3", fg="#000000")
-    open_excel_button.place(relx=0.5, rely=top_spacing + button_height * 7.05, anchor=tk.CENTER)
+    hero_canvas = tk.Canvas(hero_frame, bg=GUI_THEME["window_bg"], bd=0, highlightthickness=0)
+    hero_canvas.grid(row=0, column=0, sticky="nsew")
 
-    exit_button = tk.Button(root, text="Exit", command=lambda: exit_application(root), font=("Helvetica", 16))
-    exit_button.config(bg="#ff4444", fg="#ffffff")
-    exit_button.place(relx=0.5, rely=top_spacing + button_height * 7.9, anchor=tk.CENTER)
+    hero_overlay = tk.Frame(hero_canvas, bg="#08101f")
+    hero_overlay.grid_columnconfigure(0, weight=1)
+
+    title_row = tk.Frame(hero_overlay, bg="#08101f")
+    title_row.grid(row=0, column=0, sticky="ew", padx=28, pady=(12, 2))
+    title_row.grid_columnconfigure(1, weight=1)
+
+    title_block = tk.Frame(title_row, bg="#08101f")
+    title_block.grid(row=0, column=0, sticky="w")
+
+    title_label = tk.Label(
+        title_block,
+        text="MARIO KART 8",
+        bg="#08101f",
+        fg=GUI_THEME["title_fg"],
+        font=("TkDefaultFont", 24, "bold"),
+    )
+    title_label.grid(row=0, column=0, sticky="w")
+
+    subtitle_label = tk.Label(
+        title_block,
+        text="DELUXE · LAN TOURNAMENT · VIDEO ANALYSER",
+        bg="#08101f",
+        fg=GUI_THEME["subtitle_fg"],
+        font=("TkDefaultFont", 16, "bold"),
+    )
+    subtitle_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+    exit_button = _create_gui_button(
+        title_row,
+        text="Exit",
+        command=lambda: exit_application(root),
+        bg="#7a1010",
+        fg="#ffffff",
+        active_bg="#9d1818",
+        border="#a53a3a",
+        hover_bg="#b71f1f",
+        hover_border="#d85b5b",
+        font_size=11,
+    )
+    exit_button.grid(row=0, column=1, sticky="e")
+
+    divider = tk.Frame(hero_overlay, bg=GUI_THEME["divider_gold"], height=2)
+    divider.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 2))
+    divider.grid_propagate(False)
+
+    hero_copy = tk.Frame(hero_overlay, bg="#08101f")
+    hero_copy.grid(row=2, column=0, sticky="ew", padx=28, pady=(2, 4))
+    hero_copy.grid_columnconfigure(0, weight=1)
+
+    hero_summary = tk.Label(
+        hero_copy,
+        text="Prepare videos, scan race results, and export tournament workbooks from one cross-platform desktop window.",
+        bg="#08101f",
+        fg=GUI_THEME["subtitle_fg"],
+        justify="left",
+        anchor="w",
+        wraplength=760,
+        font=("TkDefaultFont", 14),
+    )
+    hero_summary.grid(row=0, column=0, sticky="w")
+
+    hero_window_id = hero_canvas.create_window(0, 0, anchor="nw", window=hero_overlay)
+
+    body_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], padx=24, pady=16)
+    body_frame.grid(row=2, column=0, sticky="nsew")
+    body_frame.grid_columnconfigure(0, weight=1)
+    body_frame.grid_rowconfigure(0, weight=1)
+
+    steps_frame = tk.Frame(body_frame, bg=GUI_THEME["panel_bg"])
+    steps_frame.grid(row=0, column=0, sticky="nsew")
+    steps_frame.grid_columnconfigure(0, weight=8)
+    steps_frame.grid_columnconfigure(1, weight=3)
+    steps_frame.grid_rowconfigure(1, weight=1)
+    steps_frame.grid_rowconfigure(2, weight=1)
+
+    step1_card, step1_body = _create_step_card(
+        steps_frame,
+        step_number="STEP 1",
+        title="Choose Your Videos",
+        description="Get your recordings ready",
+        accent_bg="#a07800",
+        accent_border="#826815",
+        number_bg="#4f4310",
+        number_fg="#ffe88f",
+        header_bg="#17170e",
+    )
+    step1_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+    step1_body.grid_columnconfigure(0, weight=1)
+    step1_body.grid_columnconfigure(1, weight=1)
+    _create_gui_button(step1_body, text="Open Video Folder", command=open_videos_folder, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=0, column=0, padx=(0, 8), pady=(0, 8), sticky="ew")
+    _create_gui_button(step1_body, text="Combine Video Clips", command=merge_videos, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=0, column=1, padx=(8, 0), pady=(0, 8), sticky="ew")
+    merge_note = tk.Label(
+        step1_body,
+        text="Optional: join multiple clips into one video when they belong to the same set of races.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=700,
+        font=("TkDefaultFont", 13),
+    )
+    merge_note.grid(row=1, column=0, columnspan=2, sticky="w")
+
+    step1_options = tk.Frame(step1_body, bg=GUI_THEME["panel_bg"])
+    step1_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    step1_options.grid_columnconfigure(1, weight=1)
+
+    subfolders_toggle = _create_gui_toggle(
+        step1_options,
+        text="Also Look In Subfolders",
+        variable=include_subfolders_var,
+        bg=GUI_THEME["panel_bg"],
+        fg="#fff1b3",
+        selectcolor="#4f4310",
+        active_bg=GUI_THEME["panel_bg"],
+    )
+    subfolders_toggle.grid(row=0, column=0, sticky="w")
+
+    subfolders_note = tk.Label(
+        step1_options,
+        text="Turn this on if your videos are stored inside folders within the main Input_Videos folder.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=520,
+        font=("TkDefaultFont", 13),
+    )
+    subfolders_note.grid(row=0, column=1, sticky="w", padx=(12, 0))
+
+    step2_card, step2_body = _create_step_card(
+        steps_frame,
+        step_number="STEP 2",
+        title="Find The Race Screens",
+        description="Prepare the race images",
+        accent_bg="#154d9e",
+        accent_border="#335b91",
+        number_bg="#132845",
+        number_fg="#b9dcff",
+        header_bg="#101826",
+    )
+    step2_card.grid(row=1, column=0, sticky="nsew", pady=(0, 12), padx=(0, 10))
+    step2_body.grid_columnconfigure(0, weight=1)
+    step2_body.grid_columnconfigure(1, weight=1)
+    _create_gui_button(step2_body, text="Find Races In Videos", command=gui_run_extract, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=0, column=0, padx=(0, 8), sticky="ew")
+    _create_gui_button(step2_body, text="View Races Found", command=open_frames_folder, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=0, column=1, padx=(8, 0), sticky="ew")
+
+    step2_note = tk.Label(
+        step2_body,
+        text="This looks through your videos and saves the race result screens.\nYou can check the screenshots first before creating the Excel file.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=720,
+        font=("TkDefaultFont", 13),
+    )
+    step2_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 2))
+
+    step3_card, step3_body = _create_step_card(
+        steps_frame,
+        step_number="STEP 3",
+        title="Create The Excel File",
+        description="Read the saved race screens",
+        accent_bg="#1f6a34",
+        accent_border="#3a7f53",
+        number_bg="#17331f",
+        number_fg="#c7f2d1",
+        header_bg="#101d16",
+    )
+    step3_card.grid(row=2, column=0, sticky="nsew", padx=(0, 10))
+    step3_body.grid_columnconfigure(0, weight=1)
+    step3_body.grid_columnconfigure(1, weight=1)
+    _create_gui_button(step3_body, text="Create Excel Results", command=gui_run_ocr, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=0, column=0, padx=(0, 8), sticky="ew")
+    _create_gui_button(step3_body, text="Open Excel Scores", command=open_excel_scores, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=0, column=1, padx=(8, 0), sticky="ew")
+
+    ocr_note = tk.Label(
+        step3_body,
+        text="This reads the race screens that were already found and turns them into the Excel results file.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=760,
+        font=("TkDefaultFont", 13),
+    )
+    ocr_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    selection_card, selection_body = _create_step_card(
+        steps_frame,
+        step_number="STEP 2 + STEP 3",
+        title="Full Run",
+        description="Find races and create Excel in one go",
+        accent_bg="#7b1fa2",
+        accent_border="#7d4ca0",
+        number_bg="#30163f",
+        number_fg="#e8c7ff",
+        header_bg="#181024",
+    )
+    selection_card.grid(row=1, column=1, rowspan=2, sticky="nsew")
+    selection_body.grid_columnconfigure(0, weight=1)
+
+    selection_intro = tk.Label(
+        selection_body,
+        text="Use this when you want to do everything in one go, but only for the videos you have currently selected.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["subtitle_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=380,
+        font=("TkDefaultFont", 14),
+    )
+    selection_intro.grid(row=0, column=0, sticky="w")
+
+    _create_gui_button(
+        selection_body,
+        text="Full Run",
+        command=gui_run_selection,
+        bg="#5c2682",
+        fg="#f0ddff",
+        active_bg="#7430a4",
+        border="#9260bb",
+        hover_bg="#8740bd",
+        hover_border="#bc8be0",
+    ).grid(row=1, column=0, sticky="ew", pady=(14, 0))
+
+    selection_detail = tk.Label(
+        selection_body,
+        text="This finds the race screens and creates the Excel file for the selected videos only.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=320,
+        font=("TkDefaultFont", 13),
+    )
+    selection_detail.grid(row=2, column=0, sticky="w", pady=(10, 0))
+
+    bottom_bar = tk.Frame(body_frame, bg=GUI_THEME["panel_bg"])
+    bottom_bar.grid(row=1, column=0, sticky="ew", pady=(18, 0))
+    bottom_bar.grid_columnconfigure(0, weight=1)
+
+    status_frame = tk.Frame(bottom_bar, bg=GUI_THEME["panel_bg"])
+    status_frame.grid(row=0, column=0, sticky="w")
+
+    status_dot = tk.Canvas(status_frame, width=14, height=14, bg=GUI_THEME["panel_bg"], highlightthickness=0, bd=0)
+    status_dot.create_oval(3, 3, 11, 11, fill=GUI_THEME["status_green"], outline=GUI_THEME["status_green"])
+    status_dot.grid(row=0, column=0, padx=(0, 8))
+
+    status_label = tk.Label(
+        status_frame,
+        text="Ready",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        font=("TkDefaultFont", 10, "bold"),
+    )
+    status_label.grid(row=0, column=1, sticky="w")
+
+    danger_frame = tk.Frame(bottom_bar, bg=GUI_THEME["panel_bg"])
+    danger_frame.grid(row=0, column=1, sticky="e")
+    _create_gui_button(danger_frame, text="Delete Found Race Screenshots", command=clear_all_races_found, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b").grid(row=0, column=0, padx=(0, 8), sticky="ew")
+    _create_gui_button(danger_frame, text="Clear Output Folder", command=clear_output_results_gui, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b").grid(row=0, column=1, sticky="ew")
+
+    stripe_bottom = tk.Canvas(app_frame, height=6, bg=GUI_THEME["panel_bg"], bd=0, highlightthickness=0)
+    stripe_bottom.grid(row=3, column=0, sticky="ew")
+
+    def sync_hero_layout(_event=None):
+        _tile_hero_background(hero_canvas, hero_tile_image)
+        canvas_width = max(hero_canvas.winfo_width(), 1)
+        canvas_height = max(hero_canvas.winfo_height(), 1)
+        hero_canvas.coords(hero_window_id, 0, 0)
+        hero_canvas.itemconfigure(hero_window_id, width=canvas_width, height=canvas_height)
+
+    def sync_root_background(_event=None):
+        _tile_hero_background(background_canvas, outer_background_image)
+        canvas_width = max(background_canvas.winfo_width(), 1)
+        canvas_height = max(background_canvas.winfo_height(), 1)
+        shell_width = _fit_shell_width(canvas_width)
+        background_canvas.coords(shell_window_id, canvas_width // 2, 24)
+        background_canvas.itemconfigure(shell_window_id, width=shell_width)
+
+    hero_canvas.bind("<Configure>", sync_hero_layout)
+    background_canvas.bind("<Configure>", sync_root_background)
+    root.after(10, sync_hero_layout)
+    root.after(10, sync_root_background)
+    _start_rainbow_bar_animation(
+        root,
+        stripe_top,
+        image_factory=create_rainbow_gradient_image,
+        image_store=stripe_top_image,
+        start_offset=0,
+        delay_ms=20,
+    )
+    _start_rainbow_bar_animation(
+        root,
+        stripe_bottom,
+        image_factory=create_rainbow_gradient_image,
+        image_store=stripe_bottom_image,
+        start_offset=180,
+        delay_ms=20,
+    )
+    root._mk8_outer_background_image = outer_background_image
+    root._mk8_gui_background_image = hero_tile_image
+    root._mk8_gui_top_rainbow_image = stripe_top_image
+    root._mk8_gui_bottom_rainbow_image = stripe_bottom_image
 
     root.mainloop()
     return 0

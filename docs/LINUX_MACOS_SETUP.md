@@ -260,7 +260,25 @@ Terminal Command:
 
 What it does:
 - starts the desktop GUI
-- from the GUI you can open folders, run extraction, run OCR, and export results
+- from the GUI you can:
+  - open the input folder
+  - merge videos
+  - run extraction only
+  - run a scoped selection pass
+  - toggle subfolder-aware processing
+  - run OCR/export only
+  - open the latest Excel output
+  - clear extracted races or output results
+
+GUI command mapping:
+- `Find Races In Videos`
+  - finds and saves the race screens from your videos
+- `Run Selected Videos`
+  - does both steps in one go, but only for the selected videos
+- `Also Look In Subfolders`
+  - includes videos stored in folders inside `Input_Videos`
+- `Create Excel Results`
+  - reads the saved race screens and creates the Excel file
 
 Run everything:
 

@@ -99,6 +99,78 @@ def build_debug_export_df(df):
     return ordered_df.rename(columns=DEBUG_EXPORT_COLUMN_MAP)
 
 
+def _normalize_character_value(value):
+    if pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _select_most_used_character(player_rows: pd.DataFrame) -> str:
+    character_counts: dict[str, int] = {}
+    last_seen_race: dict[str, int] = {}
+    for _, row in player_rows.iterrows():
+        character_name = _normalize_character_value(row.get("Character"))
+        if not character_name:
+            continue
+        character_counts[character_name] = character_counts.get(character_name, 0) + 1
+        try:
+            race_id = int(row.get("RaceIDNumber", 0))
+        except (TypeError, ValueError):
+            race_id = 0
+        last_seen_race[character_name] = max(last_seen_race.get(character_name, 0), race_id)
+
+    if not character_counts:
+        return ""
+
+    return min(
+        character_counts,
+        key=lambda name: (-character_counts[name], -last_seen_race.get(name, 0), name.lower(), name),
+    )
+
+
+def build_final_standings_df(df):
+    race_counts_by_video = (
+        df.groupby("RaceClass", sort=True)["RaceIDNumber"]
+        .nunique()
+        .to_dict()
+    )
+
+    final_rows = (
+        df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable")
+        .groupby(["RaceClass", "FixPlayerName"], sort=False, as_index=False)
+        .tail(1)
+        .copy()
+    )
+
+    final_rows["Races"] = final_rows["RaceClass"].map(lambda value: int(race_counts_by_video.get(value, 0)))
+    final_rows["Character"] = final_rows.apply(
+        lambda row: _select_most_used_character(
+            df.loc[
+                (df["RaceClass"] == row["RaceClass"])
+                & (df["FixPlayerName"] == row["FixPlayerName"])
+            ]
+        ),
+        axis=1,
+    )
+
+    standings_df = pd.DataFrame(
+        {
+            "VideoName": final_rows["RaceClass"],
+            "Races": final_rows["Races"],
+            "Position": final_rows["PositionAfterRace"],
+            "PlayerName": final_rows["FixPlayerName"],
+            "TotalPoints": final_rows["NewTotalScore"],
+            "Character": final_rows["Character"],
+        }
+    )
+
+    numeric_columns = ["Races", "Position", "TotalPoints"]
+    for column_name in numeric_columns:
+        standings_df[column_name] = pd.to_numeric(standings_df[column_name], errors="coerce").astype("Int64")
+
+    return standings_df.sort_values(["VideoName", "Position", "PlayerName"], kind="stable").reset_index(drop=True)
+
+
 def autosize_worksheet_columns(worksheet, dataframe, padding: int = 2, max_width: int = 60):
     for column_index, column_name in enumerate(dataframe.columns, start=1):
         values = [column_name]
@@ -115,6 +187,7 @@ def write_results_workbooks(df, folder_path):
     debug_output_dir.mkdir(parents=True, exist_ok=True)
 
     user_df = build_user_export_df(df)
+    final_standings_df = build_final_standings_df(df)
     debug_df = build_debug_export_df(df)
 
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
@@ -125,6 +198,8 @@ def write_results_workbooks(df, folder_path):
     with pd.ExcelWriter(output_excel_path) as writer:
         user_df.to_excel(writer, index=False, sheet_name="Results")
         autosize_worksheet_columns(writer.sheets["Results"], user_df)
+        final_standings_df.to_excel(writer, index=False, sheet_name="Final Standings")
+        autosize_worksheet_columns(writer.sheets["Final Standings"], final_standings_df)
     with pd.ExcelWriter(debug_output_excel_path) as writer:
         debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
         autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
