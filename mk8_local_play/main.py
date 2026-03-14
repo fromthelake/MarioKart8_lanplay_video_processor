@@ -4,6 +4,7 @@ import glob
 import os
 import pstats
 import re
+import shutil
 import subprocess
 import sys
 import cv2
@@ -30,9 +31,11 @@ SCRIPT_DIR = PROJECT_ROOT
 INPUT_DIR = SCRIPT_DIR / "Input_Videos"
 OUTPUT_DIR = SCRIPT_DIR / "Output_Results"
 FRAMES_DIR = OUTPUT_DIR / "Frames"
+DEBUG_DIR = OUTPUT_DIR / "Debug"
+DEBUG_SCORE_FRAMES_DIR = DEBUG_DIR / "Score_Frames"
 EXTRACT_MODULE = "mk8_local_play.extract_frames"
 OCR_MODULE = "mk8_local_play.extract_text"
-PROFILE_OUTPUT = OUTPUT_DIR / "Debug" / "performance_profile.txt"
+PROFILE_OUTPUT = DEBUG_DIR / "performance_profile.txt"
 
 
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
@@ -133,6 +136,41 @@ def show_error(title: str, message: str) -> None:
         print(f"{title}: {message}", file=sys.stderr)
 
 
+def confirm_yes_no(title: str, message: str) -> bool:
+    if messagebox is not None:
+        return bool(messagebox.askyesno(title, message))
+    reply = input(f"{title}: {message} [Yes/No] ").strip().lower()
+    return reply in {"y", "yes"}
+
+
+def ensure_output_results_structure() -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    DEBUG_SCORE_FRAMES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def clear_output_results(*, require_confirmation: bool = True) -> bool:
+    if require_confirmation and not confirm_yes_no(
+        "Confirm",
+        "Are you sure you want to clear all files in Output_Results?",
+    ):
+        return False
+
+    if OUTPUT_DIR.exists():
+        for child in OUTPUT_DIR.iterdir():
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            except Exception as exc:
+                raise RuntimeError(f"Unable to delete {child}: {exc}") from exc
+
+    ensure_output_results_structure()
+    return True
+
+
 def run_python_module(module_name: str, extra_args: list[str] | None = None) -> None:
     # Always prefer the repo-local virtualenv for child scripts so extraction and OCR
     # run with the same dependencies a user installed during setup.
@@ -200,6 +238,17 @@ def clear_all_races_found() -> None:
             show_info("Info", "No .png files found to delete.")
     else:
         show_warning("Warning", "The frames folder does not exist.")
+
+
+def clear_output_results_gui() -> None:
+    try:
+        deleted = clear_output_results(require_confirmation=True)
+        if deleted:
+            show_info("Success", "Output_Results has been cleared.")
+        else:
+            show_info("Cancelled", "Output_Results was not cleared.")
+    except Exception as exc:
+        show_error("Error", str(exc))
 
 
 def open_videos_folder() -> None:
@@ -533,7 +582,7 @@ def launch_gui() -> int:
     image_label.place(x=0, y=0)
 
     top_spacing = 0.005
-    button_height = (1 - top_spacing) / 8
+    button_height = (1 - top_spacing) / 9
 
     open_videos_button = tk.Button(root, text="Step 1 - Ensure Videos are in Input Folder", command=open_videos_folder, font=("Helvetica", 16))
     open_videos_button.config(bg="#ffcc00", fg="#000000")
@@ -558,17 +607,21 @@ def launch_gui() -> int:
     clear_races_button.config(bg="#ff4444", fg="#ffffff")
     clear_races_button.place(relx=0.5, rely=top_spacing + button_height * 4.5, anchor=tk.CENTER)
 
+    clear_output_button = tk.Button(root, text="Clear Output Results", command=clear_output_results_gui, font=("Helvetica", 16))
+    clear_output_button.config(bg="#ff4444", fg="#ffffff")
+    clear_output_button.place(relx=0.5, rely=top_spacing + button_height * 5.35, anchor=tk.CENTER)
+
     export_button = tk.Button(root, text="Step 3 - Export Found Races into Excel", command=export_to_excel, font=("Helvetica", 16))
     export_button.config(bg="#ffcc00", fg="#000000")
-    export_button.place(relx=0.5, rely=top_spacing + button_height * 5.4, anchor=tk.CENTER)
+    export_button.place(relx=0.5, rely=top_spacing + button_height * 6.2, anchor=tk.CENTER)
 
     open_excel_button = tk.Button(root, text="Open Excel Scores", command=open_excel_scores, font=("Helvetica", 16))
     open_excel_button.config(bg="#d3d3d3", fg="#000000")
-    open_excel_button.place(relx=0.5, rely=top_spacing + button_height * 6.3, anchor=tk.CENTER)
+    open_excel_button.place(relx=0.5, rely=top_spacing + button_height * 7.05, anchor=tk.CENTER)
 
     exit_button = tk.Button(root, text="Exit", command=lambda: exit_application(root), font=("Helvetica", 16))
     exit_button.config(bg="#ff4444", fg="#ffffff")
-    exit_button.place(relx=0.5, rely=top_spacing + button_height * 7.2, anchor=tk.CENTER)
+    exit_button.place(relx=0.5, rely=top_spacing + button_height * 7.9, anchor=tk.CENTER)
 
     root.mainloop()
     return 0
@@ -577,6 +630,7 @@ def launch_gui() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mario Kart 8 local play video processing")
     parser.add_argument("--check", action="store_true", help="Print runtime/dependency status")
+    parser.add_argument("--clear-output-results", action="store_true", help="Clear all files under Output_Results after interactive confirmation")
     parser.add_argument("--extract", action="store_true", help="Run frame extraction only")
     parser.add_argument("--scan-test", action="store_true", help="Benchmark extraction/scan only without OCR")
     parser.add_argument("--ocr", action="store_true", help="Run OCR/export only")
@@ -592,6 +646,13 @@ def main() -> int:
     args = parse_args()
     if args.check:
         return print_runtime_status()
+    if args.clear_output_results:
+        deleted = clear_output_results(require_confirmation=True)
+        if deleted:
+            print(f"Cleared: {OUTPUT_DIR}")
+        else:
+            print("Cancelled.")
+        return 0
     if args.extract:
         run_extract(selected_video=args.video, include_subfolders=args.subfolders)
         return 0

@@ -238,6 +238,28 @@ Important settings include:
 - score-analysis worker count
 - pass-1 scan worker count
 - RaceScore consensus frame count
+
+## 10. Output Maintenance
+
+The application now supports clearing generated output safely without leaving the runtime in a broken state.
+
+Implemented in:
+- [main.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/main.py)
+
+Available entrypoints:
+- CLI: `python -m mk8_local_play.main --clear-output-results`
+- GUI: `Clear Output Results`
+
+Both paths require an explicit `Are you sure?` confirmation before deleting anything.
+
+Current cleanup behavior:
+- deletes all files and subfolders under `Output_Results/`
+- immediately recreates:
+  - `Output_Results/Frames/`
+  - `Output_Results/Debug/`
+  - `Output_Results/Debug/Score_Frames/`
+
+This keeps extraction, OCR, profiling, and debug-export code paths working after a full cleanup.
 - debug output toggles
 - optional Tesseract path override
 

@@ -71,6 +71,7 @@ The format is intentionally simple and human-readable.
 - RacePoints runtime seven-segment detection now uses the tuned fixed ROI layout with `white_threshold=180` and `active_ratio_threshold=0.45`.
 - Session rebases remain visible in validation/debug output as an attention point, but no longer count as OCR review failures by themselves.
 - Initial scan phase summaries now report confirmed track/race detection counts consistently during parallel scanning.
+- The GUI now includes a `Clear Output Results` action with an `Are you sure?` confirmation before deleting generated output files.
 
 ### Fixed
 - Headless CLI runs no longer depend on GUI-only image imports.
@@ -92,6 +93,7 @@ The format is intentionally simple and human-readable.
 - Low-resolution `11 vs 12` last-row misses can now recover row 12 from the combined `character + player-name` blob when the rest of the video clearly indicates a 12-player race.
 - Placeholder identities no longer resolve to other `PlayerNameMissing_X` labels, preventing duplicate placeholder names inside one race.
 - Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
+- `Output_Results` can now be cleared safely from both CLI and GUI without breaking the expected folder structure, because the app recreates `Frames/`, `Debug/`, and `Debug/Score_Frames/` immediately after cleanup.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
 
 ### Documentation
