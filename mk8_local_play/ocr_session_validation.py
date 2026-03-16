@@ -22,6 +22,28 @@ def format_validation_status(status_code: str) -> str:
     return VALIDATION_STATUS_LABELS.get(str(status_code), str(status_code).replace("_", " ").capitalize())
 
 
+def _parse_review_reason_codes(value) -> list[str]:
+    if isinstance(value, list):
+        return _parse_review_reason_codes(";".join(str(item) for item in value))
+    if value is None:
+        return []
+    try:
+        if pd.isna(value):
+            return []
+    except (TypeError, ValueError):
+        pass
+
+    parsed_codes = []
+    for token in str(value).split(";"):
+        normalized = token.strip()
+        if not normalized or normalized.lower() == "nan":
+            continue
+        if "|" in normalized or " " in normalized or "." in normalized:
+            continue
+        parsed_codes.append(normalized)
+    return list(dict.fromkeys(parsed_codes))
+
+
 def build_review_reason_messages(
     review_reason_codes,
     *,
@@ -48,52 +70,44 @@ def build_review_reason_messages(
     for code in review_reason_codes:
         if code == "race_points_mismatch":
             messages.append(
-                f"Race points should be {race_points}, but OCR read {detected_race if detected_race is not None else 'nothing'}"
-                f" via {detected_race_source or 'unknown_source'}."
+                f"Race points mismatch: expected {race_points}, OCR {detected_race if detected_race is not None else 'none'}."
             )
         elif code == "race_points_out_of_range":
             messages.append(
-                f"OCR race points {detected_race if detected_race is not None else 'nothing'} via {detected_race_source or 'unknown_source'} are outside the expected range 1..15."
+                f"Race points out of range: OCR {detected_race if detected_race is not None else 'none'}."
             )
         elif code == "total_score_mismatch":
             messages.append(
-                f"Expected total after race is {expected_session_total}, but OCR total score read {detected_total if detected_total is not None else 'nothing'}"
-                f" via {detected_total_source or 'unknown_source'}."
+                f"Total mismatch: expected {expected_session_total}, OCR {detected_total if detected_total is not None else 'none'}."
             )
         elif code == "session_rebased":
-            messages.append(str(session_rebase_reason or "Session rebased from this race because earlier footage is missing."))
+            messages.append("Session rebased from this race.")
         elif code == "connection_reset":
             messages.append(
                 str(
                     session_reset_reason
-                    or (
-                        f"Connection reset detected. OCR total score read "
-                        f"{detected_total if detected_total is not None else 'nothing'}, but tournament totals continue "
-                        f"from {authoritative_total_before_race} to {authoritative_total_after_race}."
-                    )
+                    or "Connection reset detected; tournament totals continue from prior standings."
                 )
             )
         elif code == "low_name_confidence":
-            messages.append(f"Player name confidence is low ({name_confidence:.0f}%).")
+            messages.append(f"Low name confidence ({name_confidence:.0f}%).")
         elif code == "low_digit_consensus":
-            messages.append(f"Digit confidence is low ({digit_consensus:.0f}%).")
+            messages.append(f"Low digit confidence ({digit_consensus:.0f}%).")
         elif code == "unstable_row_count":
-            messages.append(f"Player count confidence is low ({row_count_confidence:.0f}%).")
+            messages.append(f"Low player-count confidence ({row_count_confidence:.0f}%).")
         elif code == "player_count_mismatch":
             messages.append(
-                f"Race score screen shows {race_score_players} players, expected {expected_players}."
+                f"Race screen player count mismatch: {race_score_players} shown, expected {expected_players}."
             )
         elif code == "race_total_player_count_mismatch":
             messages.append(
-                f"Race score screen shows {race_score_players} players, but total score screen shows {total_score_players}."
+                f"Race/total player counts differ: race {race_score_players}, total {total_score_players}."
             )
         elif code == "total_score_order_violation":
-            messages.append(
-                "Total score order on the scoreboard is not monotonic from top to bottom."
-            )
+            messages.append("Scoreboard total order is not descending.")
         elif code == "total_score_out_of_range":
             messages.append(
-                f"OCR total score {detected_total if detected_total is not None else 'nothing'} via {detected_total_source or 'unknown_source'} is outside the expected range 1..999."
+                f"Total score out of range: OCR {detected_total if detected_total is not None else 'none'}."
             )
         else:
             messages.append(str(code).replace("_", " ").capitalize())
@@ -150,7 +164,7 @@ def detect_total_score_order_violations(race_rows: pd.DataFrame, remapped_totals
     """Flag OCR total-score rows that break the expected descending scoreboard order."""
     ordered_rows = []
     for index, row in race_rows.iterrows():
-        scoreboard_position = row.get("PositionAfterRace")
+        scoreboard_position = row.get("DetectedPositionAfterRace", row.get("PositionAfterRace"))
         if pd.isna(scoreboard_position):
             continue
         try:
@@ -202,6 +216,12 @@ def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
 def apply_session_validation(df, parse_detected_int, exact_total_score_fallback):
     """Compute running totals, session boundaries, and review flags for OCR rows."""
     df = df.copy()
+    if "DetectedPositionAfterRace" not in df.columns:
+        df["DetectedPositionAfterRace"] = df.get("PositionAfterRace")
+    if "ReviewReasonCodes" not in df.columns:
+        df["ReviewReasonCodes"] = df.get("ReviewReason", "").apply(_parse_review_reason_codes)
+    else:
+        df["ReviewReasonCodes"] = df["ReviewReasonCodes"].apply(_parse_review_reason_codes)
     df["ReviewNeeded"] = False
     df["SessionIndex"] = 1
     df["SessionOldTotalScore"] = 0
@@ -223,6 +243,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
         race_ids = sorted(race_group["RaceIDNumber"].unique())
         expected_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
         previous_validated_totals = {}
+        connection_reset_active = False
 
         for race_index, race_id in enumerate(race_ids):
             race_mask = (df["RaceClass"] == race_class) & (df["RaceIDNumber"] == race_id)
@@ -252,14 +273,16 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
 
             session_rebased = detect_rebase_candidate(prepared_rows, race_index)
             session_rebase_reason = (
-                "Session rebased from this race because earlier race footage is missing."
+                "Session rebased from this race."
                 if session_rebased else ""
             )
-            session_reset_detected = detect_connection_reset(previous_validated_totals, prepared_rows)
+            session_reset_detected = False if connection_reset_active else detect_connection_reset(previous_validated_totals, prepared_rows)
             session_reset_reason = (
-                "Connection reset detected. Tournament totals continue from the standings before the reset."
+                "Connection reset detected; tournament totals continue from prior standings."
                 if session_reset_detected else ""
             )
+            announce_connection_reset = bool(session_reset_detected)
+            current_session_index = session_index + 1 if announce_connection_reset else session_index
 
             if session_rebased:
                 for prepared_row in prepared_rows:
@@ -270,6 +293,12 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     prepared_row["session_old_total"] = rebased_old_total
                     prepared_row["new_total"] = int(prepared_row["detected_total"])
                     prepared_row["session_new_total"] = int(prepared_row["detected_total"])
+
+            if announce_connection_reset:
+                for prepared_row in prepared_rows:
+                    prepared_row["session_old_total"] = 0
+                    prepared_row["session_new_total"] = int(prepared_row["race_points"])
+                connection_reset_active = True
 
             remapped_totals_by_index = exact_total_score_fallback(prepared_rows)
             total_score_order_violations = detect_total_score_order_violations(race_rows, remapped_totals_by_index)
@@ -284,11 +313,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 session_new_total = prepared_row["session_new_total"]
                 detected_race = prepared_row["detected_race"]
                 detected_total = remapped_totals_by_index.get(index, prepared_row["detected_total"])
-                existing_review_reason = row["ReviewReason"]
-                if pd.isna(existing_review_reason):
-                    review_reasons = []
-                else:
-                    review_reasons = [reason for reason in str(existing_review_reason).split(";") if reason and reason.lower() != "nan"]
+                review_reasons = _parse_review_reason_codes(row.get("ReviewReasonCodes"))
                 score_status = "computed_only"
 
                 if session_rebased:
@@ -318,7 +343,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     if score_status in {"computed_only", "race_points_match", "validated", "rebased"}:
                         score_status = "total_score_order_violation"
 
-                if session_reset_detected:
+                if announce_connection_reset:
                     review_reasons.append("connection_reset")
                     score_status = "connection_reset"
 
@@ -356,21 +381,22 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                     session_reset_detected=session_reset_detected,
                     session_reset_reason=session_reset_reason,
                 )
-                df.at[index, "SessionIndex"] = session_index
+                df.at[index, "SessionIndex"] = current_session_index
                 df.at[index, "SessionOldTotalScore"] = session_old_total
                 df.at[index, "SessionNewTotalScore"] = session_new_total
                 df.at[index, "OldTotalScore"] = old_total
                 df.at[index, "NewTotalScore"] = new_total
                 df.at[index, "SessionRebased"] = bool(session_rebased)
                 df.at[index, "SessionRebaseReason"] = session_rebase_reason
-                df.at[index, "SessionResetDetected"] = bool(session_reset_detected)
-                df.at[index, "SessionResetReason"] = session_reset_reason
+                df.at[index, "SessionResetDetected"] = bool(announce_connection_reset)
+                df.at[index, "SessionResetReason"] = session_reset_reason if announce_connection_reset else ""
                 if index in remapped_totals_by_index:
                     df.at[index, "DetectedTotalScore"] = detected_total
                     existing_mapping_method = str(df.at[index, "TotalScoreMappingMethod"]).strip()
                     df.at[index, "TotalScoreMappingMethod"] = (
                         f"{existing_mapping_method}+score_fallback" if existing_mapping_method else "score_fallback"
                     )
+                df.at[index, "ReviewReasonCodes"] = ";".join(review_reasons)
                 df.at[index, "ReviewReason"] = " | ".join(review_reason_messages)
                 df.at[index, "ReviewNeeded"] = bool(review_reasons)
                 df.at[index, "ScoreValidationStatus"] = format_validation_status(score_status)
@@ -378,5 +404,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 tournament_totals[player_key] = new_total
                 session_totals[player_key] = session_new_total
                 previous_validated_totals[player_key] = new_total
+
+            session_index = current_session_index
 
     return assign_shared_positions_after_race(df)

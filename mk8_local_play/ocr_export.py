@@ -5,6 +5,9 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+USER_REVIEW_REASON_MAX_LENGTH = 160
+DEBUG_REVIEW_REASON_MAX_LENGTH = 240
+
 
 POSITION_TEMPLATE_COEFF_COLUMN_MAP = {
     f"PositionTemplate{template_index:02}_Coeff": f"Position Template {template_index:02} Coeff"
@@ -55,6 +58,7 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "DetectedTotalScoreSource": "OCR Total Score Source",
     "DetectedNewTotalScore": "OCR New Total Score",
     "DetectedNewTotalScoreSource": "OCR New Total Score Source",
+    "DetectedPositionAfterRace": "OCR Position After Race",
     "SessionOldTotalScore": "Session Total Before Race",
     "SessionNewTotalScore": "Expected Total After Race",
     "OldTotalScore": "Tournament Total Before Race",
@@ -90,13 +94,73 @@ DEBUG_EXPORT_COLUMN_MAP = {
 }
 
 
+def _dedupe_review_reason_parts(value: object) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
+
+    parts = []
+    seen = set()
+    for raw_part in str(value).split("|"):
+        part = raw_part.strip()
+        if not part or part.lower() == "nan":
+            continue
+        normalized = " ".join(part.casefold().split())
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        parts.append(part)
+    return parts
+
+
+def _truncate_review_reason(parts: list[str], max_length: int) -> str:
+    if not parts:
+        return ""
+
+    joined = " | ".join(parts)
+    if len(joined) <= max_length:
+        return joined
+
+    kept_parts: list[str] = []
+    for index, part in enumerate(parts):
+        remaining = len(parts) - index - 1
+        candidate_parts = kept_parts + [part]
+        candidate = " | ".join(candidate_parts)
+        suffix = f" ... (+{remaining} more)" if remaining > 0 else ""
+        if len(candidate) + len(suffix) <= max_length:
+            kept_parts.append(part)
+            continue
+        break
+
+    omitted = len(parts) - len(kept_parts)
+    if kept_parts:
+        truncated = " | ".join(kept_parts)
+        if omitted > 0:
+            return f"{truncated} ... (+{omitted} more)"
+        return truncated
+
+    first_part = parts[0]
+    if max_length <= 3:
+        return first_part[:max_length]
+    return first_part[: max_length - 3].rstrip() + "..."
+
+
+def format_review_reason_for_export(value: object, max_length: int) -> str:
+    return _truncate_review_reason(_dedupe_review_reason_parts(value), max_length)
+
+
 def build_user_export_df(df):
     ordered_df = df[list(USER_EXPORT_COLUMN_MAP.keys())].copy()
+    ordered_df["ReviewReason"] = ordered_df["ReviewReason"].apply(
+        lambda value: format_review_reason_for_export(value, USER_REVIEW_REASON_MAX_LENGTH)
+    )
     return ordered_df.rename(columns=USER_EXPORT_COLUMN_MAP)
 
 
 def build_debug_export_df(df):
     ordered_df = df[list(DEBUG_EXPORT_COLUMN_MAP.keys())].copy()
+    ordered_df["ReviewReason"] = ordered_df["ReviewReason"].apply(
+        lambda value: format_review_reason_for_export(value, DEBUG_REVIEW_REASON_MAX_LENGTH)
+    )
     return ordered_df.rename(columns=DEBUG_EXPORT_COLUMN_MAP)
 
 

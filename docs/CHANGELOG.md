@@ -95,6 +95,11 @@ The format is intentionally simple and human-readable.
 - Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
 - `Output_Results` can now be cleared safely from both CLI and GUI without breaking the expected folder structure, because the app recreates `Frames/`, `Debug/`, and `Debug/Score_Frames/` immediately after cleanup.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
+- Review reasons are now shorter, deduplicated, capped for export, and no longer repeat connection-reset messages across later races after a detected reset.
+- Session validation now preserves the original OCR total-score row position, preventing false `Scoreboard total order is not descending.` warnings after tournament-only `Position After Race` recomputation.
+- Post-reset local `TotalScore` values are now validated against the reset-local session totals instead of continuing to trigger false tournament-total mismatches in later races.
+- Score-frame debug annotations now save both `2RaceScore` and `3TotalScore` center frames, render the 5x OCR image directly, color segment ROIs green/red for on/off, and label each digit box with the detected 7-segment digit.
+- The seven-segment reader now uses one canonical explicit segment layout for RacePoints / OldTotalScore and scales that same layout into the larger TotalScore digit boxes.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.

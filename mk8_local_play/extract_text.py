@@ -503,8 +503,11 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     source_video_width, source_video_height, is_low_res = resolve_low_res_metadata(race_metadata, input_videos_folder, race_class)
 
     annotate_path = None
+    total_annotate_path = None
     if APP_CONFIG.write_debug_score_images:
         annotate_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
+        if total_score_image:
+            total_annotate_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(total_score_image)}')
 
     race_bundle_key = (race_class, race_id_number, "RaceScore")
     total_bundle_key = (race_class, race_id_number, "TotalScore")
@@ -529,6 +532,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         preprocess_name,
         weighted_similarity,
         annotate_path,
+        total_annotate_path,
         video_context=race_class,
         is_low_res=is_low_res,
     )

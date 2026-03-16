@@ -1125,8 +1125,12 @@ def score_digit_candidate(
     return score
 
 
-def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
-    """Identify a digit from segment ROIs instead of single-point hits."""
+def analyze_digit_segments(
+    image: Image.Image,
+    box_top_left: Tuple[int, int],
+    red_pixels: Dict[str, Tuple[int, int]],
+) -> Tuple[int, Dict[str, Dict[str, float]], set[str]]:
+    """Identify a digit and return segment stats for debug rendering."""
     segment_stats = {
         label: segment_roi_stats(image, segment_roi_bounds(box_top_left, offset, label))
         for label, offset in red_pixels.items()
@@ -1136,9 +1140,9 @@ def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels
     }
     for digit, pattern in DIGIT_PATTERNS:
         if pattern.issubset(strong_active_labels):
-            return digit
+            return digit, segment_stats, strong_active_labels
     if not strong_active_labels:
-        return -1
+        return -1, segment_stats, strong_active_labels
 
     method_votes: list[int] = []
     aggregate_scores: Dict[int, float] = {}
@@ -1163,12 +1167,18 @@ def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels
         vote_counts = Counter(method_votes)
         best_digit, best_count = vote_counts.most_common(1)[0]
         if best_count >= 2:
-            return best_digit
+            return best_digit, segment_stats, strong_active_labels
 
     best_digit = max(aggregate_scores.items(), key=lambda item: item[1])[0]
     best_pattern = pattern_lookup[best_digit]
     matched_ratio = len(best_pattern & strong_active_labels) / max(1, len(best_pattern))
-    return best_digit if matched_ratio >= 0.5 else -1
+    return (best_digit if matched_ratio >= 0.5 else -1), segment_stats, strong_active_labels
+
+
+def identify_digit(image: Image.Image, box_top_left: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]]) -> int:
+    """Identify a digit from segment ROIs instead of single-point hits."""
+    digit, _segment_stats, _strong_active_labels = analyze_digit_segments(image, box_top_left, red_pixels)
+    return digit
 
 
 def ocr_digit_row_fallback(
@@ -1208,28 +1218,61 @@ def ocr_digit_row_fallback(
     return ''
 
 
+def _digit_box_bounds(top_left: Tuple[int, int], box_dims: Tuple[int, int]) -> Tuple[int, int, int, int]:
+    return (
+        int(top_left[0]),
+        int(top_left[1]),
+        int(top_left[0] + box_dims[0]),
+        int(top_left[1] + box_dims[1]),
+    )
+
+
+def _row_bounds(
+    start_coords: List[Tuple[int, int]],
+    row_offset: int,
+    box_dims: Tuple[int, int],
+    row_index: int,
+    boxes_per_row: int,
+) -> Tuple[int, int, int, int]:
+    y_offset = row_index * row_offset
+    x1 = int(start_coords[0][0])
+    y1 = int(start_coords[0][1] + y_offset)
+    x2 = int(start_coords[boxes_per_row - 1][0] + box_dims[0])
+    y2 = int(y1 + box_dims[1])
+    return (x1, y1, x2, y2)
+
+
 def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int]], row_offset: int,
                            box_dims: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]],
-                           num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int) -> Tuple[List[str], List[str]]:
+                           num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int,
+                           annotation_prefix: str = "") -> Tuple[List[str], List[str]]:
     coordinate_set = []
     coordinate_sources = []
     draw = ImageDraw.Draw(image)
     for row_index in range(num_rows):
         y_offset = row_index * row_offset
+        row_bounds = _row_bounds(start_coords, row_offset, box_dims, row_index, boxes_per_row)
+        draw.rectangle(row_bounds, outline="cyan", width=2)
         row_digits = []
         has_unknown_digit = False
         for box_index in range(boxes_per_row):
             start_x, start_y = start_coords[box_index]
             top_left = (start_x, start_y + y_offset)
-            digit = identify_digit(image, top_left, red_pixels)
+            digit_bounds = _digit_box_bounds(top_left, box_dims)
+            draw.rectangle(digit_bounds, outline="yellow", width=2)
+            digit, segment_stats, strong_active_labels = analyze_digit_segments(image, top_left, red_pixels)
             if digit != -1:
                 row_digits.append(str(digit))
             else:
                 row_digits.append('')
                 has_unknown_digit = True
+            digit_label = str(digit) if digit != -1 else "?"
+            draw.text((digit_bounds[0] + 2, digit_bounds[1] + 2), digit_label, fill="cyan")
             for label, offset in red_pixels.items():
                 roi_bounds = segment_roi_bounds(top_left, offset, label)
-                draw.rectangle(roi_bounds, outline="red")
+                segment_is_on = label in strong_active_labels
+                outline_color = "lime" if segment_is_on else "red"
+                draw.rectangle(roi_bounds, outline=outline_color, width=2)
         row_number = ''.join(row_digits)
         numeric_value = parse_detected_int(row_number)
         recognized_indices = [index for index, digit_text in enumerate(row_digits) if digit_text]
@@ -1268,7 +1311,53 @@ def scale_coords(coords, scale_factor):
 
 
 def scale_pixel_positions(pixels, scale_factor):
-    return {label: (x * scale_factor, y * scale_factor) for label, (x, y) in pixels.items()}
+    scaled = {}
+    for label, value in pixels.items():
+        if isinstance(value, dict):
+            scaled[label] = {
+                "x": int(value["x"] * scale_factor),
+                "y": int(value["y"] * scale_factor),
+                "width": int(value["width"] * scale_factor),
+                "height": int(value["height"] * scale_factor),
+            }
+        else:
+            x, y = value
+            scaled[label] = (x * scale_factor, y * scale_factor)
+    return scaled
+
+
+CANONICAL_SEVEN_SEGMENT_BOXES = {
+    "top_middle": {"x": 28, "y": 8, "width": 17, "height": 9},
+    "left_middle": {"x": 9, "y": 17, "width": 16, "height": 23},
+    "middle_middle": {"x": 32, "y": 21, "width": 9, "height": 18},
+    "right_middle": {"x": 51, "y": 17, "width": 15, "height": 23},
+    "left_bottom": {"x": 9, "y": 57, "width": 16, "height": 23},
+    "middle_bottom": {"x": 32, "y": 59, "width": 9, "height": 18},
+    "right_bottom": {"x": 51, "y": 57, "width": 16, "height": 23},
+    "middle_bottom_edge": {"x": 28, "y": 82, "width": 17, "height": 9},
+    "center": {"x": 24, "y": 44, "width": 25, "height": 9},
+}
+
+
+def _scale_segment_boxes(
+    segment_boxes: Dict[str, Dict[str, int]],
+    *,
+    source_box_width: int,
+    source_box_height: int,
+    target_box_width: int,
+    target_box_height: int,
+) -> Dict[str, Dict[str, int]]:
+    scale_x = float(target_box_width) / float(source_box_width)
+    scale_y = float(target_box_height) / float(source_box_height)
+    scaled: Dict[str, Dict[str, int]] = {}
+    for label, box in segment_boxes.items():
+        scaled[label] = {
+            "x": int(round(float(box["x"]) * scale_x)),
+            "y": int(round(float(box["y"]) * scale_y)),
+            "width": max(1, int(round(float(box["width"]) * scale_x))),
+            "height": max(1, int(round(float(box["height"]) * scale_y))),
+        }
+    return scaled
 
 
 def parse_detected_int(value: str) -> int | None:
@@ -1295,29 +1384,23 @@ def parse_detected_int(value: str) -> int | None:
 
 def score_digit_layout(scale_factor: int = 5):
     start_coords_run1 = scale_coords([(830, 71), (843, 71)], scale_factor)
+    race_digit_box = (13 * scale_factor, 19 * scale_factor)
+    total_digit_box = (16 * scale_factor, 24 * scale_factor)
     red_pixels_run1 = {
-        "top_middle": {"x": 28, "y": 8, "width": 17, "height": 9},
-        "left_middle": {"x": 9, "y": 17, "width": 16, "height": 23},
-        "middle_middle": {"x": 32, "y": 21, "width": 9, "height": 18},
-        "right_middle": {"x": 51, "y": 17, "width": 15, "height": 23},
-        "left_bottom": {"x": 9, "y": 57, "width": 16, "height": 23},
-        "middle_bottom": {"x": 32, "y": 59, "width": 9, "height": 18},
-        "right_bottom": {"x": 51, "y": 57, "width": 16, "height": 23},
-        "middle_bottom_edge": {"x": 28, "y": 82, "width": 17, "height": 9},
-        "center": {"x": 24, "y": 44, "width": 25, "height": 9},
+        label: {key: int(value) for key, value in box.items()}
+        for label, box in CANONICAL_SEVEN_SEGMENT_BOXES.items()
     }
     start_coords_run2 = scale_coords([(916, 66), (933, 66), (950, 66)], scale_factor)
-    red_pixels_run2 = scale_pixel_positions(
-        {
-            "top_middle": (8, 2), "left_middle": (2, 7), "middle_middle": (8, 7),
-            "right_middle": (13, 7), "left_bottom": (2, 16), "middle_bottom": (8, 16),
-            "right_bottom": (13, 16), "middle_bottom_edge": (8, 21), "center": (8, 11),
-        },
-        scale_factor,
+    red_pixels_run2 = _scale_segment_boxes(
+        CANONICAL_SEVEN_SEGMENT_BOXES,
+        source_box_width=race_digit_box[0],
+        source_box_height=race_digit_box[1],
+        target_box_width=total_digit_box[0],
+        target_box_height=total_digit_box[1],
     )
     return {
-        "race_points": (start_coords_run1, 52 * scale_factor, (13 * scale_factor, 19 * scale_factor), red_pixels_run1, 12, 2),
-        "total_points": (start_coords_run2, 52 * scale_factor, (16 * scale_factor, 24 * scale_factor), red_pixels_run2, 12, 3),
+        "race_points": (start_coords_run1, 52 * scale_factor, race_digit_box, red_pixels_run1, 12, 2),
+        "total_points": (start_coords_run2, 52 * scale_factor, total_digit_box, red_pixels_run2, 12, 3),
     }
 
 
@@ -1325,6 +1408,7 @@ def extract_scoreboard_observation(
     frame_image: np.ndarray,
     extract_player_names_batched,
     annotate_path: str | None = None,
+    annotation_prefix: str = "",
     video_context: str | None = None,
 ) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
@@ -1351,11 +1435,23 @@ def extract_scoreboard_observation(
     layout = score_digit_layout(scale_factor)
 
     stage_start = time.perf_counter()
-    race_points, race_point_sources = detect_digits_in_image(scaled_image, *layout["race_points"], valid_min=1, valid_max=15)
+    race_points, race_point_sources = detect_digits_in_image(
+        scaled_image,
+        *layout["race_points"],
+        valid_min=1,
+        valid_max=15,
+        annotation_prefix=f"{annotation_prefix}RP",
+    )
     record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
-    total_points, total_point_sources = detect_digits_in_image(scaled_image, *layout["total_points"], valid_min=0, valid_max=999)
+    total_points, total_point_sources = detect_digits_in_image(
+        scaled_image,
+        *layout["total_points"],
+        valid_min=0,
+        valid_max=999,
+        annotation_prefix=f"{annotation_prefix}TP",
+    )
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -1363,7 +1459,7 @@ def extract_scoreboard_observation(
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
     record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
-        scaled_image_resized.save(annotate_path)
+        scaled_image.save(annotate_path)
 
     stage_start = time.perf_counter()
     names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
@@ -1815,6 +1911,7 @@ def select_race_score_recovery(
 
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
+                                total_annotate_path: str | None = None,
                                 video_context: str | None = None, is_low_res: bool = False) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
     if not frames:
@@ -1828,6 +1925,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 frame,
                 extract_player_names_batched,
                 annotate_path if index == len(frames) // 2 else None,
+                annotation_prefix="RS-",
                 video_context=video_context,
             )
         )
@@ -1838,7 +1936,13 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     )
     for frame in total_frames_for_observation:
         total_observations.append(
-            extract_scoreboard_observation(frame, extract_player_names_batched, video_context=video_context)
+            extract_scoreboard_observation(
+                frame,
+                extract_player_names_batched,
+                total_annotate_path if len(total_observations) == len(total_frames_for_observation) // 2 else None,
+                annotation_prefix="TS-",
+                video_context=video_context,
+            )
         )
     if not total_observations:
         total_observations = score_observations

@@ -272,6 +272,13 @@ Current digit-read strategy:
 - OCR fallback is only used when the recognized digits contain a real gap inside the digit block or the parsed value is invalid
 - normal left or right padding in a digit row no longer triggers OCR fallback by itself
 - this applies to `DetectedRacePoints`, `DetectedOldTotalScore`, and `DetectedNewTotalScore`
+- `DetectedRacePoints` and `DetectedOldTotalScore` use the canonical explicit segment layout directly
+- `DetectedNewTotalScore` / `DetectedTotalScore` now uses the same canonical layout scaled into the larger TotalScore digit box
+- optional annotated score-frame debug output saves both the center `2RaceScore` frame and the center `3TotalScore` frame as 5x images with:
+  - cyan row boxes
+  - yellow digit boxes
+  - green/red segment boxes for on/off
+  - the detected digit in the top-left corner of each digit box
 
 Current `RacePoints` runtime segment settings:
 - `white_threshold = 180`
