@@ -20,7 +20,14 @@ from .app_runtime import configure_tesseract, load_app_config
 from .extract_common import build_video_identity
 from .console_logging import LOGGER
 from .ocr_export import build_completion_payload
-from .ocr_name_matching import preprocess_name, standardize_player_names, weighted_similarity
+from .ocr_name_matching import (
+    append_identity_relink_review_notes,
+    compact_identity_labels,
+    preprocess_name,
+    reconcile_connection_reset_identities,
+    standardize_player_names,
+    weighted_similarity,
+)
 from .ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .ocr_scoreboard_consensus import (
@@ -770,6 +777,11 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
 
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
+    df = reconcile_connection_reset_identities(df)
+    df = compact_identity_labels(df)
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
+    df = append_identity_relink_review_notes(df)
 
     completion_payload = build_completion_payload(
         df,
@@ -797,11 +809,19 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
 def main() -> None:
     parser = argparse.ArgumentParser(description="OCR Mario Kart 8 extracted frames")
     parser.add_argument("--video", help="Process only a specific video filename or race class stem")
+    parser.add_argument(
+        "--race-class",
+        dest="race_classes",
+        action="append",
+        help="Process only a specific race class identifier; may be supplied multiple times",
+    )
     args = parser.parse_args()
     configure_tesseract(pytesseract, APP_CONFIG)
 
     folder_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
-    selected_race_classes = [Path(args.video).stem] if args.video else None
+    selected_race_classes = list(args.race_classes or [])
+    if args.video:
+        selected_race_classes.append(Path(args.video).stem)
     process_images_in_folder(folder_path, selected_race_classes=selected_race_classes)
 
 

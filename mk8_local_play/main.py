@@ -327,17 +327,33 @@ def run_extract(selected_video: str | None = None, *, include_subfolders: bool =
     run_python_module(EXTRACT_MODULE, extra_args=extra_args)
 
 
-def run_ocr(selected_video: str | None = None, *, include_subfolders: bool = False) -> None:
+def run_ocr(
+    selected_video: str | None = None,
+    *,
+    include_subfolders: bool = False,
+    selection_mode: bool = False,
+) -> None:
     ensure_runtime_or_raise(require_tesseract=True)
     extra_args = []
-    if selected_video:
+    if selection_mode:
+        video_files = selected_input_video_files(
+            selected_video=selected_video,
+            include_subfolders=include_subfolders,
+        )
+        if not video_files:
+            target = selected_video or "Input_Videos"
+            raise RuntimeError(f"No supported videos found for selection: {target}")
+        for race_class in selected_race_classes_for_videos(
+            video_files,
+            include_subfolders=include_subfolders,
+        ):
+            extra_args.extend(["--race-class", race_class])
+    elif selected_video:
         selected_identifier = (
             build_video_identity(Path(selected_video), include_subfolders=True)
             if include_subfolders else Path(selected_video).stem
         )
         extra_args.extend(["--video", selected_identifier])
-    if include_subfolders:
-        extra_args.append("--subfolders")
     run_python_module(OCR_MODULE, extra_args=extra_args)
 
 
@@ -1184,7 +1200,11 @@ def main() -> int:
         run_extract(selected_video=args.video, include_subfolders=args.subfolders)
         return 0
     if args.ocr:
-        run_ocr(selected_video=args.video, include_subfolders=args.subfolders)
+        run_ocr(
+            selected_video=args.video,
+            include_subfolders=args.subfolders,
+            selection_mode=args.selection,
+        )
         return 0
     if args.all:
         if args.profile:

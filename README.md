@@ -351,6 +351,17 @@ What it does:
 What it does not do:
 - it does not extract frames from videos first
 
+Run OCR/export only, but scoped like `--selection`:
+
+PowerShell Command:
+--------------
+.\.venv\Scripts\mk8-local-play.exe --selection --ocr
+--------------
+
+What it does:
+- runs OCR only for the video classes currently selected in `Input_Videos`
+- ignores unrelated historical frame groups from other videos
+
 Run one video only with scoped OCR:
 
 PowerShell Command:

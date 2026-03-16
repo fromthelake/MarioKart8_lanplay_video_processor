@@ -39,3 +39,4 @@ benchmarks/baselines/local/
 benchmarks/baselines/*_current/
 benchmarks/baselines/*_baseline/
 !benchmarks/baselines/.gitkeep
+MK8DX_LAN_Tournament_Seating/

@@ -40,6 +40,7 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "FixPlayerName": "Standardized Player",
     "IdentityLabel": "Identity Label",
     "IdentityResolutionMethod": "Identity Resolution Method",
+    "IdentityRelinkDetected": "Identity Relink Detected",
     "IsLowRes": "Is Low Res",
     "Character": "Character",
     "CharacterIndex": "Character Index",
@@ -157,12 +158,20 @@ def build_final_standings_df(df):
         {
             "VideoName": final_rows["RaceClass"],
             "Races": final_rows["Races"],
-            "Position": final_rows["PositionAfterRace"],
             "PlayerName": final_rows["FixPlayerName"],
             "TotalPoints": final_rows["NewTotalScore"],
             "Character": final_rows["Character"],
         }
     )
+
+    standings_df["Position"] = (
+        standings_df.groupby("VideoName", sort=False)["TotalPoints"]
+        .rank(method="min", ascending=False)
+        .astype("Int64")
+    )
+    standings_df = standings_df[
+        ["VideoName", "Races", "Position", "PlayerName", "TotalPoints", "Character"]
+    ]
 
     numeric_columns = ["Races", "Position", "TotalPoints"]
     for column_name in numeric_columns:

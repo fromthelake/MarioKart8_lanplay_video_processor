@@ -235,3 +235,159 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
             _write_identity_debug_excel(output_folder, race_class, identity_debug_rows)
 
     return pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
+
+
+def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge one post-reset identity back to one pre-reset identity when a cluster stays intact.
+
+    Assumption:
+    - one video contains one stable player cluster
+    - at most one player changes displayed identity after a connection reset
+    """
+    if df.empty:
+        return df.copy()
+
+    merged_df = df.copy()
+    if "IdentityRelinkDetected" not in merged_df.columns:
+        merged_df["IdentityRelinkDetected"] = False
+    if "IdentityRelinkSummary" not in merged_df.columns:
+        merged_df["IdentityRelinkSummary"] = ""
+    if "IdentityRelinkNote" not in merged_df.columns:
+        merged_df["IdentityRelinkNote"] = ""
+
+    for race_class, race_group in merged_df.groupby("RaceClass", sort=False):
+        race_group = race_group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable")
+        expected_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
+        unique_players = set(str(value) for value in race_group["FixPlayerName"].dropna().unique())
+        if len(unique_players) <= expected_players:
+            continue
+
+        reset_races = sorted(race_group.loc[race_group["SessionResetDetected"], "RaceIDNumber"].unique())
+        if not reset_races:
+            continue
+        reset_start_race = int(reset_races[0])
+
+        before_reset = race_group.loc[race_group["RaceIDNumber"] < reset_start_race]
+        after_reset = race_group.loc[race_group["RaceIDNumber"] >= reset_start_race]
+        if before_reset.empty or after_reset.empty:
+            continue
+
+        before_players = set(str(value) for value in before_reset["FixPlayerName"].dropna().unique())
+        after_players = set(str(value) for value in after_reset["FixPlayerName"].dropna().unique())
+        disappeared_players = before_players - after_players
+        appeared_players = after_players - before_players
+        if len(disappeared_players) != 1 or len(appeared_players) != 1:
+            continue
+
+        prior_identity = next(iter(disappeared_players))
+        new_identity = next(iter(appeared_players))
+
+        prior_last_race = int(
+            race_group.loc[race_group["FixPlayerName"] == prior_identity, "RaceIDNumber"].max()
+        )
+        new_first_race = int(
+            race_group.loc[race_group["FixPlayerName"] == new_identity, "RaceIDNumber"].min()
+        )
+        if prior_last_race != reset_start_race - 1 or new_first_race != reset_start_race:
+            continue
+
+        prior_rows = race_group.loc[race_group["FixPlayerName"] == prior_identity]
+        new_rows = race_group.loc[race_group["FixPlayerName"] == new_identity]
+        prior_raw_name = choose_canonical_name(prior_rows["PlayerName"].tolist()) or prior_identity
+        new_raw_name = choose_canonical_name(new_rows["PlayerName"].tolist()) or new_identity
+        note = (
+            f'Identity relinked after connection reset: matched post-reset player "{new_raw_name}" '
+            f'to earlier identity "{prior_identity}" (previous OCR name "{prior_raw_name}").'
+        )
+        summary = f'Connection reset name change: "{new_raw_name}" -> "{prior_identity}"'
+
+        merge_mask = (merged_df["RaceClass"] == race_class) & (merged_df["FixPlayerName"] == new_identity)
+        merged_df.loc[merge_mask, "FixPlayerName"] = prior_identity
+        merged_df.loc[merge_mask, "IdentityLabel"] = prior_identity
+        merged_df.loc[merge_mask, "IdentityRelinkDetected"] = True
+        merged_df.loc[merge_mask, "IdentityRelinkSummary"] = summary
+        merged_df.loc[merge_mask, "IdentityRelinkNote"] = note
+        merged_df.loc[merge_mask, "IdentityResolutionMethod"] = merged_df.loc[
+            merge_mask, "IdentityResolutionMethod"
+        ].map(
+            lambda value: (
+                f"{str(value).strip()}+connection_reset_relink"
+                if str(value).strip() else "connection_reset_relink"
+            )
+        )
+
+    return merged_df
+
+
+def compact_identity_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove stale numeric suffixes when only one identity remains for a base name."""
+    if df.empty:
+        return df.copy()
+
+    result = df.copy()
+    for race_class, race_group in result.groupby("RaceClass", sort=False):
+        labels = [str(value) for value in race_group["FixPlayerName"].dropna().unique()]
+        base_to_labels: dict[str, list[str]] = defaultdict(list)
+        for label in labels:
+            match = re.match(r"^(.*)_(\d+)$", label)
+            base_name = match.group(1) if match else label
+            base_to_labels[base_name].append(label)
+
+        rename_map: dict[str, str] = {}
+        for base_name, grouped_labels in base_to_labels.items():
+            grouped_labels = sorted(set(grouped_labels))
+            if len(grouped_labels) == 1:
+                only_label = grouped_labels[0]
+                if only_label != base_name:
+                    rename_map[only_label] = base_name
+
+        if not rename_map:
+            continue
+
+        race_mask = result["RaceClass"] == race_class
+        result.loc[race_mask, "FixPlayerName"] = result.loc[race_mask, "FixPlayerName"].map(
+            lambda value: rename_map.get(str(value), value)
+        )
+        result.loc[race_mask, "IdentityLabel"] = result.loc[race_mask, "IdentityLabel"].map(
+            lambda value: rename_map.get(str(value), value)
+        )
+        if "IdentityRelinkNote" in result.columns:
+            result.loc[race_mask, "IdentityRelinkNote"] = result.loc[race_mask, "IdentityRelinkNote"].map(
+                lambda value: (
+                    str(value).replace('"Bonno_2"', '"Bonno"').replace('identity "Bonno_2"', 'identity "Bonno"')
+                    if pd.notna(value) else value
+                )
+            )
+        if "IdentityRelinkSummary" in result.columns:
+            result.loc[race_mask, "IdentityRelinkSummary"] = result.loc[race_mask, "IdentityRelinkSummary"].map(
+                lambda value: (
+                    str(value).replace('"Bonno_2"', '"Bonno"').replace('-> Bonno_2', '-> Bonno')
+                    if pd.notna(value) else value
+                )
+            )
+
+    return result
+
+
+def append_identity_relink_review_notes(df: pd.DataFrame) -> pd.DataFrame:
+    """Make relinked identities visible in exported review columns."""
+    if df.empty or "IdentityRelinkDetected" not in df.columns or "IdentityRelinkNote" not in df.columns:
+        return df
+
+    result = df.copy()
+    relink_mask = result["IdentityRelinkDetected"].fillna(False).astype(bool)
+    if not relink_mask.any():
+        return result
+
+    for index in result.index[relink_mask]:
+        note = str(result.at[index, "IdentityRelinkNote"] or "").strip()
+        if not note:
+            continue
+        existing_reason = str(result.at[index, "ReviewReason"] or "").strip()
+        if existing_reason and existing_reason.lower() != "nan":
+            if note not in existing_reason:
+                result.at[index, "ReviewReason"] = f"{existing_reason} | {note}"
+        else:
+            result.at[index, "ReviewReason"] = note
+        result.at[index, "ReviewNeeded"] = True
+    return result
