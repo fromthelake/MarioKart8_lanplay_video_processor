@@ -135,7 +135,7 @@ Current constants:
 - LAN 2 scoreboard points ROI: `(290, 32, 102, 660)`
 - LAN 1 scoreboard points ROI: `(540, 32, 102, 660)`
 - LAN 2 12th-place validation ROI: `(313, 632, 651, 88)`
-- LAN 1 12th-place validation ROI: `(563, 632, 651, 88)`
+- LAN 1 12th-place validation ROI: `(313, 632, 651, 88)`
 
 These are used by:
 - [extract_score_screen_selection.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_score_screen_selection.py)
