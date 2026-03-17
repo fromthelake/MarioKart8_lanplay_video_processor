@@ -32,10 +32,13 @@ from .ocr_common import find_metadata_entry, load_consensus_frames, load_exporte
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .ocr_scoreboard_consensus import (
     TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
+    best_character_matches,
     build_consensus_observation,
     build_race_warning_messages,
+    character_row_roi,
     character_shortlist_summary_lines,
     exact_total_score_fallback,
+    load_character_templates,
     observation_stage_summary_lines,
     parse_detected_int,
     reset_character_shortlist_state,
@@ -43,6 +46,7 @@ from .ocr_scoreboard_consensus import (
 )
 from .ocr_session_validation import apply_session_validation
 from .project_paths import PROJECT_ROOT
+from .score_layouts import score_layout_id_from_filename
 from .track_metadata import load_track_tuples
 
 POSITION_TEMPLATE_COEFF_COLUMNS = [f"PositionTemplate{template_index:02}_Coeff" for template_index in range(1, 13)]
@@ -467,6 +471,126 @@ def get_cup_name(track_name: str, track_list: List[Tuple[int, str, str, int, str
             return track[4]
     return ""
 
+
+MII_FALLBACK_MAX_CONFIDENCE = 78.0
+MII_FALLBACK_MAX_MARGIN = 1.0
+MII_FALLBACK_MIN_SUSPECT_RACES = 3
+MII_FALLBACK_MIN_DISTINCT_WINNERS = 2
+MII_FALLBACK_REVIEW_REASON = "mii_fallback_unstable_character_match"
+MII_CHARACTER_NAME = "Mii"
+MII_CHARACTER_INDEX = 80
+MII_CHARACTER_METHOD = "mii_fallback_unstable_non_mii_matches"
+
+
+def _append_review_reason(existing: object, reason: str) -> str:
+    tokens = []
+    for token in str(existing or "").split(";"):
+        normalized = token.strip()
+        if normalized and normalized.lower() != "nan":
+            tokens.append(normalized)
+    if reason not in tokens:
+        tokens.append(reason)
+    return ";".join(tokens)
+
+
+def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
+    """Attach raw best-match and top-2 margin metrics from the saved RaceScore frames."""
+    if df.empty:
+        return df
+
+    df = df.copy()
+    if "CharacterMatchRawBest" not in df.columns:
+        df["CharacterMatchRawBest"] = np.nan
+    if "CharacterMatchRawMargin" not in df.columns:
+        df["CharacterMatchRawMargin"] = np.nan
+
+    templates = load_character_templates()
+    if not templates:
+        return df
+
+    frame_cache: dict[tuple[str, int], tuple[np.ndarray | None, str]] = {}
+    frames_root = Path(frames_folder)
+    for row_index, row in df.iterrows():
+        race_class = str(row.get("RaceClass", "") or "")
+        race_id = int(row.get("RaceIDNumber", 0) or 0)
+        position = int(row.get("RacePosition", 0) or 0)
+        if not race_class or race_id <= 0 or position <= 0:
+            continue
+        cache_key = (race_class, race_id)
+        if cache_key not in frame_cache:
+            frame_candidates = sorted(frames_root.glob(f"{race_class}+Race_{race_id:03}+2RaceScore+*.png"))
+            if not frame_candidates:
+                legacy_path = frames_root / f"{race_class}+Race_{race_id:03}+2RaceScore.png"
+                frame_candidates = [legacy_path] if legacy_path.exists() else []
+            if not frame_candidates:
+                frame_cache[cache_key] = (None, "")
+            else:
+                frame_path = frame_candidates[0]
+                frame_cache[cache_key] = (cv2.imread(str(frame_path), cv2.IMREAD_COLOR), score_layout_id_from_filename(frame_path))
+        frame_image, score_layout_id = frame_cache[cache_key]
+        if frame_image is None:
+            continue
+        (x1, y1), (x2, y2) = character_row_roi(position - 1, score_layout_id=score_layout_id)
+        row_roi = frame_image[y1:y2, x1:x2]
+        if row_roi.size == 0:
+            continue
+        matches = best_character_matches(row_roi, templates, limit=2)
+        if not matches:
+            continue
+        best_confidence = float(matches[0].get("CharacterMatchConfidence", 0.0))
+        second_confidence = float(matches[1].get("CharacterMatchConfidence", 0.0)) if len(matches) > 1 else 0.0
+        df.at[row_index, "CharacterMatchRawBest"] = round(best_confidence, 1)
+        df.at[row_index, "CharacterMatchRawMargin"] = round(best_confidence - second_confidence, 1)
+    return df
+
+
+def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace persistently unstable low-confidence character matches with Mii."""
+    if df.empty or "FixPlayerName" not in df.columns:
+        return df
+
+    df = df.copy()
+    for (race_class, player_name), player_rows in df.groupby(["RaceClass", "FixPlayerName"], sort=False):
+        if not player_name or str(player_name).startswith("PlayerNameMissing_"):
+            continue
+
+        suspect_indices = []
+        distinct_winners = set()
+        for row_index, row in player_rows.iterrows():
+            try:
+                confidence = float(row.get("CharacterMatchRawBest", row.get("CharacterMatchConfidence", 0.0)) or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            try:
+                margin = float(row.get("CharacterMatchRawMargin", np.nan))
+            except (TypeError, ValueError):
+                margin = np.nan
+            suspect = confidence <= MII_FALLBACK_MAX_CONFIDENCE and not pd.isna(margin) and margin <= MII_FALLBACK_MAX_MARGIN
+
+            if suspect:
+                suspect_indices.append(row_index)
+                winner = str(row.get("Character", "") or "").strip()
+                if winner and winner != MII_CHARACTER_NAME:
+                    distinct_winners.add(winner)
+
+        if len(suspect_indices) < MII_FALLBACK_MIN_SUSPECT_RACES:
+            continue
+        if len(distinct_winners) < MII_FALLBACK_MIN_DISTINCT_WINNERS:
+            continue
+
+        for row_index in player_rows.index:
+            existing_method = str(df.at[row_index, "CharacterMatchMethod"] or "").strip()
+            df.at[row_index, "Character"] = MII_CHARACTER_NAME
+            df.at[row_index, "CharacterIndex"] = MII_CHARACTER_INDEX
+            df.at[row_index, "CharacterMatchMethod"] = (
+                f"{existing_method}+{MII_CHARACTER_METHOD}" if existing_method else MII_CHARACTER_METHOD
+            )
+            df.at[row_index, "ReviewReason"] = _append_review_reason(
+                df.at[row_index, "ReviewReason"],
+                MII_FALLBACK_REVIEW_REASON,
+            )
+    return df
+
 def process_race_group(grouped_item, text_detected_folder, metadata_index, input_videos_folder, in_memory_frame_bundles=None):
     """Process a single race group and return extracted rows."""
     race_start_time = time.perf_counter()
@@ -499,6 +623,10 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 
     race_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "RaceScore")
     total_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "TotalScore") if total_score_image else None
+    score_layout_id = (
+        str((race_metadata or {}).get("score_layout_id", "")).strip()
+        or score_layout_id_from_filename(race_score_image)
+    )
 
     source_video_width, source_video_height, is_low_res = resolve_low_res_metadata(race_metadata, input_videos_folder, race_class)
 
@@ -535,6 +663,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         total_annotate_path,
         video_context=race_class,
         is_low_res=is_low_res,
+        score_layout_id=score_layout_id,
     )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
@@ -779,6 +908,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
             )
     df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
+    df = annotate_raw_character_match_metrics(df, frames_folder)
+    df = apply_mii_character_fallback(df)
 
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = reconcile_connection_reset_identities(df)

@@ -14,6 +14,7 @@ from .ocr_scoreboard_consensus import (
     process_image,
 )
 from .project_paths import PROJECT_ROOT
+from .score_layouts import build_score_frame_filename, draw_score_layout_demo, get_score_layout, score_demo_output_path
 
 
 def enhance_export_frame(upscaled_image, scale_x, scale_y):
@@ -47,8 +48,8 @@ def fps_scaled_frames(base_frames_30fps, fps):
 RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS = 1
 
 
-def _position_metrics_for_frame(frame_image):
-    processed_image = process_image(frame_image)
+def _position_metrics_for_frame(frame_image, score_layout_id=None):
+    processed_image = process_image(frame_image, score_layout_id=score_layout_id)
     return build_position_signal_metrics(processed_image)
 
 
@@ -91,11 +92,12 @@ def _row_has_expected_template(position_metrics, row_number, min_score=0.4):
     )
 
 
-def count_visible_position_rows(frame_image):
-    return _count_visible_rows_from_position_metrics(_position_metrics_for_frame(frame_image))
+def count_visible_position_rows(frame_image, score_layout_id=None):
+    return _count_visible_rows_from_position_metrics(_position_metrics_for_frame(frame_image, score_layout_id=score_layout_id))
 
 
 def refine_race_score_result_for_expected_players(result, expected_players):
+    score_layout_id = result.get("candidate", {}).get("score_layout_id")
     race_score_image = result.get('race_score_image')
     if race_score_image is None:
         return result
@@ -103,7 +105,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
     candidate = result.get('candidate', {})
     fps = float(candidate.get('fps', 0) or 0)
     race_number = int(candidate.get('race_number', 0) or 0)
-    position_metrics = _position_metrics_for_frame(race_score_image)
+    position_metrics = _position_metrics_for_frame(race_score_image, score_layout_id=score_layout_id)
     visible_rows = _count_visible_rows_from_position_metrics(position_metrics)
     row11_present = _row_has_expected_template(position_metrics, 11, POSITION_PRESENT_COEFF_THRESHOLD)
     row12_present = _row_has_expected_template(position_metrics, 12, POSITION_PRESENT_COEFF_THRESHOLD)
@@ -142,7 +144,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
             )
             if actual_frame is None or refined_image is None:
                 continue
-            refined_metrics = _position_metrics_for_frame(refined_image)
+            refined_metrics = _position_metrics_for_frame(refined_image, score_layout_id=score_layout_id)
             if not _row_has_expected_template(refined_metrics, 12, POSITION_PRESENT_COEFF_THRESHOLD):
                 continue
             final_frame = candidate_frame + fps_scaled_frames(RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS, fps)
@@ -172,7 +174,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
     return result
 
 
-def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_roi, frame_to_timecode):
+def analyze_score_window_task(task, frame_to_timecode):
     """Analyze one score candidate window and decide which frames to export."""
     video_path = task["video_path"]
     frame_number = task["frame_number"]
@@ -184,6 +186,7 @@ def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_r
     crop_height = task["crop_height"]
     scale_x = task["scale_x"]
     scale_y = task["scale_y"]
+    score_layout = get_score_layout(task.get("score_layout_id"))
 
     start_frame = frame_number - int(3 * fps)
     end_frame = frame_number + int(13 * fps)
@@ -218,7 +221,7 @@ def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_r
         stats["score_detail_grayscale_s"] += grayscale_time
 
         stage_start = time.perf_counter()
-        roi_x, roi_y, roi_width, roi_height = scoreboard_points_roi
+        roi_x, roi_y, roi_width, roi_height = score_layout.scoreboard_points_roi
         roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
         add_timing(stats, "score_detail_score_roi_extract_s", stage_start)
 
@@ -250,7 +253,7 @@ def analyze_score_window_task(task, scoreboard_points_roi, twelfth_place_check_r
 
         if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
             stage_start = time.perf_counter()
-            roi_x2, roi_y2, roi_width2, roi_height2 = twelfth_place_check_roi
+            roi_x2, roi_y2, roi_width2, roi_height2 = score_layout.twelfth_place_check_roi
             roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
             add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
 
@@ -337,32 +340,46 @@ def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop
 
 def save_score_frames(video_path, video_label, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
                       actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
-                      total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None):
+                      total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None,
+                      score_layout_id=None):
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
     output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     os.makedirs(output_folder, exist_ok=True)
+    score_layout = get_score_layout(score_layout_id)
     frame_filename = os.path.join(
         output_folder,
-        f"{video_label}+Race_{race_number:03}+2RaceScore.png"
+        build_score_frame_filename(video_label, race_number, "2RaceScore", score_layout.layout_id)
     )
     cv2.imwrite(frame_filename, race_score_image)
+    draw_score_layout_demo(
+        race_score_image,
+        score_layout.layout_id,
+        "2RaceScore",
+        score_demo_output_path(video_label, race_number, "2RaceScore", score_layout.layout_id),
+    )
     video_stem = video_label
     if race_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = list(race_consensus_frames)
     log_exported_frame(
-        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path
+        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path, score_layout_id=score_layout.layout_id
     )
 
     frame_filename = os.path.join(
         output_folder,
-        f"{video_label}+Race_{race_number:03}+3TotalScore.png"
+        build_score_frame_filename(video_label, race_number, "3TotalScore", score_layout.layout_id)
     )
     cv2.imwrite(frame_filename, total_score_image)
+    draw_score_layout_demo(
+        total_score_image,
+        score_layout.layout_id,
+        "3TotalScore",
+        score_demo_output_path(video_label, race_number, "3TotalScore", score_layout.layout_id),
+    )
     if total_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = list(total_consensus_frames)
     log_exported_frame(
-        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path
+        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path, score_layout_id=score_layout.layout_id
     )
     return True

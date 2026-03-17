@@ -103,7 +103,20 @@ def actual_frame_after_read(capture):
     return max(0, int(capture.get(1)) - 1)
 
 
-def log_exported_frame(metadata_writer, video_path, race_number, kind, requested_frame, actual_frame, fps, frame_to_timecode, *, video_label=None, video_source_path=None):
+def log_exported_frame(
+    metadata_writer,
+    video_path,
+    race_number,
+    kind,
+    requested_frame,
+    actual_frame,
+    fps,
+    frame_to_timecode,
+    *,
+    video_label=None,
+    video_source_path=None,
+    score_layout_id="",
+):
     """Record requested and actual decoded frames for each exported screenshot."""
     if metadata_writer is None:
         return
@@ -116,6 +129,7 @@ def log_exported_frame(metadata_writer, video_path, race_number, kind, requested
             frame_to_timecode(requested_frame, fps),
             int(actual_frame),
             frame_to_timecode(actual_frame, fps),
+            str(score_layout_id or ""),
         ]
     )
 

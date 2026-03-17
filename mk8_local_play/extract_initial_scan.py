@@ -12,6 +12,7 @@ import numpy as np
 from .console_logging import LOGGER
 from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, build_video_identity, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi, relative_video_path
 from .project_paths import PROJECT_ROOT
+from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, all_score_layouts
 from . import extract_video_io as video_io
 
 
@@ -38,6 +39,47 @@ INITIAL_SCAN_TARGETS = (
         "roi": (640, 590, 144, 48),
     },
 )
+
+
+def _match_score_target_layouts(gray_image, templates, stats):
+    """Evaluate the score anchor against both supported score layouts."""
+    template_binary, alpha_mask = templates[0]
+    best_match = {
+        "max_val": 0.0,
+        "layout_id": DEFAULT_SCORE_LAYOUT_ID,
+        "rejected_as_blank": False,
+    }
+    for layout in all_score_layouts():
+        roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, layout.score_anchor_roi)
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+
+        stage_start = time.perf_counter()
+        processed_roi = preprocess_roi(roi, 0)
+        video_io.add_timing(stats, "initial_roi_preprocess_s", stage_start)
+
+        black_pixel_percentage = np.mean(processed_roi == 0)
+        if black_pixel_percentage >= 0.97:
+            if not best_match["rejected_as_blank"]:
+                best_match["rejected_as_blank"] = True
+            continue
+
+        if processed_roi.shape[0] < template_binary.shape[0] or processed_roi.shape[1] < template_binary.shape[1]:
+            processed_roi = cv2.resize(
+                processed_roi,
+                (max(template_binary.shape[1], processed_roi.shape[1]), max(template_binary.shape[0], processed_roi.shape[0])),
+                interpolation=cv2.INTER_LINEAR,
+            )
+
+        stage_start = time.perf_counter()
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        video_io.add_timing(stats, "initial_match_s", stage_start)
+        if max_val > best_match["max_val"]:
+            best_match = {
+                "max_val": float(max_val),
+                "layout_id": layout.layout_id,
+                "rejected_as_blank": False,
+            }
+    return best_match["max_val"], bool(best_match["rejected_as_blank"]), str(best_match["layout_id"])
 
 
 def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False):
@@ -103,7 +145,11 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
     video_io.add_timing(stats, "initial_frame_prepare_s", stage_start)
 
     for target in INITIAL_SCAN_TARGETS:
-        max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
+        if target["kind"] == "score":
+            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(gray_image, templates, stats)
+        else:
+            max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
+            score_layout_id = ""
         timecode = frame_to_timecode(frame_number, fps)
         if rejected_as_blank:
             csv_writer.writerow([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0, timecode])
@@ -120,7 +166,8 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 {
                     "race_number": runtime_state["next_race_number"],
                     "frame_number": frame_number,
-                }
+                    "score_layout_id": score_layout_id or DEFAULT_SCORE_LAYOUT_ID,
+                    }
             )
             runtime_state["next_race_number"] += 1
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
@@ -204,7 +251,11 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
     stats["initial_frame_prepare_s"] += time.perf_counter() - process_frame_start
 
     for target in INITIAL_SCAN_TARGETS:
-        max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
+        if target["kind"] == "score":
+            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(gray_image, templates, stats)
+        else:
+            max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
+            score_layout_id = ""
         timecode = frame_to_timecode(frame_number, fps) if emit_results else ""
         if emit_results:
             debug_rows.append([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0 if rejected_as_blank else max_val, timecode])
@@ -219,7 +270,13 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
 
         if target["kind"] == "score":
             if emit_results:
-                state["score_detections"].append({"frame_number": frame_number, "confidence": max_val})
+                state["score_detections"].append(
+                    {
+                        "frame_number": frame_number,
+                        "confidence": max_val,
+                        "score_layout_id": score_layout_id or DEFAULT_SCORE_LAYOUT_ID,
+                    }
+                )
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
 

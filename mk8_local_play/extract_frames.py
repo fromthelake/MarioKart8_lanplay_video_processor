@@ -42,10 +42,6 @@ INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
 INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS = 10.0
 INITIAL_SCAN_FFPROBE_COUNTFRAME_MIN_DELTA_FRAMES = 30
 
-# Score-screen selection always runs on the fixed 1280x720 working image, so these
-# ROIs can stay as constants instead of being rebuilt for every frame.
-SCOREBOARD_POINTS_ROI = (290, 32, 102, 660)
-TWELFTH_PLACE_CHECK_ROI = (313, 632, 651, 88)
 CONSENSUS_FRAME_CACHE = {}
 
 
@@ -208,6 +204,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             "crop_width": crop_width,
             "crop_height": crop_height,
             "ocr_consensus_frames": APP_CONFIG.ocr_consensus_frames,
+            "score_layout_id": candidate.get("score_layout_id"),
         }
         for candidate in score_candidates
     ]
@@ -224,8 +221,6 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         for completed_count, task in enumerate(tasks, start=1):
             result = score_screen_selection.analyze_score_window_task(
                 task,
-                SCOREBOARD_POINTS_ROI,
-                TWELFTH_PLACE_CHECK_ROI,
                 frame_to_timecode,
             )
             results.append(result)
@@ -245,8 +240,6 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 executor.submit(
                     score_screen_selection.analyze_score_window_task,
                     task,
-                    SCOREBOARD_POINTS_ROI,
-                    TWELFTH_PLACE_CHECK_ROI,
                     frame_to_timecode,
                 ): task
                 for task in tasks
@@ -294,10 +287,14 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             CONSENSUS_FRAME_CACHE,
             frame_to_timecode,
             video_source_path=video_source_path,
+            score_layout_id=result["candidate"].get("score_layout_id"),
         )
         total_score_image = result.get("total_score_image")
         if total_score_image is not None:
-            previous_total_score_players = score_screen_selection.count_visible_position_rows(total_score_image)
+            previous_total_score_players = score_screen_selection.count_visible_position_rows(
+                total_score_image,
+                result["candidate"].get("score_layout_id"),
+            )
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
 def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False):
@@ -372,7 +369,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
         metadata_context = open(metadata_output_path, mode='w', newline='')
         metadata_writer = MetadataCsvWriter(csv.writer(metadata_context, delimiter=';'))
         metadata_writer.writerow(
-            ["Video", "Race", "Kind", "Requested Frame", "Requested Timecode", "Actual Frame", "Actual Timecode"]
+            ["Video", "Race", "Kind", "Requested Frame", "Requested Timecode", "Actual Frame", "Actual Timecode", "Score Layout"]
         )
     else:
         csv_context = None

@@ -13,11 +13,11 @@ import pandas as pd
 from .app_runtime import load_app_config
 from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote
 from .ocr_scoreboard_consensus import (
-    PLAYER_NAME_COORDS,
     character_row_roi,
     load_character_templates,
     ultra_low_res_combined_row_roi,
 )
+from .score_layouts import get_score_layout, score_layout_id_from_filename
 
 LOW_RES_PLACEHOLDER_PREFIX = "PlayerNameMissing_"
 LOW_RES_NAME_ROW_HEIGHT = 45
@@ -46,20 +46,26 @@ def is_low_res_height(source_height: int | None, max_source_height: int) -> bool
 
 
 def race_score_image_path(frames_folder: str | Path, race_class: str, race_id: int) -> Path:
-    return Path(frames_folder) / f"{race_class}+Race_{race_id:03}+2RaceScore.png"
+    frames_root = Path(frames_folder)
+    exact_path = frames_root / f"{race_class}+Race_{race_id:03}+2RaceScore.png"
+    if exact_path.exists():
+        return exact_path
+    candidates = sorted(frames_root.glob(f"{race_class}+Race_{race_id:03}+2RaceScore+*.png"))
+    return candidates[0] if candidates else exact_path
 
 
 def _placeholder_name(index: int) -> str:
     return f"{LOW_RES_PLACEHOLDER_PREFIX}{index}"
 
 
-def _extract_name_roi(frame: np.ndarray, position: int) -> np.ndarray:
-    (x1, y1), (x2, _y2) = PLAYER_NAME_COORDS[position - 1]
+def _extract_name_roi(frame: np.ndarray, position: int, score_layout_id: str | None = None) -> np.ndarray:
+    player_name_coords = get_score_layout(score_layout_id).player_name_coords
+    (x1, y1), (x2, _y2) = player_name_coords[position - 1]
     return frame[y1:y1 + LOW_RES_NAME_ROW_HEIGHT, x1:x2].copy()
 
 
-def _extract_low_res_character_roi(frame: np.ndarray, position: int) -> np.ndarray:
-    (x1, y1), (_x2, _y2) = character_row_roi(position - 1)
+def _extract_low_res_character_roi(frame: np.ndarray, position: int, score_layout_id: str | None = None) -> np.ndarray:
+    (x1, y1), (_x2, _y2) = character_row_roi(position - 1, score_layout_id=score_layout_id)
     crop_x1 = max(0, x1 + LOW_RES_CHARACTER_ROI_LEFT_SHIFT)
     crop_y1 = max(0, y1 + LOW_RES_CHARACTER_ROI_TOP_SHIFT)
     crop_x2 = min(frame.shape[1], crop_x1 + LOW_RES_CHARACTER_TEMPLATE_WIDTH)
@@ -74,8 +80,8 @@ def _extract_low_res_character_roi(frame: np.ndarray, position: int) -> np.ndarr
     return crop
 
 
-def _extract_ultra_low_res_combined_roi(frame: np.ndarray, position: int) -> np.ndarray:
-    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(position - 1)
+def _extract_ultra_low_res_combined_roi(frame: np.ndarray, position: int, score_layout_id: str | None = None) -> np.ndarray:
+    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(position - 1, score_layout_id=score_layout_id)
     crop = frame[y1:y2, x1:x2].copy()
     if crop.size == 0:
         return crop
@@ -124,11 +130,13 @@ def _restore_missing_rows_via_ultra_low_res_blob_fallback(group: pd.DataFrame, f
     seed_race_id = min(race_ids, key=lambda race_id: (-visible_rows_by_race[race_id], race_id))
     if visible_rows_by_race.get(seed_race_id, 0) < expected_players:
         return group
-    seed_frame = cv2.imread(str(race_score_image_path(frames_folder, race_class, seed_race_id)), cv2.IMREAD_COLOR)
+    seed_frame_path = race_score_image_path(frames_folder, race_class, seed_race_id)
+    seed_frame = cv2.imread(str(seed_frame_path), cv2.IMREAD_COLOR)
     if seed_frame is None:
         return group
+    seed_layout_id = score_layout_id_from_filename(seed_frame_path)
     reference_blobs = [
-        _extract_ultra_low_res_combined_roi(seed_frame, position)
+        _extract_ultra_low_res_combined_roi(seed_frame, position, score_layout_id=seed_layout_id)
         for position in range(1, expected_players + 1)
     ]
 
@@ -143,10 +151,15 @@ def _restore_missing_rows_via_ultra_low_res_blob_fallback(group: pd.DataFrame, f
         total_score_players = int(race_rows['TotalScorePlayerCount'].iloc[0] or 0)
         if race_score_players >= expected_players or total_score_players < expected_players:
             continue
-        frame = cv2.imread(str(race_score_image_path(frames_folder, race_class, race_id)), cv2.IMREAD_COLOR)
+        frame_path = race_score_image_path(frames_folder, race_class, race_id)
+        frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
         if frame is None:
             continue
-        query_blob = _extract_ultra_low_res_combined_roi(frame, expected_players)
+        query_blob = _extract_ultra_low_res_combined_roi(
+            frame,
+            expected_players,
+            score_layout_id=score_layout_id_from_filename(frame_path),
+        )
         scores = [_compare_ultra_low_res_blob(reference_blob, query_blob) for reference_blob in reference_blobs]
         if not scores:
             continue
@@ -354,11 +367,11 @@ def _solve_max_assignment(score_matrix: np.ndarray) -> List[int]:
     return assignments
 
 
-def _full_search_low_res_characters(frame: np.ndarray, visible_rows: int) -> List[dict]:
+def _full_search_low_res_characters(frame: np.ndarray, visible_rows: int, score_layout_id: str | None = None) -> List[dict]:
     templates = [_resize_template_for_low_res(template) for template in load_character_templates()]
     matches: List[dict] = []
     for position in range(1, visible_rows + 1):
-        row_roi = _extract_low_res_character_roi(frame, position)
+        row_roi = _extract_low_res_character_roi(frame, position, score_layout_id=score_layout_id)
         scored_matches = []
         for template in templates:
             confidence = round(
@@ -383,7 +396,12 @@ def _full_search_low_res_characters(frame: np.ndarray, visible_rows: int) -> Lis
     return matches
 
 
-def _previous_race_shortlist_characters(frame: np.ndarray, previous_matches: List[dict], visible_rows: int) -> List[dict]:
+def _previous_race_shortlist_characters(
+    frame: np.ndarray,
+    previous_matches: List[dict],
+    visible_rows: int,
+    score_layout_id: str | None = None,
+) -> List[dict]:
     templates = [_resize_template_for_low_res(template) for template in load_character_templates()]
     templates_by_index = {int(template["character_index"]): template for template in templates}
     previous_slots = []
@@ -397,14 +415,14 @@ def _previous_race_shortlist_characters(frame: np.ndarray, previous_matches: Lis
         previous_slots.append(template)
 
     if not previous_slots or visible_rows > len(previous_slots):
-        return _full_search_low_res_characters(frame, visible_rows)
+        return _full_search_low_res_characters(frame, visible_rows, score_layout_id=score_layout_id)
 
     score_matrix = np.zeros((visible_rows, len(previous_slots)), dtype=np.float32)
     detail_scores: List[List[dict]] = [[{} for _ in range(len(previous_slots))] for _ in range(visible_rows)]
 
     for row_pos in range(visible_rows):
         position = row_pos + 1
-        row_roi = _extract_low_res_character_roi(frame, position)
+        row_roi = _extract_low_res_character_roi(frame, position, score_layout_id=score_layout_id)
         for slot_pos, template in enumerate(previous_slots):
             confidence = round(
                 _fixed_offset_character_match_score(
@@ -441,11 +459,17 @@ def _recompute_low_res_characters(group: pd.DataFrame, frames_folder: str | Path
         frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
         if frame is None:
             continue
+        score_layout_id = score_layout_id_from_filename(frame_path)
 
         if previous_matches is None:
-            current_matches = _full_search_low_res_characters(frame, visible_rows)
+            current_matches = _full_search_low_res_characters(frame, visible_rows, score_layout_id=score_layout_id)
         else:
-            current_matches = _previous_race_shortlist_characters(frame, previous_matches, visible_rows)
+            current_matches = _previous_race_shortlist_characters(
+                frame,
+                previous_matches,
+                visible_rows,
+                score_layout_id=score_layout_id,
+            )
 
         for row_index, match in zip(race_rows.index, current_matches):
             group.at[row_index, 'Character'] = match.get('Character', '')
@@ -610,12 +634,13 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
         frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
         if frame is None:
             continue
+        score_layout_id = score_layout_id_from_filename(frame_path)
 
         row_features = []
         row_indices = []
         for row_index, row in race_rows.iterrows():
             position = int(row['RacePosition'])
-            name_roi = _extract_name_roi(frame, position)
+            name_roi = _extract_name_roi(frame, position, score_layout_id=score_layout_id)
             row_features.append({
                 'position': position,
                 'name_binary': preprocess_low_res_name_roi(name_roi),

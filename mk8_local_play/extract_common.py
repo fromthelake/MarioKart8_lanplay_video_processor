@@ -161,8 +161,8 @@ def count_exported_detection_files(video_path_or_label):
     return {
         "track": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+0TrackName.png"))),
         "race": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+1RaceNumber.png"))),
-        "score": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+2RaceScore.png"))),
-        "total": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+3TotalScore.png"))),
+        "score": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+2RaceScore*.png"))),
+        "total": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+3TotalScore*.png"))),
     }
 
 

@@ -58,7 +58,8 @@ The initial scan target definitions live in:
 Current initial-scan ROIs on the normalized `1280x720` image:
 
 - score anchor:
-  - ROI: `(315, 57, 52, 610)`
+  - LAN 2 ROI: `(315, 57, 52, 610)`
+  - LAN 1 ROI: `(565, 57, 52, 610)`
   - threshold: `0.3`
   - skip after hit: `20s`
 - track-name anchor:
@@ -71,6 +72,11 @@ Current initial-scan ROIs on the normalized `1280x720` image:
   - skip after hit: `60s`
 
 The matcher expands each ROI slightly before template matching to tolerate small capture shifts.
+
+Current score-screen detection behavior:
+- the initial scan checks both supported score layouts on each score-target frame
+- the stronger passing match becomes the score candidate layout tag
+- track-name and race-number detection are unchanged
 
 ## 4. Corrupt-Video Preflight
 
@@ -126,8 +132,10 @@ Defined in:
 - [extract_frames.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_frames.py)
 
 Current constants:
-- scoreboard points ROI: `(290, 32, 102, 660)`
-- 12th-place validation ROI: `(313, 632, 651, 88)`
+- LAN 2 scoreboard points ROI: `(290, 32, 102, 660)`
+- LAN 1 scoreboard points ROI: `(540, 32, 102, 660)`
+- LAN 2 12th-place validation ROI: `(313, 632, 651, 88)`
+- LAN 1 12th-place validation ROI: `(563, 632, 651, 88)`
 
 These are used by:
 - [extract_score_screen_selection.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_score_screen_selection.py)
@@ -138,6 +146,7 @@ Current RaceScore selection behavior:
 - for races after race 1, if the previous TotalScore implies a 12-player field, the selector may walk a few frames later to find a valid 12th row before finalizing RaceScore
 - for race 1, that same late-frame search is only attempted when the fixed-offset RaceScore frame looks like a plausible 11-of-12 case
 - TotalScore timing itself is unchanged by this refinement
+- `12th_pos_template.png` remains the shared template asset; only the search ROI changes by score layout
 
 ## 7. OCR Regions
 
@@ -152,7 +161,8 @@ Defined in:
 - [ocr_scoreboard_consensus.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/ocr_scoreboard_consensus.py)
 
 Current player name row boxes:
-- x-range roughly `428..620`
+- LAN 2 x-range roughly `428..620`
+- LAN 1 x-range roughly `678..870`
 - 12 stacked rows from top to bottom
 
 ### Position strip
@@ -160,7 +170,8 @@ Defined in:
 - [ocr_scoreboard_consensus.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/ocr_scoreboard_consensus.py)
 
 Current base ROI:
-- `((315, 57), (367, 667))`
+- LAN 2: `((315, 57), (367, 667))`
+- LAN 1: `((565, 57), (617, 667))`
 
 This is refined using:
 - offset X/Y
@@ -187,7 +198,8 @@ Defined in:
 - [low_res_identity.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/low_res_identity.py)
 
 Current character icon settings:
-- left edge: `377`
+- LAN 2 left edge: `377`
+- LAN 1 left edge: `627`
 - template size: `48x48`
 - row step: `52`
 
@@ -199,6 +211,13 @@ Low-resolution identity fallback notes:
 - race 1 uses full character search; later races reuse the previous race as the shortlist basis
 - when a low-resolution race score screen falls to `11` rows but the video context still implies `12`, a combined `character + player-name` blob ROI can restore row 12 as a fallback
 - the low-resolution ROI/template tuning values and blob thresholds are runtime-configurable through `config/app_config.json`
+- the same LAN 1 vs LAN 2 score-layout selection also applies to the low-res and ultra-low-res score-row geometry
+
+Current score digit origins:
+- LAN 2 race points start: `[(830, 71), (843, 71)]`
+- LAN 1 race points start: `[(1080, 71), (1093, 71)]`
+- LAN 2 total points start: `[(916, 66), (933, 66), (950, 66)]`
+- LAN 1 total points start: `[(1166, 66), (1183, 66), (1200, 66)]`
 
 ### Track name OCR
 Defined in:
@@ -266,6 +285,7 @@ This keeps extraction, OCR, profiling, and debug-export code paths working after
 Current score-screen bundle usage:
 - `RaceScore` loads `APP_CONFIG.ocr_consensus_frames` frames, currently `7`
 - `TotalScore` loads and uses `3` center frames
+- OCR reads the chosen score layout from exported frame metadata first and from the score-frame filename as fallback
 
 Current digit-read strategy:
 - the primary score reader is a fixed 7-segment-style pixel signature check
@@ -300,6 +320,8 @@ Low-resolution behavior:
 - low-res does not use OCR race points or OCR total scores
 - low-res computes race points from position/player count and rebuilds totals cumulatively
 - unresolved low-res identities remain `PlayerNameMissing_X`
+- after score OCR and identity standardization, a session-level Mii fallback can relabel a player to `Mii` when the saved `2RaceScore` frames show repeatedly weak, near-tied, unstable non-Mii character winners
+- those rows receive review reason `mii_fallback_unstable_character_match`
 
 Validation / review behavior:
 - session rebases remain visible in the debug export as an attention point
@@ -319,8 +341,15 @@ Primary generated outputs:
 Frame naming convention uses the source video stem plus race number and frame kind, for example:
 - `<VideoStem>+Race_001+0TrackName.png`
 - `<VideoStem>+Race_001+1RaceNumber.png`
-- `<VideoStem>+Race_001+2RaceScore.png`
-- `<VideoStem>+Race_001+3TotalScore.png`
+- `<VideoStem>+Race_001+2RaceScore+lan2_split_2p.png`
+- `<VideoStem>+Race_001+2RaceScore+lan1_full_1p.png`
+- `<VideoStem>+Race_001+3TotalScore+lan2_split_2p.png`
+- `<VideoStem>+Race_001+3TotalScore+lan1_full_1p.png`
+
+Annotated score-layout demo images are also written under:
+- `Output_Results/Debug/Score_Layout_Demos/`
+
+These show the active score ROIs on exported `2RaceScore` and `3TotalScore` frames for human review.
 
 ## 11. Files To Read First
 

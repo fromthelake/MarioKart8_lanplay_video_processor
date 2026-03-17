@@ -15,18 +15,11 @@ from PIL import Image, ImageDraw
 from .app_runtime import load_app_config
 from .data_paths import resolve_asset_file
 from .game_catalog import load_game_catalog
+from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, get_score_layout
 
 APP_CONFIG = load_app_config()
-
-PLAYER_NAME_COORDS = [
-    ((428, 52), (620, 96)), ((428, 104), (620, 148)),
-    ((428, 156), (620, 200)), ((428, 208), (620, 252)),
-    ((428, 260), (620, 304)), ((428, 312), (620, 356)),
-    ((428, 364), (620, 408)), ((428, 416), (620, 460)),
-    ((428, 468), (620, 512)), ((428, 520), (620, 564)),
-    ((428, 572), (620, 617)), ((428, 624), (620, 669)),
-]
-BASE_POSITION_STRIP_ROI = ((315, 57), (367, 667))
+PLAYER_NAME_COORDS = get_score_layout(DEFAULT_SCORE_LAYOUT_ID).player_name_coords
+BASE_POSITION_STRIP_ROI = get_score_layout(DEFAULT_SCORE_LAYOUT_ID).base_position_strip_roi
 POSITION_STRIP_OFFSET_X = -2
 POSITION_STRIP_OFFSET_Y = -2
 POSITION_STRIP_PADDING_X = 2
@@ -43,7 +36,7 @@ POSITION_PRESENT_COEFF_THRESHOLD = 0.60
 POSITION_PRESENT_ROW1_COEFF_THRESHOLD = 0.40
 POSITION_TEMPLATE_FAST_PATH_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_FAST_PATH_ENABLED", "1").lower() not in {"0", "false", "no"}
 POSITION_TEMPLATE_BEAM_WIDTH = max(1, int(os.environ.get("MK8_POSITION_TEMPLATE_BEAM_WIDTH", "3")))
-CHARACTER_ROI_LEFT = 377
+CHARACTER_ROI_LEFT = get_score_layout(DEFAULT_SCORE_LAYOUT_ID).character_roi_left
 CHARACTER_TEMPLATE_SIZE = 48
 CHARACTER_ROW_START = 49
 CHARACTER_ROW_STEP = 52
@@ -127,9 +120,9 @@ def character_confidence_threshold(character_name: str) -> float:
     return 74.5 if is_risky_character_family(character_name) else CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE
 
 
-def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
+def position_strip_roi(score_layout_id: str | None = None) -> Tuple[Tuple[int, int], Tuple[int, int]]:
     """Return the adjusted position-strip ROI after applying the current offset and padding."""
-    (base_x1, base_y1), (base_x2, base_y2) = BASE_POSITION_STRIP_ROI
+    (base_x1, base_y1), (base_x2, base_y2) = get_score_layout(score_layout_id).base_position_strip_roi
     shifted_x1 = base_x1 + POSITION_STRIP_OFFSET_X
     shifted_y1 = base_y1 + POSITION_STRIP_OFFSET_Y
     shifted_x2 = base_x2 + POSITION_STRIP_OFFSET_X
@@ -140,20 +133,22 @@ def position_strip_roi() -> Tuple[Tuple[int, int], Tuple[int, int]]:
     )
 
 
-def character_row_roi(row_index: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+def character_row_roi(row_index: int, score_layout_id: str | None = None) -> Tuple[Tuple[int, int], Tuple[int, int]]:
     row_top = CHARACTER_ROW_START + (row_index * CHARACTER_ROW_STEP)
+    character_roi_left = get_score_layout(score_layout_id).character_roi_left
     return (
-        (CHARACTER_ROI_LEFT, row_top - CHARACTER_ROW_PADDING_TOP),
-        (CHARACTER_ROI_LEFT + CHARACTER_TEMPLATE_SIZE, row_top + CHARACTER_TEMPLATE_SIZE + CHARACTER_ROW_PADDING_BOTTOM),
+        (character_roi_left, row_top - CHARACTER_ROW_PADDING_TOP),
+        (character_roi_left + CHARACTER_TEMPLATE_SIZE, row_top + CHARACTER_TEMPLATE_SIZE + CHARACTER_ROW_PADDING_BOTTOM),
     )
 
 
-def ultra_low_res_combined_row_roi(row_index: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-    (cx1, cy1), (_cx2, cy2) = character_row_roi(row_index)
-    (_nx1, ny1), (nx2, ny2) = PLAYER_NAME_COORDS[row_index]
+def ultra_low_res_combined_row_roi(row_index: int, score_layout_id: str | None = None) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    player_name_coords = get_score_layout(score_layout_id).player_name_coords
+    (cx1, cy1), (_cx2, cy2) = character_row_roi(row_index, score_layout_id=score_layout_id)
+    (_nx1, ny1), (nx2, ny2) = player_name_coords[row_index]
     return (
-        (int(ULTRA_LOW_RES_ROW_LEFT), int(min(cy1, ny1))),
-        (int(max(ULTRA_LOW_RES_ROW_RIGHT, nx2)), int(max(cy2, ny2))),
+        (int(get_score_layout(score_layout_id).character_roi_left), int(min(cy1, ny1))),
+        (int(max(player_name_coords[0][1][0], nx2)), int(max(cy2, ny2))),
     )
 
 
@@ -209,12 +204,12 @@ def slice_position_templates(template_binary: np.ndarray) -> List[np.ndarray]:
     return template_rows
 
 
-def combine_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
+def combine_position_rows(row_images: List[np.ndarray], score_layout_id: str | None = None) -> np.ndarray:
     """Rebuild the full strip after per-row normalization using the template row windows."""
     if not row_images:
         return np.zeros((0, 0), dtype=np.uint8)
     strip_width = row_images[0].shape[1]
-    strip_height = position_strip_roi()[1][1] - position_strip_roi()[0][1]
+    strip_height = position_strip_roi(score_layout_id=score_layout_id)[1][1] - position_strip_roi(score_layout_id=score_layout_id)[0][1]
     combined = np.zeros((strip_height, strip_width), dtype=np.uint8)
     for row_image, (start_y, end_y) in zip(row_images, position_template_row_windows()):
         clipped_start = max(0, min(strip_height, start_y))
@@ -224,13 +219,13 @@ def combine_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
     return combined
 
 
-def extract_position_row_match_crops(processed_image: np.ndarray) -> List[np.ndarray]:
+def extract_position_row_match_crops(processed_image: np.ndarray, score_layout_id: str | None = None) -> List[np.ndarray]:
     """Extract per-row position ROIs based on the template row windows.
 
     The core template area is 56x36. We keep just 1 px padding around it so the
     matcher can adjust slightly inside a tight 58x38 ROI.
     """
-    (x1, y1), (x2, y2) = position_strip_roi()
+    (x1, y1), (x2, y2) = position_strip_roi(score_layout_id=score_layout_id)
     image_height, image_width = processed_image.shape[:2]
     if len(processed_image.shape) == 3:
         grayscale_image = cv2.cvtColor(processed_image, cv2.COLOR_BGR2GRAY)
@@ -535,9 +530,9 @@ def _build_position_signal_metrics_fast(position_rows: List[np.ndarray], templat
     return metrics
 
 
-def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str, float]]:
+def build_position_signal_metrics(processed_image: np.ndarray, score_layout_id: str | None = None) -> List[Dict[str, float]]:
     """Measure whether each row still shows a position number in the fixed left strip."""
-    position_rows = extract_position_row_match_crops(processed_image)
+    position_rows = extract_position_row_match_crops(processed_image, score_layout_id=score_layout_id)
     templates = load_position_row_templates()
     if POSITION_TEMPLATE_FAST_PATH_ENABLED:
         return _build_position_signal_metrics_fast(position_rows, templates)
@@ -551,14 +546,14 @@ def build_position_signal_metrics(processed_image: np.ndarray) -> List[Dict[str,
     return metrics
 
 
-def build_normalized_position_strip(processed_image: np.ndarray) -> np.ndarray:
+def build_normalized_position_strip(processed_image: np.ndarray, score_layout_id: str | None = None) -> np.ndarray:
     """Return the position strip with the same binary polarity normalization used for matching."""
-    (x1, y1), (x2, y2) = position_strip_roi()
+    (x1, y1), (x2, y2) = position_strip_roi(score_layout_id=score_layout_id)
     position_strip = processed_image[y1:y2, x1:x2]
     if len(position_strip.shape) == 3:
         position_strip = cv2.cvtColor(position_strip, cv2.COLOR_BGR2GRAY)
     _, position_strip = cv2.threshold(position_strip, 180, 255, cv2.THRESH_BINARY)
-    return combine_position_rows(normalize_position_rows(position_strip))
+    return combine_position_rows(normalize_position_rows(position_strip), score_layout_id=score_layout_id)
 
 
 def build_character_match_metrics(
@@ -567,6 +562,7 @@ def build_character_match_metrics(
     names: List[str] | None = None,
     name_confidences: List[int] | None = None,
     video_context: str | None = None,
+    score_layout_id: str | None = None,
 ) -> List[Dict[str, object]]:
     """Template-match the full-color character icons for each scoreboard row."""
     templates = load_character_templates()
@@ -588,7 +584,7 @@ def build_character_match_metrics(
         prior_state_by_player = dict(PLAYER_CHARACTER_PRIORS.get(str(video_context or ""), {}))
     templates_by_index = {int(template["character_index"]): template for template in templates}
     for row_index in range(12):
-        (x1, y1), (x2, y2) = character_row_roi(row_index)
+        (x1, y1), (x2, y2) = character_row_roi(row_index, score_layout_id=score_layout_id)
         crop_x1 = max(0, min(image_width, x1))
         crop_x2 = max(crop_x1, min(image_width, x2))
         crop_y1 = max(0, min(image_height, y1))
@@ -831,10 +827,14 @@ def _observation_supports_low_res_row12_character_fallback(observation: Dict[str
     return row12_position_score >= LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE
 
 
-def _frame_supports_low_res_row12_character_fallback(frame_image: np.ndarray, video_context: str | None = None) -> bool:
-    processed_image = process_image(frame_image)
-    position_metrics = build_position_signal_metrics(processed_image)
-    character_metrics = build_character_match_metrics(frame_image, video_context=video_context)
+def _frame_supports_low_res_row12_character_fallback(
+    frame_image: np.ndarray,
+    video_context: str | None = None,
+    score_layout_id: str | None = None,
+) -> bool:
+    processed_image = process_image(frame_image, score_layout_id=score_layout_id)
+    position_metrics = build_position_signal_metrics(processed_image, score_layout_id=score_layout_id)
+    character_metrics = build_character_match_metrics(frame_image, video_context=video_context, score_layout_id=score_layout_id)
     observation = {
         "row_metrics": [
             {
@@ -849,9 +849,9 @@ def _frame_supports_low_res_row12_character_fallback(frame_image: np.ndarray, vi
     return _observation_supports_low_res_row12_character_fallback(observation)
 
 
-def _frame_supports_ultra_low_res_row12_blob_fallback(frame_image: np.ndarray) -> bool:
+def _frame_supports_ultra_low_res_row12_blob_fallback(frame_image: np.ndarray, score_layout_id: str | None = None) -> bool:
     image_height, image_width = frame_image.shape[:2]
-    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(11)
+    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(11, score_layout_id=score_layout_id)
     crop_x1 = max(0, min(image_width, x1))
     crop_x2 = max(crop_x1, min(image_width, x2))
     crop_y1 = max(0, min(image_height, y1))
@@ -939,26 +939,13 @@ def crop_and_process_image(frame: np.ndarray, coordinates: List[Tuple[Tuple[int,
     return cropped_images
 
 
-def process_image(image_source) -> np.ndarray:
+def process_image(image_source, score_layout_id: str | None = None) -> np.ndarray:
     """Rewrite the scoreboard into OCR-friendly blocks before digit and name reading."""
+    score_layout = get_score_layout(score_layout_id)
     coordinates = {
-        "player_name": PLAYER_NAME_COORDS,
-        "race_points": [
-            ((825, 52), (861, 96)), ((825, 104), (861, 148)),
-            ((825, 156), (861, 200)), ((825, 208), (861, 252)),
-            ((825, 260), (861, 304)), ((825, 312), (861, 356)),
-            ((825, 364), (861, 408)), ((825, 416), (861, 460)),
-            ((825, 468), (861, 512)), ((825, 520), (861, 564)),
-            ((825, 572), (861, 617)), ((825, 624), (861, 669)),
-        ],
-        "total_points": [
-            ((910, 52), (973, 96)), ((910, 104), (973, 148)),
-            ((910, 156), (973, 200)), ((910, 208), (973, 252)),
-            ((910, 260), (973, 304)), ((910, 312), (973, 356)),
-            ((910, 364), (973, 408)), ((910, 416), (973, 460)),
-            ((910, 468), (973, 512)), ((910, 520), (973, 564)),
-            ((910, 572), (973, 617)), ((910, 624), (973, 669)),
-        ],
+        "player_name": score_layout.player_name_coords,
+        "race_points": score_layout.race_points_coords,
+        "total_points": score_layout.total_points_coords,
     }
 
     if isinstance(image_source, str):
@@ -1382,15 +1369,16 @@ def parse_detected_int(value: str) -> int | None:
     return int(stripped)
 
 
-def score_digit_layout(scale_factor: int = 5):
-    start_coords_run1 = scale_coords([(830, 71), (843, 71)], scale_factor)
+def score_digit_layout(scale_factor: int = 5, score_layout_id: str | None = None):
+    score_layout = get_score_layout(score_layout_id)
+    start_coords_run1 = scale_coords(score_layout.race_digit_starts, scale_factor)
     race_digit_box = (13 * scale_factor, 19 * scale_factor)
     total_digit_box = (16 * scale_factor, 24 * scale_factor)
     red_pixels_run1 = {
         label: {key: int(value) for key, value in box.items()}
         for label, box in CANONICAL_SEVEN_SEGMENT_BOXES.items()
     }
-    start_coords_run2 = scale_coords([(916, 66), (933, 66), (950, 66)], scale_factor)
+    start_coords_run2 = scale_coords(score_layout.total_digit_starts, scale_factor)
     red_pixels_run2 = _scale_segment_boxes(
         CANONICAL_SEVEN_SEGMENT_BOXES,
         source_box_width=race_digit_box[0],
@@ -1410,16 +1398,18 @@ def extract_scoreboard_observation(
     annotate_path: str | None = None,
     annotation_prefix: str = "",
     video_context: str | None = None,
+    score_layout_id: str | None = None,
 ) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
+    score_layout = get_score_layout(score_layout_id)
     stage_start = time.perf_counter()
-    processed_img = process_image(frame_image)
+    processed_img = process_image(frame_image, score_layout_id=score_layout.layout_id)
     record_observation_stage("process_image", time.perf_counter() - stage_start)
 
-    (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi()
+    (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi(score_layout_id=score_layout.layout_id)
 
     stage_start = time.perf_counter()
-    normalized_position_strip = build_normalized_position_strip(processed_img)
+    normalized_position_strip = build_normalized_position_strip(processed_img, score_layout_id=score_layout.layout_id)
     record_observation_stage("normalize_position_strip", time.perf_counter() - stage_start)
 
     processed_img[position_y1:position_y2, position_x1:position_x2] = cv2.cvtColor(normalized_position_strip, cv2.COLOR_GRAY2BGR)
@@ -1432,7 +1422,7 @@ def extract_scoreboard_observation(
         Image.NEAREST,
     )
     record_observation_stage("scale_image", time.perf_counter() - stage_start)
-    layout = score_digit_layout(scale_factor)
+    layout = score_digit_layout(scale_factor, score_layout_id=score_layout.layout_id)
 
     stage_start = time.perf_counter()
     race_points, race_point_sources = detect_digits_in_image(
@@ -1462,7 +1452,7 @@ def extract_scoreboard_observation(
         scaled_image.save(annotate_path)
 
     stage_start = time.perf_counter()
-    names, confidence_scores = extract_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
+    names, confidence_scores = extract_player_names_batched(annotated_image, score_layout.player_name_coords)
     record_observation_stage("extract_player_names", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -1471,6 +1461,7 @@ def extract_scoreboard_observation(
         names=names,
         name_confidences=confidence_scores,
         video_context=video_context,
+        score_layout_id=score_layout.layout_id,
     )
     record_observation_stage("character_metrics", time.perf_counter() - stage_start)
 
@@ -1479,7 +1470,7 @@ def extract_scoreboard_observation(
     record_observation_stage("build_row_presence_metrics", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
-    position_metrics = build_position_signal_metrics(processed_img)
+    position_metrics = build_position_signal_metrics(processed_img, score_layout_id=score_layout.layout_id)
     record_observation_stage("build_position_signal_metrics", time.perf_counter() - stage_start)
     for row_metric, position_metric in zip(row_metrics, position_metrics):
         row_metric.update(position_metric)
@@ -1506,6 +1497,7 @@ def extract_scoreboard_observation(
         "visible_rows": visible_rows,
         "position_guided_visible_rows": position_guided_visible_rows,
         "template_row_confidence": template_row_confidence,
+        "score_layout_id": score_layout.layout_id,
     }
 
 
@@ -1912,7 +1904,8 @@ def select_race_score_recovery(
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
                                 total_annotate_path: str | None = None,
-                                video_context: str | None = None, is_low_res: bool = False) -> Dict[str, object]:
+                                video_context: str | None = None, is_low_res: bool = False,
+                                score_layout_id: str | None = None) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
@@ -1927,6 +1920,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 annotate_path if index == len(frames) // 2 else None,
                 annotation_prefix="RS-",
                 video_context=video_context,
+                score_layout_id=score_layout_id,
             )
         )
     total_frames_for_observation = select_consensus_window(
@@ -1942,6 +1936,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 total_annotate_path if len(total_observations) == len(total_frames_for_observation) // 2 else None,
                 annotation_prefix="TS-",
                 video_context=video_context,
+                score_layout_id=score_layout_id,
             )
         )
     if not total_observations:
@@ -1990,8 +1985,12 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
             low_res_center_frame_row12_support = _frame_supports_low_res_row12_character_fallback(
                 center_frame,
                 video_context=video_context,
+                score_layout_id=score_layout_id,
             )
-            ultra_low_res_center_frame_row12_support = _frame_supports_ultra_low_res_row12_blob_fallback(center_frame)
+            ultra_low_res_center_frame_row12_support = _frame_supports_ultra_low_res_row12_blob_fallback(
+                center_frame,
+                score_layout_id=score_layout_id,
+            )
         if score_observations:
             low_res_row12_character_support_votes = sum(
                 1
@@ -2098,6 +2097,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "race_score_recovery_count": int(recovery.get("count", position_guided_visible_rows)),
         "name_confidence": round((sum(name_confidences) / len(name_confidences)) * 100, 1) if name_confidences else 0.0,
         "digit_consensus": round((sum(digit_confidences) / len(digit_confidences)) * 100, 1) if digit_confidences else 0.0,
+        "score_layout_id": get_score_layout(score_layout_id).layout_id,
     }
 
 

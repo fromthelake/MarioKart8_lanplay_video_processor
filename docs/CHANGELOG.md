@@ -36,6 +36,11 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
+- Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
+- Exported `2RaceScore` / `3TotalScore` frame filenames and metadata now carry the detected score layout id so OCR can select the correct ROI set without guessing.
+- Score-frame debug output now also writes annotated ROI demo images under `Output_Results/Debug/Score_Layout_Demos/` for both `2RaceScore` and `3TotalScore`.
+- Low-resolution and ultra-low-resolution score-row geometry now follows the detected LAN 1 vs LAN 2 score layout instead of assuming one fixed scoreboard placement.
 - Setup scripts now install the project in editable mode.
 - New console command names:
   - `mk8-local-play`
@@ -74,6 +79,8 @@ The format is intentionally simple and human-readable.
 - The GUI now includes a `Clear Output Results` action with an `Are you sure?` confirmation before deleting generated output files.
 
 ### Fixed
+- Session-level character relabeling now supports Mii fallback when one player repeatedly produces weak, near-tied, unstable non-Mii character matches across the saved `2RaceScore` frames.
+- Mii fallback rows now keep a short explicit review note: `mii_fallback_unstable_character_match`.
 - Headless CLI runs no longer depend on GUI-only image imports.
 - OCR/export no longer failed when `main.py` was started from the wrong Python interpreter while `.venv` existed.
 - Several cross-platform path and setup issues affecting Windows, Linux, and macOS were cleaned up.

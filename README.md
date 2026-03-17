@@ -8,6 +8,20 @@ In practice it:
 - rebuilds tournament progress race by race
 - exports the results into structured workbook files for review and sharing
 
+Current score-screen support:
+- LAN 2 two-player split-screen score layouts
+- LAN 1 one-player full-screen score layouts
+
+The score-screen pipeline now auto-detects the supported score layout during extraction.
+For `2RaceScore` and `3TotalScore`, exported frame names and metadata carry the detected
+layout tag so OCR can use the matching ROI set directly.
+
+Character OCR also now includes a conservative session-level Mii fallback:
+- when one stable player identity repeatedly produces weak, near-tied non-Mii character matches
+- and those winning non-Mii matches are unstable across races
+- the exported character is relabeled to `Mii`
+- the row receives a short review note: `mii_fallback_unstable_character_match`
+
 Short setup guide for Windows.
 
 Linux or macOS? Read [docs/LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md).

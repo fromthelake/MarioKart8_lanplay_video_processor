@@ -4,6 +4,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .score_layouts import DEFAULT_SCORE_LAYOUT_ID
+
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 
@@ -67,6 +69,7 @@ def load_exported_frame_metadata(base_dir: Path):
                 "kind": kind,
                 "requested_frame": int(row.get("Requested Frame", 0) or 0),
                 "actual_frame": int(row.get("Actual Frame", 0) or 0),
+                "score_layout_id": str(row.get("Score Layout", "")).strip() or DEFAULT_SCORE_LAYOUT_ID,
             }
     return metadata_index
 
