@@ -14,6 +14,7 @@ import pytesseract
 from PIL import Image
 
 from mk8_local_play.app_runtime import configure_tesseract, load_app_config
+from mk8_local_play.extract_common import find_score_bundle_anchor_path
 from mk8_local_play.extract_text import (
     PLAYER_NAME_BATCH_CONFIG,
     PLAYER_NAME_BATCH_HORIZONTAL_PADDING,
@@ -184,7 +185,8 @@ def main() -> int:
     for race_number in sorted(video_df["Race"].astype(int).unique()):
         race_rows = video_df[video_df["Race"].astype(int) == race_number].sort_values("Position")
         race_metadata = find_metadata_entry(metadata, args.video, int(race_number), "RaceScore")
-        race_image = str(frames_dir / f"{args.video}+Race_{int(race_number):03d}+2RaceScore.png")
+        race_anchor = find_score_bundle_anchor_path(args.video, int(race_number), "2RaceScore")
+        race_image = str(race_anchor) if race_anchor is not None else ""
         race_frames = load_consensus_frames(race_image, race_metadata, input_dir, 7)
         frame_outputs = [extract_batch_names_only(frame) for frame in race_frames]
 

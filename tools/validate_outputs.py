@@ -24,16 +24,26 @@ def sha256_file(path: Path) -> str:
 
 def compare_file_sets(base_dir: Path, current_dir: Path, prefix: str = ""):
     base_files = sorted(
-        [path for path in base_dir.glob("*.png") if path.name.startswith(prefix)],
-        key=lambda item: item.name,
+        [
+            path for path in base_dir.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            and path.name.startswith(prefix)
+        ],
+        key=lambda item: str(item.relative_to(base_dir)).replace("\\", "/"),
     )
     current_files = sorted(
-        [path for path in current_dir.glob("*.png") if path.name.startswith(prefix)],
-        key=lambda item: item.name,
+        [
+            path for path in current_dir.rglob("*")
+            if path.is_file()
+            and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            and path.name.startswith(prefix)
+        ],
+        key=lambda item: str(item.relative_to(current_dir)).replace("\\", "/"),
     )
 
-    base_map = {path.name: sha256_file(path) for path in base_files}
-    current_map = {path.name: sha256_file(path) for path in current_files}
+    base_map = {str(path.relative_to(base_dir)).replace("\\", "/"): sha256_file(path) for path in base_files}
+    current_map = {str(path.relative_to(current_dir)).replace("\\", "/"): sha256_file(path) for path in current_files}
 
     missing = sorted(set(base_map) - set(current_map))
     unexpected = sorted(set(current_map) - set(base_map))
@@ -127,6 +137,7 @@ def main() -> int:
     parser.add_argument("--current-dir", default="Output_Results", help="Current output directory")
     parser.add_argument("--prefix", default="", help="Filename prefix filter, for example Divisie_1")
     parser.add_argument("--race-class", default="", help="RaceClass filter for workbook comparison")
+    parser.add_argument("--skip-frame-files", action="store_true", help="Skip extracted frame-bundle comparison")
     parser.add_argument("--skip-score-frames", action="store_true", help="Skip annotated score-frame comparison")
     args = parser.parse_args()
 
@@ -135,11 +146,15 @@ def main() -> int:
     prefix = args.prefix
     race_class = args.race_class or None
 
-    frames_missing, frames_unexpected, frames_mismatched = compare_file_sets(
-        baseline_dir / "Frames",
-        current_dir / "Frames",
-        prefix=prefix,
-    )
+    frames_missing = []
+    frames_unexpected = []
+    frames_mismatched = []
+    if not args.skip_frame_files:
+        frames_missing, frames_unexpected, frames_mismatched = compare_file_sets(
+            baseline_dir / "Frames",
+            current_dir / "Frames",
+            prefix=prefix,
+        )
     print_list("frames_missing", frames_missing)
     print_list("frames_unexpected", frames_unexpected)
     print_list("frames_mismatched", frames_mismatched)

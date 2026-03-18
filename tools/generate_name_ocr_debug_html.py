@@ -16,6 +16,7 @@ import pytesseract
 from PIL import Image, ImageDraw
 
 from mk8_local_play.app_runtime import configure_tesseract, load_app_config
+from mk8_local_play.extract_common import find_score_bundle_anchor_path, find_score_bundle_consensus_paths
 from mk8_local_play.extract_text import (
     PLAYER_NAME_BATCH_CONFIG,
     PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE,
@@ -351,13 +352,23 @@ def main() -> int:
 
     race_metadata = find_metadata_entry(metadata, args.video, args.race, "RaceScore")
     total_metadata = find_metadata_entry(metadata, args.video, args.race, "TotalScore")
-    race_image = str(frames_dir / f"{args.video}+Race_{args.race:03d}+2RaceScore.png")
-    total_image = str(frames_dir / f"{args.video}+Race_{args.race:03d}+3TotalScore.png")
+    race_anchor = find_score_bundle_anchor_path(args.video, args.race, "2RaceScore")
+    total_anchor = find_score_bundle_anchor_path(args.video, args.race, "3TotalScore")
+    race_image = str(race_anchor) if race_anchor is not None else ""
+    total_image = str(total_anchor) if total_anchor is not None else ""
     race_frames = load_consensus_frames(race_image, race_metadata, input_dir, 7)
     total_frames = load_consensus_frames(total_image, total_metadata, input_dir, 7)
 
-    actual_frame = int(race_metadata["actual_frame"]) if race_metadata else 0
-    source_frame_numbers = list(range(actual_frame - 3, actual_frame + 4))
+    consensus_paths = find_score_bundle_consensus_paths(args.video, args.race, "2RaceScore")
+    if consensus_paths:
+        source_frame_numbers = [
+            int(path.stem.split("_", 1)[1])
+            for path in consensus_paths
+            if "_" in path.stem
+        ]
+    else:
+        actual_frame = int(race_metadata["actual_frame"]) if race_metadata else 0
+        source_frame_numbers = list(range(actual_frame - 3, actual_frame + 4))
     frame_details = []
     for frame in race_frames:
         details, _canvas, _ranges = analyze_frame(frame)

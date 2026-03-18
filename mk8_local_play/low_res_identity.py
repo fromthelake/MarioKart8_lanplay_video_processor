@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .app_runtime import load_app_config
+from .extract_common import find_score_bundle_anchor_path
 from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote
 from .ocr_scoreboard_consensus import (
     character_row_roi,
@@ -46,12 +47,10 @@ def is_low_res_height(source_height: int | None, max_source_height: int) -> bool
 
 
 def race_score_image_path(frames_folder: str | Path, race_class: str, race_id: int) -> Path:
-    frames_root = Path(frames_folder)
-    exact_path = frames_root / f"{race_class}+Race_{race_id:03}+2RaceScore.png"
-    if exact_path.exists():
-        return exact_path
-    candidates = sorted(frames_root.glob(f"{race_class}+Race_{race_id:03}+2RaceScore+*.png"))
-    return candidates[0] if candidates else exact_path
+    preferred_candidate = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+    if preferred_candidate is not None:
+        return preferred_candidate
+    return Path(frames_folder) / race_class / f"Race_{race_id:03d}" / "2RaceScore" / "anchor_missing.png"
 
 
 def _placeholder_name(index: int) -> str:
@@ -492,6 +491,11 @@ def low_res_race_points(position: int, num_players: int) -> int:
         9: [11, 9, 8, 6, 5, 4, 3, 2, 1, 0],
         8: [10, 8, 6, 5, 4, 3, 2, 1, 0],
         7: [9, 7, 5, 4, 3, 2, 1, 0],
+        6: [7, 5, 4, 3, 2, 1, 0],
+        5: [6, 4, 3, 2, 1, 0],
+        4: [4, 3, 2, 1, 0],
+        3: [3, 2, 1, 0],
+        2: [2, 1, 0],
     }
     if num_players not in points_table:
         num_players = 12

@@ -8,6 +8,7 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 
+from .extract_common import EXPORT_IMAGE_SUFFIX, write_export_image
 from .project_paths import PROJECT_ROOT
 
 DEFAULT_SCORE_LAYOUT_ID = "lan2_split_2p"
@@ -118,7 +119,7 @@ def score_layout_id_from_filename(image_path: str | os.PathLike[str] | None) -> 
 
 
 def build_score_frame_filename(video_label: str, race_number: int, frame_content: str, score_layout_id: str) -> str:
-    return f"{video_label}+Race_{race_number:03}+{frame_content}+{score_layout_id}.png"
+    return f"{video_label}+Race_{race_number:03}+{frame_content}+{score_layout_id}{EXPORT_IMAGE_SUFFIX}"
 
 
 def draw_score_layout_demo(
@@ -202,10 +203,10 @@ def draw_score_layout_demo(
     )
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(output_file), annotated)
+    write_export_image(output_file, annotated)
 
 
 def score_demo_output_path(video_label: str, race_number: int, frame_content: str, score_layout_id: str) -> Path:
     return PROJECT_ROOT / "Output_Results" / "Debug" / "Score_Layout_Demos" / (
-        f"{video_label}+Race_{race_number:03}+{frame_content}+{score_layout_id}+roi_demo.png"
+        f"{video_label}+Race_{race_number:03}+{frame_content}+{score_layout_id}+roi_demo{EXPORT_IMAGE_SUFFIX}"
     )

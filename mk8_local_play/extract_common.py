@@ -1,6 +1,7 @@
 import time
 import os
 import re
+import shutil
 from glob import glob
 from pathlib import Path
 
@@ -15,6 +16,19 @@ TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 VERTICAL_DILATE_KERNEL = np.ones((2, 1), np.uint8)
 GPU_RUNTIME = detect_gpu_runtime(APP_CONFIG)
+SUPPORTED_EXPORTED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+
+
+def normalize_export_image_format(value: str | None) -> str:
+    normalized = str(value or "png").strip().lower().lstrip(".")
+    if normalized in {"jpg", "jpeg"}:
+        return "jpg"
+    return "png"
+
+
+EXPORT_IMAGE_FORMAT = normalize_export_image_format(APP_CONFIG.export_image_format)
+EXPORT_IMAGE_SUFFIX = f".{EXPORT_IMAGE_FORMAT}"
+FRAMES_ROOT = PROJECT_ROOT / "Output_Results" / "Frames"
 
 
 def calculate_sum_intensity(gray_image):
@@ -140,6 +154,163 @@ def build_video_identity(video_path, input_root=None, include_subfolders=False):
     return "__".join(sanitized_parts)
 
 
+def is_exported_image_file(path_or_name: str | os.PathLike[str]) -> bool:
+    return Path(str(path_or_name)).suffix.lower() in SUPPORTED_EXPORTED_IMAGE_EXTENSIONS
+
+
+def exported_image_extension_priority(extension: str) -> int:
+    normalized = str(extension or "").strip().lower()
+    if EXPORT_IMAGE_FORMAT == "jpg":
+        if normalized == ".jpg":
+            return 0
+        if normalized == ".jpeg":
+            return 1
+        if normalized == ".png":
+            return 2
+    else:
+        if normalized == ".png":
+            return 0
+        if normalized == ".jpg":
+            return 1
+        if normalized == ".jpeg":
+            return 2
+    return 99
+
+
+def choose_preferred_exported_image(paths: list[Path]) -> Path | None:
+    if not paths:
+        return None
+    return min(paths, key=lambda path: (exported_image_extension_priority(path.suffix), str(path).lower()))
+
+
+def replace_with_exported_image_suffix(path: str | os.PathLike[str]) -> str:
+    return str(Path(path).with_suffix(EXPORT_IMAGE_SUFFIX))
+
+
+def write_export_image(path: str | os.PathLike[str], image) -> str:
+    output_path = replace_with_exported_image_suffix(path)
+    output_dir = Path(output_path).parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if Path(output_path).suffix.lower() in {".jpg", ".jpeg"}:
+        cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    else:
+        cv2.imwrite(output_path, image)
+    return output_path
+
+
+def video_frames_dir(video_label: str) -> Path:
+    return FRAMES_ROOT / str(video_label)
+
+
+def race_frames_dir(video_label: str, race_number: int) -> Path:
+    return video_frames_dir(video_label) / f"Race_{int(race_number):03d}"
+
+
+def race_anchor_frame_path(video_label: str, race_number: int, frame_content: str) -> Path:
+    return race_frames_dir(video_label, race_number) / f"{frame_content}{EXPORT_IMAGE_SUFFIX}"
+
+
+def score_bundle_dir(video_label: str, race_number: int, frame_content: str) -> Path:
+    return race_frames_dir(video_label, race_number) / str(frame_content)
+
+
+def score_bundle_anchor_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
+    return score_bundle_dir(video_label, race_number, frame_content) / f"anchor_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+
+
+def score_bundle_consensus_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
+    return score_bundle_dir(video_label, race_number, frame_content) / f"consensus_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+
+
+def find_anchor_frame_path(video_label: str, race_number: int, frame_content: str) -> Path | None:
+    candidates = [
+        path
+        for path in race_frames_dir(video_label, race_number).glob(f"{frame_content}*")
+        if is_exported_image_file(path)
+    ]
+    preferred = choose_preferred_exported_image(sorted(candidates))
+    return preferred
+
+
+def find_score_bundle_anchor_path(video_label: str, race_number: int, frame_content: str) -> Path | None:
+    bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
+    candidates = [
+        path
+        for path in bundle_dir.glob("anchor_*")
+        if is_exported_image_file(path)
+    ]
+    return choose_preferred_exported_image(sorted(candidates))
+
+
+def find_score_bundle_consensus_paths(video_label: str, race_number: int, frame_content: str) -> list[Path]:
+    bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
+    candidates = [
+        path
+        for path in bundle_dir.glob("consensus_*")
+        if is_exported_image_file(path)
+    ]
+    return sorted(
+        candidates,
+        key=lambda path: (
+            _extract_numeric_suffix(path.stem),
+            exported_image_extension_priority(path.suffix),
+            str(path).lower(),
+        ),
+    )
+
+
+def iter_video_race_dirs(frames_root: str | os.PathLike[str]) -> list[tuple[str, int, Path]]:
+    root = Path(frames_root)
+    items: list[tuple[str, int, Path]] = []
+    if not root.exists():
+        return items
+    for video_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        for race_dir in sorted(path for path in video_dir.iterdir() if path.is_dir() and path.name.startswith("Race_")):
+            try:
+                race_number = int(race_dir.name.split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            items.append((video_dir.name, race_number, race_dir))
+    return items
+
+
+def remove_tree_contents(root_path: str | os.PathLike[str]) -> bool:
+    root = Path(root_path)
+    deleted_anything = False
+    if not root.exists():
+        return False
+    for child in list(root.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child)
+            deleted_anything = True
+        else:
+            child.unlink()
+            deleted_anything = True
+    return deleted_anything
+
+
+def _extract_numeric_suffix(stem: str) -> int:
+    match = re.search(r"(\d+)$", str(stem))
+    if not match:
+        return -1
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return -1
+
+
+def glob_exported_images(folder: str | os.PathLike[str], stem_pattern: str) -> list[str]:
+    folder_path = Path(folder)
+    matches = []
+    for extension in SUPPORTED_EXPORTED_IMAGE_EXTENSIONS:
+        matches.extend(str(path) for path in sorted(folder_path.glob(f"{stem_pattern}{extension}")))
+    return sorted(matches)
+
+
+def count_unique_exported_images(folder: str | os.PathLike[str], stem_pattern: str) -> int:
+    return len({Path(path).stem for path in glob_exported_images(folder, stem_pattern)})
+
+
 def relative_video_path(video_path, input_root):
     video_path = Path(video_path)
     return str(video_path.relative_to(Path(input_root))).replace("\\", "/")
@@ -155,14 +326,16 @@ def load_videos_from_folder(folder_path, *, include_subfolders=False):
 
 def count_exported_detection_files(video_path_or_label):
     """Count exported frame types for one source video or precomputed video label."""
-    output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     path_obj = Path(str(video_path_or_label))
     video_stem = path_obj.stem if path_obj.suffix else str(video_path_or_label)
+    video_dir = video_frames_dir(video_stem)
+    if not video_dir.exists():
+        return {"track": 0, "race": 0, "score": 0, "total": 0}
     return {
-        "track": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+0TrackName.png"))),
-        "race": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+1RaceNumber.png"))),
-        "score": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+2RaceScore*.png"))),
-        "total": len(glob(os.path.join(output_folder, f"{video_stem}+Race_*+3TotalScore*.png"))),
+        "track": len(list(video_dir.glob("Race_*/0TrackName*"))),
+        "race": len(list(video_dir.glob("Race_*/1RaceNumber*"))),
+        "score": len(list(video_dir.glob("Race_*/2RaceScore/anchor_*"))),
+        "total": len(list(video_dir.glob("Race_*/3TotalScore/anchor_*"))),
     }
 
 

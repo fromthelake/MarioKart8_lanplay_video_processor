@@ -10,7 +10,18 @@ import cv2
 import numpy as np
 
 from .console_logging import LOGGER
-from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, build_video_identity, crop_and_upscale_image, frame_to_timecode, match_template, preprocess_roi, relative_video_path
+from .extract_common import (
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
+    build_video_identity,
+    crop_and_upscale_image,
+    frame_to_timecode,
+    match_template,
+    preprocess_roi,
+    race_anchor_frame_path,
+    relative_video_path,
+    write_export_image,
+)
 from .project_paths import PROJECT_ROOT
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, all_score_layouts
 from . import extract_video_io as video_io
@@ -186,13 +197,8 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 runtime_state["last_track_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
                 LOGGER.log("", f"Race {race_number:03} | track screen found at source {timecode}", color_name="green")
-                output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
-                os.makedirs(output_folder, exist_ok=True)
-                frame_filename = os.path.join(
-                    output_folder,
-                    f"{video_label}+Race_{race_number:03}+0TrackName.png",
-                )
-                cv2.imwrite(frame_filename, saved_image)
+                frame_filename = race_anchor_frame_path(video_label, race_number, "0TrackName")
+                write_export_image(frame_filename, saved_image)
                 video_io.log_exported_frame(
                     metadata_writer,
                     video_path,
@@ -217,13 +223,8 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 runtime_state["last_race_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
                 LOGGER.log("", f"Race {race_number:03} | race number found at source {timecode}", color_name="green")
-                output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
-                os.makedirs(output_folder, exist_ok=True)
-                frame_filename = os.path.join(
-                    output_folder,
-                    f"{video_label}+Race_{race_number:03}+1RaceNumber.png",
-                )
-                cv2.imwrite(frame_filename, upscaled_image)
+                frame_filename = race_anchor_frame_path(video_label, race_number, "1RaceNumber")
+                write_export_image(frame_filename, upscaled_image)
                 video_io.log_exported_frame(
                     metadata_writer,
                     video_path,
@@ -508,9 +509,6 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
     if not detections:
         return
 
-    output_folder = os.path.join(PROJECT_ROOT, "Output_Results", "Frames")
-    os.makedirs(output_folder, exist_ok=True)
-
     for detection in detections:
         race_number = assign_race_number(detection["frame_number"], score_frame_numbers)
         stage_start = time.perf_counter()
@@ -536,11 +534,8 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
             suffix = "1RaceNumber"
             kind = "RaceNumber"
 
-        frame_filename = os.path.join(
-            output_folder,
-            f"{video_label}+Race_{race_number:03}+{suffix}.png",
-        )
-        cv2.imwrite(frame_filename, upscaled_image)
+        frame_filename = race_anchor_frame_path(video_label, race_number, suffix)
+        write_export_image(frame_filename, upscaled_image)
         video_io.log_exported_frame(
             metadata_writer,
             video_path,

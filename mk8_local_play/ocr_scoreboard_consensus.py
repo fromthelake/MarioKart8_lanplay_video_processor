@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 
 from .app_runtime import load_app_config
 from .data_paths import resolve_asset_file
+from .extract_common import EXPORT_IMAGE_FORMAT
 from .game_catalog import load_game_catalog
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, get_score_layout
 
@@ -1449,7 +1450,8 @@ def extract_scoreboard_observation(
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
     record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
-        scaled_image.save(annotate_path)
+        save_kwargs = {"format": "JPEG", "quality": 95} if EXPORT_IMAGE_FORMAT == "jpg" else {"format": "PNG"}
+        scaled_image.save(annotate_path, **save_kwargs)
 
     stage_start = time.perf_counter()
     names, confidence_scores = extract_player_names_batched(annotated_image, score_layout.player_name_coords)

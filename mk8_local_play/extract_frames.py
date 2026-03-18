@@ -369,7 +369,19 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
         metadata_context = open(metadata_output_path, mode='w', newline='')
         metadata_writer = MetadataCsvWriter(csv.writer(metadata_context, delimiter=';'))
         metadata_writer.writerow(
-            ["Video", "Race", "Kind", "Requested Frame", "Requested Timecode", "Actual Frame", "Actual Timecode", "Score Layout"]
+            [
+                "VideoLabel",
+                "Video",
+                "Race",
+                "Kind",
+                "Requested Frame",
+                "Requested Timecode",
+                "Actual Frame",
+                "Actual Timecode",
+                "Score Layout",
+                "Bundle Path",
+                "Anchor Path",
+            ]
         )
     else:
         csv_context = None

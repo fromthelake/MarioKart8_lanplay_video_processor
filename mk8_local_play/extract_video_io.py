@@ -116,12 +116,15 @@ def log_exported_frame(
     video_label=None,
     video_source_path=None,
     score_layout_id="",
+    bundle_path="",
+    anchor_path="",
 ):
     """Record requested and actual decoded frames for each exported screenshot."""
     if metadata_writer is None:
         return
     metadata_writer.writerow(
         [
+            str(video_label or Path(video_source_path or os.path.basename(video_path)).stem),
             str(video_source_path or os.path.basename(video_path)),
             f"{race_number:03}",
             kind,
@@ -130,6 +133,8 @@ def log_exported_frame(
             int(actual_frame),
             frame_to_timecode(actual_frame, fps),
             str(score_layout_id or ""),
+            str(bundle_path or ""),
+            str(anchor_path or ""),
         ]
     )
 

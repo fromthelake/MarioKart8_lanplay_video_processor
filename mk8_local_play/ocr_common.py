@@ -4,6 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .extract_common import find_score_bundle_consensus_paths
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID
 
 TARGET_WIDTH = 1280
@@ -64,12 +65,15 @@ def load_exported_frame_metadata(base_dir: Path):
             except ValueError:
                 continue
             metadata_index[(video_name, race_number, kind)] = {
+                "video_label": str(row.get("VideoLabel", "")).strip() or Path(video_name).stem,
                 "video": video_name,
                 "race": race_number,
                 "kind": kind,
                 "requested_frame": int(row.get("Requested Frame", 0) or 0),
                 "actual_frame": int(row.get("Actual Frame", 0) or 0),
                 "score_layout_id": str(row.get("Score Layout", "")).strip() or DEFAULT_SCORE_LAYOUT_ID,
+                "bundle_path": str(row.get("Bundle Path", "")).strip(),
+                "anchor_path": str(row.get("Anchor Path", "")).strip(),
             }
     return metadata_index
 
@@ -79,7 +83,11 @@ def find_metadata_entry(metadata_index, race_class: str, race_id_number: int, ki
     for (video_name, race_number, entry_kind), value in metadata_index.items():
         if race_number != race_id_number or entry_kind != kind:
             continue
-        if Path(video_name).stem == race_class or str(video_name) == race_class:
+        if (
+            str(value.get("video_label", "")).strip() == race_class
+            or Path(video_name).stem == race_class
+            or str(video_name) == race_class
+        ):
             return value
     return None
 
@@ -89,6 +97,19 @@ def load_consensus_frames(image_path: str, metadata_entry, input_videos_folder: 
     """Reload neighbouring frames around an exported frame for OCR voting."""
     if in_memory_frames:
         return in_memory_frames
+    if metadata_entry is not None:
+        bundle_dir = Path(str(metadata_entry.get("bundle_path", "") or ""))
+        if bundle_dir.exists():
+            consensus_paths = find_score_bundle_consensus_paths(
+                str(metadata_entry.get("video_label", "") or ""),
+                int(metadata_entry.get("race", 0) or 0),
+                "2RaceScore" if str(metadata_entry.get("kind", "")).strip() == "RaceScore" else "3TotalScore",
+            )
+            if consensus_paths:
+                frames = [cv2.imread(str(path), cv2.IMREAD_COLOR) for path in consensus_paths]
+                frames = [frame for frame in frames if frame is not None]
+                if frames:
+                    return frames
     fallback_image = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if fallback_image is None:
         return []

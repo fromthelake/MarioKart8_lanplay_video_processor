@@ -15,6 +15,7 @@ from .project_paths import PROJECT_ROOT
 class AppConfig:
     tesseract_cmd: Optional[str]
     execution_mode: str
+    export_image_format: str
     ocr_workers: int
     score_analysis_workers: int
     pass1_scan_workers: int
@@ -61,6 +62,15 @@ def _parse_execution_mode(value, default: str = "cpu") -> str:
     return default
 
 
+def _parse_export_image_format(value, default: str = "png") -> str:
+    candidate = str(value or default).strip().lower().lstrip(".")
+    if candidate in {"jpg", "jpeg"}:
+        return "jpg"
+    if candidate == "png":
+        return "png"
+    return default
+
+
 def _parse_float(value, default: float, minimum: float = 0.0) -> float:
     try:
         return max(minimum, float(value))
@@ -97,6 +107,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     execution_mode = _parse_execution_mode(
         os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
         "cpu",
+    )
+    export_image_format = _parse_export_image_format(
+        os.environ.get("MK8_EXPORT_IMAGE_FORMAT", json_config.get("export_image_format")),
+        "png",
     )
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
@@ -208,6 +222,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     return AppConfig(
         tesseract_cmd=tesseract_cmd,
         execution_mode=execution_mode,
+        export_image_format=export_image_format,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
         pass1_scan_workers=pass1_scan_workers,

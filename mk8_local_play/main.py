@@ -24,6 +24,7 @@ from PIL import Image
 from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path, resolve_tesseract_cmd, tesseract_resolution_hint
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
+from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
 from .project_paths import PROJECT_ROOT
 
 
@@ -227,21 +228,19 @@ def open_frames_folder() -> None:
 def clear_all_races_found() -> None:
     deleted_anything = False
     if FRAMES_DIR.exists():
-        png_files = glob.glob(str(FRAMES_DIR / "*.png"))
-        if png_files:
-            for file in png_files:
-                try:
-                    os.remove(file)
-                    deleted_anything = True
-                except Exception as exc:
-                    show_error("Error", f"Unable to delete file {file}: {exc}")
-                    return
+        try:
+            deleted_anything = remove_tree_contents(FRAMES_DIR) or deleted_anything
+        except Exception as exc:
+            show_error("Error", f"Unable to clear frames folder: {exc}")
+            return
     else:
         show_warning("Warning", "The frames folder does not exist.")
         return
 
     if DEBUG_SCORE_FRAMES_DIR.exists():
-        annotated_files = glob.glob(str(DEBUG_SCORE_FRAMES_DIR / "annotated_*.png"))
+        annotated_files = []
+        for pattern in ("annotated_*.png", "annotated_*.jpg", "annotated_*.jpeg"):
+            annotated_files.extend(glob.glob(str(DEBUG_SCORE_FRAMES_DIR / pattern)))
         for file in annotated_files:
             try:
                 os.remove(file)
@@ -392,12 +391,11 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
         for path in video_files
     ]
     extract_result = extract_frames.extract_frames(
-        return_frame_cache=True,
+        return_frame_cache=False,
         selected_videos=selected_video_names or None,
         include_subfolders=include_subfolders,
     )
     LOGGER.blank_lines(2)
-    frame_bundle_cache = extract_result["frame_bundle_cache"]
     extract_text.configure_tesseract(extract_text.pytesseract, extract_text.APP_CONFIG)
     selected_race_classes = (
         selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
@@ -405,10 +403,8 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     )
     ocr_result = extract_text.process_images_in_folder(
         str(FRAMES_DIR),
-        in_memory_frame_bundles=frame_bundle_cache,
         selected_race_classes=selected_race_classes,
     )
-    frame_bundle_cache.clear()
     total_processing_seconds = LOGGER.elapsed_seconds()
     ratio = total_source_seconds / total_processing_seconds if total_processing_seconds > 0 else 0.0
     extract_summary = extract_result.get("summary", {})
@@ -572,6 +568,7 @@ def print_runtime_status() -> int:
     print(f"Write debug CSV: {APP_CONFIG.write_debug_csv}")
     print(f"Write debug score images: {APP_CONFIG.write_debug_score_images}")
     print(f"Write debug linking Excel: {APP_CONFIG.write_debug_linking_excel}")
+    print(f"Export image format: {EXPORT_IMAGE_FORMAT}")
 
     issues = []
     issues.extend(ffmpeg_issues)

@@ -200,6 +200,13 @@ If the check says Tesseract is missing:
 If the check succeeds, the project is ready to run entirely from:
 - `.\.venv\Scripts\mk8-local-play.exe`
 
+Screenshot export format:
+- extracted screenshots are controlled by `config/app_config.json` -> `export_image_format`
+- accepted values are `jpg`, `jpeg`, and `png`
+- the current default is `jpg` for smaller exported frame files
+- use `png` if you want lossless frame exports for troubleshooting or comparison work
+- `MK8_EXPORT_IMAGE_FORMAT` can still override the config for a single run
+
 ## Step 8. Add your videos
 
 Put your video files in folder:
@@ -250,6 +257,24 @@ PowerShell Command:
 Results are written to folder:
 
 `./Output_Results/`
+
+Extracted race screenshots are written under:
+
+`./Output_Results/Frames/`
+
+Their file extension follows `config/app_config.json` -> `export_image_format`.
+Examples:
+- `Output_Results/Frames/Demo_CaptureCard_Race/Race_001/0TrackName.jpg`
+- `Output_Results/Frames/Demo_CaptureCard_Race/Race_001/1RaceNumber.jpg`
+- `Output_Results/Frames/Demo_CaptureCard_Race/Race_001/2RaceScore/anchor_5869.jpg`
+- `Output_Results/Frames/Demo_CaptureCard_Race/Race_001/2RaceScore/consensus_5866.jpg`
+- `Output_Results/Frames/Demo_CaptureCard_Race/Race_001/3TotalScore/anchor_5994.jpg`
+
+Important:
+- score-screen OCR now persists the full frame bundles it uses
+- both `--selection` and `--ocr` read the same saved score bundles
+- `anchor_<frame>.jpg` is the exported anchor frame
+- `consensus_<frame>.jpg` files are the neighboring OCR-vote frames used for that score screen
 
 ## Commands
 

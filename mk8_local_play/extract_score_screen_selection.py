@@ -1,11 +1,22 @@
 import os
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from .extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, crop_to_gray_and_upscale_image, match_template, preprocess_roi
+from .extract_common import (
+    TARGET_HEIGHT,
+    TARGET_WIDTH,
+    crop_and_upscale_image,
+    crop_to_gray_and_upscale_image,
+    match_template,
+    preprocess_roi,
+    score_bundle_anchor_path,
+    score_bundle_consensus_path,
+    write_export_image,
+)
 from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
 from .ocr_scoreboard_consensus import (
     POSITION_PRESENT_COEFF_THRESHOLD,
@@ -14,7 +25,7 @@ from .ocr_scoreboard_consensus import (
     process_image,
 )
 from .project_paths import PROJECT_ROOT
-from .score_layouts import build_score_frame_filename, draw_score_layout_demo, get_score_layout, score_demo_output_path
+from .score_layouts import draw_score_layout_demo, get_score_layout, score_demo_output_path
 
 
 def enhance_export_frame(upscaled_image, scale_x, scale_y):
@@ -334,7 +345,12 @@ def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop
         ret, frame = capture.read()
         if not ret:
             continue
-        bundled_frames.append(crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT))
+        bundled_frames.append(
+            (
+                actual_frame_after_read(capture),
+                crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT),
+            )
+        )
     return bundled_frames
 
 
@@ -345,14 +361,14 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
-    output_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
-    os.makedirs(output_folder, exist_ok=True)
     score_layout = get_score_layout(score_layout_id)
-    frame_filename = os.path.join(
-        output_folder,
-        build_score_frame_filename(video_label, race_number, "2RaceScore", score_layout.layout_id)
-    )
-    cv2.imwrite(frame_filename, race_score_image)
+    frame_filename = score_bundle_anchor_path(video_label, race_number, "2RaceScore", actual_race_score_frame)
+    write_export_image(frame_filename, race_score_image)
+    for consensus_frame_number, consensus_frame_image in race_consensus_frames:
+        write_export_image(
+            score_bundle_consensus_path(video_label, race_number, "2RaceScore", consensus_frame_number),
+            consensus_frame_image,
+        )
     draw_score_layout_demo(
         race_score_image,
         score_layout.layout_id,
@@ -361,16 +377,30 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
     )
     video_stem = video_label
     if race_consensus_frames:
-        consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = list(race_consensus_frames)
+        consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = [image for _frame, image in race_consensus_frames]
     log_exported_frame(
-        metadata_writer, video_path, race_number, "RaceScore", race_score_frame, actual_race_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path, score_layout_id=score_layout.layout_id
+        metadata_writer,
+        video_path,
+        race_number,
+        "RaceScore",
+        race_score_frame,
+        actual_race_score_frame,
+        fps,
+        frame_to_timecode,
+        video_label=video_label,
+        video_source_path=video_source_path,
+        score_layout_id=score_layout.layout_id,
+        bundle_path=str(Path(frame_filename).parent),
+        anchor_path=str(frame_filename),
     )
 
-    frame_filename = os.path.join(
-        output_folder,
-        build_score_frame_filename(video_label, race_number, "3TotalScore", score_layout.layout_id)
-    )
-    cv2.imwrite(frame_filename, total_score_image)
+    frame_filename = score_bundle_anchor_path(video_label, race_number, "3TotalScore", actual_total_score_frame)
+    write_export_image(frame_filename, total_score_image)
+    for consensus_frame_number, consensus_frame_image in total_consensus_frames:
+        write_export_image(
+            score_bundle_consensus_path(video_label, race_number, "3TotalScore", consensus_frame_number),
+            consensus_frame_image,
+        )
     draw_score_layout_demo(
         total_score_image,
         score_layout.layout_id,
@@ -378,8 +408,20 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
         score_demo_output_path(video_label, race_number, "3TotalScore", score_layout.layout_id),
     )
     if total_consensus_frames:
-        consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = list(total_consensus_frames)
+        consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = [image for _frame, image in total_consensus_frames]
     log_exported_frame(
-        metadata_writer, video_path, race_number, "TotalScore", total_score_frame, actual_total_score_frame, fps, frame_to_timecode, video_label=video_label, video_source_path=video_source_path, score_layout_id=score_layout.layout_id
+        metadata_writer,
+        video_path,
+        race_number,
+        "TotalScore",
+        total_score_frame,
+        actual_total_score_frame,
+        fps,
+        frame_to_timecode,
+        video_label=video_label,
+        video_source_path=video_source_path,
+        score_layout_id=score_layout.layout_id,
+        bundle_path=str(Path(frame_filename).parent),
+        anchor_path=str(frame_filename),
     )
     return True

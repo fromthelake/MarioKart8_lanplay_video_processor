@@ -17,7 +17,12 @@ from functools import lru_cache
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from .app_runtime import configure_tesseract, load_app_config
-from .extract_common import build_video_identity
+from .extract_common import (
+    build_video_identity,
+    find_anchor_frame_path,
+    find_score_bundle_anchor_path,
+    iter_video_race_dirs,
+)
 from .console_logging import LOGGER
 from .ocr_export import build_completion_payload
 from .ocr_name_matching import (
@@ -272,6 +277,11 @@ def get_race_points(position: int, num_players: int) -> int:
         9: [11, 9, 8, 6, 5, 4, 3, 2, 1, 0],
         8: [10, 8, 6, 5, 4, 3, 2, 1, 0],
         7: [9, 7, 5, 4, 3, 2, 1, 0],
+        6: [7, 5, 4, 3, 2, 1, 0],
+        5: [6, 4, 3, 2, 1, 0],
+        4: [4, 3, 2, 1, 0],
+        3: [3, 2, 1, 0],
+        2: [2, 1, 0],
     }
 
     # Default to 12 players if not explicitly defined
@@ -518,14 +528,11 @@ def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | 
             continue
         cache_key = (race_class, race_id)
         if cache_key not in frame_cache:
-            frame_candidates = sorted(frames_root.glob(f"{race_class}+Race_{race_id:03}+2RaceScore+*.png"))
-            if not frame_candidates:
-                legacy_path = frames_root / f"{race_class}+Race_{race_id:03}+2RaceScore.png"
-                frame_candidates = [legacy_path] if legacy_path.exists() else []
-            if not frame_candidates:
+            preferred_frame = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+            if preferred_frame is None:
                 frame_cache[cache_key] = (None, "")
             else:
-                frame_path = frame_candidates[0]
+                frame_path = preferred_frame
                 frame_cache[cache_key] = (cv2.imread(str(frame_path), cv2.IMREAD_COLOR), score_layout_id_from_filename(frame_path))
         frame_image, score_layout_id = frame_cache[cache_key]
         if frame_image is None:
@@ -741,9 +748,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     reset_observation_stage_stats()
     reset_character_shortlist_state()
     reset_player_name_fallback_stats()
-    image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.png')])
+    race_dirs = iter_video_race_dirs(folder_path)
 
-    if not image_files:
+    if not race_dirs:
         LOGGER.log("[OCR - Read text from image - Phase Start]", "The Frames folder is empty. Run extraction first.", color_name="red")
         raise RuntimeError("The Frames folder is empty. Run extraction first.")
 
@@ -763,29 +770,20 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     selected_classes = {str(item) for item in selected_race_classes} if selected_race_classes else None
     # OCR runs per race bundle, not per image. Grouping the exported frames up front
     # lets the later stages reason about track name, race score, and total score together.
-    for image_file in image_files:
-        parts = image_file.split('+')
-        if len(parts) < 3:
-            logging.warning(f"Skipping file with unexpected format: {image_file}")
-            continue
-
-        race_class = parts[0]
+    for race_class, race_id_number, _race_dir in race_dirs:
         if selected_classes is not None and race_class not in selected_classes:
             continue
-        try:
-            race_id_number = int(parts[1][-3:])
-        except ValueError:
-            logging.warning(f"Skipping file with invalid race ID number: {image_file}")
-            continue
-
-        frame_content = parts[2].replace('.png', '')
-        if frame_content == "1RaceNumber":
-            continue
-
         key = (race_class, race_id_number)
-        if key not in grouped_images:
-            grouped_images[key] = []
-        grouped_images[key].append((frame_content, os.path.join(folder_path, image_file)))
+        grouped_images[key] = []
+        track_name_path = find_anchor_frame_path(race_class, race_id_number, "0TrackName")
+        if track_name_path is not None:
+            grouped_images[key].append(("0TrackName", str(track_name_path)))
+        race_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "2RaceScore")
+        if race_score_path is not None:
+            grouped_images[key].append(("2RaceScore", str(race_score_path)))
+        total_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "3TotalScore")
+        if total_score_path is not None:
+            grouped_images[key].append(("3TotalScore", str(total_score_path)))
 
     sorted_grouped_images = sorted(grouped_images.items(), key=lambda item: item[0])
     LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")

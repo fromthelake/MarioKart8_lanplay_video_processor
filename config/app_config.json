@@ -1,6 +1,7 @@
 {
   "tesseract_cmd": null,
   "execution_mode": "cpu",
+  "export_image_format": "jpg",
   "ocr_workers": 16,
   "score_analysis_workers": 11,
   "pass1_scan_workers": 4,

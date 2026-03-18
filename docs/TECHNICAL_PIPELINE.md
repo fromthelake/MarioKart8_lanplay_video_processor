@@ -332,19 +332,23 @@ Validation / review behavior:
 
 Primary generated outputs:
 - `Output_Results/Frames/`
-  - extracted track / race / score images
+  - per-video race bundles with extracted track / race / score images and persisted OCR consensus frames
 - `Output_Results/*.xlsx`
   - final result workbook
 - `Output_Results/Debug/`
   - optional debug and profiling artifacts
 
-Frame naming convention uses the source video stem plus race number and frame kind, for example:
-- `<VideoStem>+Race_001+0TrackName.png`
-- `<VideoStem>+Race_001+1RaceNumber.png`
-- `<VideoStem>+Race_001+2RaceScore+lan2_split_2p.png`
-- `<VideoStem>+Race_001+2RaceScore+lan1_full_1p.png`
-- `<VideoStem>+Race_001+3TotalScore+lan2_split_2p.png`
-- `<VideoStem>+Race_001+3TotalScore+lan1_full_1p.png`
+Frame bundle layout now mirrors the OCR input structure more directly:
+- `Output_Results/Frames/<VideoLabel>/Race_001/0TrackName.<ext>`
+- `Output_Results/Frames/<VideoLabel>/Race_001/1RaceNumber.<ext>`
+- `Output_Results/Frames/<VideoLabel>/Race_001/2RaceScore/anchor_<frame>.<ext>`
+- `Output_Results/Frames/<VideoLabel>/Race_001/2RaceScore/consensus_<frame>.<ext>`
+- `Output_Results/Frames/<VideoLabel>/Race_001/3TotalScore/anchor_<frame>.<ext>`
+- `Output_Results/Frames/<VideoLabel>/Race_001/3TotalScore/consensus_<frame>.<ext>`
+
+`<ext>` comes from `config/app_config.json` -> `export_image_format`.
+The current default is `jpg`; `png` remains available as a lossless fallback.
+The numeric suffix is the actual decoded source-video frame number used for that image.
 
 Annotated score-layout demo images are also written under:
 - `Output_Results/Debug/Score_Layout_Demos/`
