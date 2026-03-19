@@ -42,7 +42,7 @@ For this project itself:
 System-wide installs are only for external tools such as:
 - Git
 - Python 3.12
-- Tesseract OCR
+- FFmpeg
 
 ## Step 1. Choose where the project should live
 
@@ -120,29 +120,7 @@ Important:
 - the Mario Kart tool itself is still installed only inside this project folder's local `.venv`
 - you do not need a global install of `mk8-local-play`
 
-## Step 4. Check Tesseract OCR
-
-Run:
-
-PowerShell Command:
---------------
-tesseract --version
---------------
-
-If it works:
-- continue to Step 5
-
-If it fails:
-- install Tesseract for Windows
-- recommended starting point (official docs):
-  - https://tesseract-ocr.github.io/tessdoc/Installation.html
-- Windows installer source used by the official docs:
-  - https://github.com/UB-Mannheim/tesseract/wiki
-- open a new PowerShell window
-- run `tesseract --version` again
-- if it still fails, continue anyway and use the post-setup `--check` guidance in Step 7
-
-## Step 5. Download the project
+## Step 4. Download the project
 
 Run:
 
@@ -152,7 +130,7 @@ git clone https://github.com/fromthelake/MarioKart8_lanplay_video_processor
 cd MarioKart8_lanplay_video_processor
 --------------
 
-## Step 6. Run setup
+## Step 5. Run setup
 
 Run:
 
@@ -165,18 +143,19 @@ This setup script:
 - creates or reuses the local `.venv` in this project folder
 - uses Python 3.12 specifically and stops if only a newer Python is installed
 - installs the app into that local `.venv`
+- installs the Python OCR dependencies, including EasyOCR
 - does not require a global install of this app
 - does not require adding `mk8-local-play` to PATH
 
 If setup succeeds:
-- continue to Step 7
+- continue to Step 6
 
 If setup fails:
 - read the error shown in PowerShell
 - fix the missing dependency
 - run `./scripts/setup_windows.ps1` again
 
-## Step 7. Run the environment check
+## Step 6. Run the environment check
 
 Run:
 
@@ -186,16 +165,7 @@ PowerShell Command:
 --------------
 
 If the check succeeds:
-- continue to Step 8
-
-If the check says Tesseract is missing:
-- install Tesseract for Windows
-- recommended starting point (official docs):
-  - https://tesseract-ocr.github.io/tessdoc/Installation.html
-- Windows installer source used by the official docs:
-  - https://github.com/UB-Mannheim/tesseract/wiki
-- if PowerShell still cannot run `tesseract`, set `config/app_config.json` `tesseract_cmd` to the full executable path, for example `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- run the check again
+- continue to Step 7
 
 If the check succeeds, the project is ready to run entirely from:
 - `.\.venv\Scripts\mk8-local-play.exe`
@@ -207,7 +177,7 @@ Screenshot export format:
 - use `png` if you want lossless frame exports for troubleshooting or comparison work
 - `MK8_EXPORT_IMAGE_FORMAT` can still override the config for a single run
 
-## Step 8. Add your videos
+## Step 7. Add your videos
 
 Put your video files in folder:
 
@@ -217,7 +187,7 @@ Optional:
 - you can also place videos inside subfolders under `./Input_Videos/`
 - use `--subfolders` if you want headless runs to include those subfolders
 
-## Step 9. Run the tool
+## Step 8. Run the tool
 
 Process everything in `Input_Videos`:
 

@@ -16,7 +16,7 @@ Primary flow:
 Runtime baseline:
 - Python 3.12 only
 - repo-local `.venv`
-- Tesseract required for OCR
+- EasyOCR used for text OCR
 - FFmpeg required for repair and merge flows
 
 ## Architecture And Runtime Flow
@@ -44,7 +44,7 @@ Runtime baseline:
 ### OCR and identity phase
 
 - `mk8_local_play/extract_text.py`
-  OCR orchestrator. Groups exported frames, configures Tesseract, coordinates consensus building, low-res handling, validation, and export.
+  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, and export.
 - `mk8_local_play/ocr_scoreboard_consensus.py`
   Core score-screen OCR logic: ROIs, row presence detection, position-template matching, score digit reading, character matching, and multi-frame consensus.
 - `mk8_local_play/low_res_identity.py`
@@ -64,7 +64,7 @@ Runtime baseline:
 ### Metadata and runtime support
 
 - `mk8_local_play/app_runtime.py`
-  Loads `config/app_config.json`, resolves Tesseract, checks FFmpeg, and reports GPU/OpenCL runtime status.
+  Loads `config/app_config.json`, checks FFmpeg, and reports GPU/OpenCL runtime status.
 - `mk8_local_play/game_catalog.py`
   Loads the compact game catalog used for cups, tracks, and characters.
 - `mk8_local_play/track_metadata.py`
@@ -81,7 +81,7 @@ Runtime baseline:
 - `Input_Videos/`
   Source videos. The app can process the root only or recurse with `--subfolders`.
 - `config/app_config.json`
-  Runtime settings for worker counts, export image format, consensus frames, debug-output toggles, low-res thresholds, and optional Tesseract path override.
+  Runtime settings for worker counts, export image format, consensus frames, debug-output toggles, and low-res thresholds.
 - `reference_data/game_catalog.json`
   Runtime metadata source for tracks, cups, and characters.
 - `assets/templates/`
@@ -145,13 +145,12 @@ Python packages in `pyproject.toml`:
 - `pandas`
 - `openpyxl`
 - `pillow`
-- `pytesseract`
+- `easyocr`
 - `jellyfish`
 - `textdistance`
 - `psutil`
 
 External tools:
-- Tesseract OCR
 - FFmpeg
 
 ## Verified Facts, Strong Inferences, Unknowns
@@ -161,7 +160,7 @@ Verified:
 - `.\.venv\Scripts\python.exe -m compileall mk8_local_play` succeeds.
 - `.\.venv\Scripts\python.exe -m mk8_local_play.main --check` succeeds in the current environment.
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"` succeeds.
-- The current environment reports Tesseract and FFmpeg available.
+- The current environment reports EasyOCR importable and FFmpeg available.
 - The repo now has a small stdlib `unittest` regression suite for config loading, output validation helpers, export formatting, session validation, and selection scoping.
 
 Strong inferences:

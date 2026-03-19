@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -13,7 +14,6 @@ from .project_paths import PROJECT_ROOT
 
 @dataclass(frozen=True)
 class AppConfig:
-    tesseract_cmd: Optional[str]
     execution_mode: str
     export_image_format: str
     ocr_workers: int
@@ -103,7 +103,6 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     else:
         default_pass1_workers = 1
 
-    tesseract_cmd = os.environ.get("MK8_TESSERACT_CMD", json_config.get("tesseract_cmd"))
     execution_mode = _parse_execution_mode(
         os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
         "cpu",
@@ -220,7 +219,6 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     )
 
     return AppConfig(
-        tesseract_cmd=tesseract_cmd,
         execution_mode=execution_mode,
         export_image_format=export_image_format,
         ocr_workers=ocr_workers,
@@ -248,26 +246,6 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     )
 
 
-def _tesseract_candidates() -> List[str]:
-    candidates = []
-    if sys.platform.startswith("win"):
-        candidates.extend(
-            [
-                r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            ]
-        )
-    else:
-        candidates.extend(
-            [
-                "/usr/bin/tesseract",
-                "/usr/local/bin/tesseract",
-                "/opt/homebrew/bin/tesseract",
-            ]
-        )
-    return candidates
-
-
 def find_executable(name: str, extra_candidates: Optional[List[str]] = None) -> Optional[str]:
     path = shutil.which(name)
     if path:
@@ -276,23 +254,6 @@ def find_executable(name: str, extra_candidates: Optional[List[str]] = None) -> 
         if candidate and Path(candidate).exists():
             return candidate
     return None
-
-
-def resolve_tesseract_cmd(config: AppConfig) -> Optional[str]:
-    if config.tesseract_cmd and Path(config.tesseract_cmd).exists():
-        return config.tesseract_cmd
-    return find_executable("tesseract", _tesseract_candidates())
-
-
-def tesseract_resolution_hint(config: AppConfig) -> str:
-    configured = config.tesseract_cmd
-    if configured:
-        return f"Configured path: {configured}"
-    candidates = _tesseract_candidates()
-    return (
-        "Set MK8_TESSERACT_CMD or config/app_config.json:tesseract_cmd. "
-        f"Common locations checked: {', '.join(candidates)}"
-    )
 
 
 def detect_gpu_runtime(config: AppConfig) -> dict:
@@ -345,25 +306,13 @@ def detect_gpu_runtime(config: AppConfig) -> dict:
     }
 
 
-def check_runtime(config: AppConfig, require_tesseract: bool = False, require_ffmpeg: bool = False) -> List[str]:
+def check_runtime(config: AppConfig, require_ffmpeg: bool = False) -> List[str]:
     issues = []
-    if require_tesseract and not resolve_tesseract_cmd(config):
-        issues.append(
-            "Tesseract was not found. Install it, add it to PATH, or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
-        )
+    if importlib.util.find_spec("easyocr") is None:
+        issues.append("EasyOCR is not installed in the local environment.")
     if require_ffmpeg and not find_executable("ffmpeg"):
         issues.append("FFmpeg was not found on PATH.")
     return issues
-
-
-def configure_tesseract(pytesseract_module, config: AppConfig) -> str:
-    tesseract_cmd = resolve_tesseract_cmd(config)
-    if not tesseract_cmd:
-        raise RuntimeError(
-            "Tesseract was not found. Install it, add it to PATH, or set MK8_TESSERACT_CMD / config/app_config.json:tesseract_cmd."
-        )
-    pytesseract_module.pytesseract.tesseract_cmd = tesseract_cmd
-    return tesseract_cmd
 
 
 def open_path(path: Path) -> None:

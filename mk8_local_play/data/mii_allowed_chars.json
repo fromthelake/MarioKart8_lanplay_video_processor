@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "description": "Community-derived practical Mii/Mario Kart nickname character reference. Not an official Nintendo MK8DX full specification.",
+    "sources": [
+      {
+        "name": "Hack Your Mii - Symbols",
+        "url": "https://hackyourmii.mozello.com/symbols/"
+      }
+    ],
+    "notes": [
+      "Includes the European Mii Channel keyboard characters, Japanese Mii Channel keyboard characters, and selected Nintendo/Mii symbol groups from the public reference above.",
+      "Used for soft validation/scoring only. Unknown Unicode characters remain visible in OCR/debug output."
+    ]
+  },
+  "latin_extended": " 1234567890-¥€[]\\\\/'#!\"£$%^&*()_|`{}?@~abcdefghijklmnopqrstuvwxyz,.=ABCDEFGHIJKLMNOPQRSTUVWXYZ<>+:';¿¡«»·×÷±∞§™©®ºª♭♪←→↑↓¢àáâäåæãçèéêëìíîïñòóôöœøõßùúûüýÿÀÁÂÄÅÆÃÇÈÉÊËÌÍÎÏÑÒÓÔÖŒØÕÙÚÛÜÝŸłŁαβγδεζηθικλμνξοπρστυφχψωАВГΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ΄΅ΆΈΉΊΌΎΏΐΪΫάέήίΰςϊϋόύώ◎☆○◇□△",
+  "japanese": " あかさたなはまやらわいきしちにひみゆをらくすつぬふむよるんえけせてねへめれ、おこそとのほもろ。アカサタナハマヤラワイキシチニヒミユリヲウクスツヌフムヨルソエケセテネヘメレオコントノホモロ、。？！ー「」~@&,.? !-:;/_()<>•[]{}^“”«»'※〒…゜+±x÷=¥$¢€£%#♭♪∞\\\\*„☆★○●◎◇◆□■©△▲▽▼¦→←↑↓∴〖〗『』＊～Δ·ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔ゙゚゛゜ゝゞァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶ・一々",
+  "special_symbols": "㈜㉿♨☎◀▶▲▼♥♠☀☁☂☃☜☝☞☟♣♦♤♡♧♢☏✔℡ⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ❶❷❸❹❺❻❼❽❾❿⒈⒉⒊⒋⒌⒍⒎⒏⒐⒑⒒⒓⒔⒕⒖⒗⒘⒙⒚⒛⑴⑵⑶⑷⑸⑹⑺⑻⑼⑽⑾⑿⒀⒁⒂⒃⒄⒅⒆⒇ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ"
+}

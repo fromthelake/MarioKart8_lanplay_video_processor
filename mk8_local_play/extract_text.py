@@ -3,7 +3,6 @@ import argparse
 import csv
 import cv2
 import numpy as np
-import pytesseract
 import pandas as pd
 from typing import List, Dict, Tuple
 import logging
@@ -16,7 +15,12 @@ from collections import defaultdict
 from functools import lru_cache
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from .app_runtime import configure_tesseract, load_app_config
+
+try:
+    import easyocr
+except Exception:
+    easyocr = None
+from .app_runtime import load_app_config
 from .extract_common import (
     build_video_identity,
     find_anchor_frame_path,
@@ -35,6 +39,13 @@ from .ocr_name_matching import (
 )
 from .ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
+from .name_unicode import (
+    allowed_name_char_ratio,
+    distinct_visible_name_count,
+    unknown_name_chars,
+    visible_name_characters,
+    visible_name_length,
+)
 from .ocr_scoreboard_consensus import (
     TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
     best_character_matches,
@@ -81,6 +92,17 @@ PLAYER_NAME_BATCH_VERTICAL_PADDING = max(
 )
 PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm 6")
 PLAYER_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_PLAYER_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
+PLAYER_NAME_OCR_ENGINE = os.environ.get("MK8_PLAYER_NAME_OCR_ENGINE", "easyocr").strip().lower()
+PLAYER_NAME_EASYOCR_LANGS = [
+    part.strip()
+    for part in os.environ.get("MK8_PLAYER_NAME_EASYOCR_LANGS", "en,es,fr,de,nl,pl").split(",")
+    if part.strip()
+]
+TRACK_EASYOCR_LANGS = [
+    part.strip()
+    for part in os.environ.get("MK8_TRACK_EASYOCR_LANGS", "en,nl").split(",")
+    if part.strip()
+]
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -98,10 +120,10 @@ class OcrProfiler:
         with self._lock:
             stats = {key: value.copy() for key, value in self._stats.items()}
         if not stats:
-            return ["Tesseract calls: none recorded"]
+            return ["OCR engine calls: none recorded"]
         total_calls = sum(item["calls"] for item in stats.values())
         total_seconds = sum(item["seconds"] for item in stats.values())
-        lines = [f"Tesseract calls: {total_calls} | OCR engine time: {total_seconds:.2f}s"]
+        lines = [f"OCR engine calls: {total_calls} | OCR engine time: {total_seconds:.2f}s"]
         for label, item in sorted(stats.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
             avg_ms = (item["seconds"] / max(1, item["calls"])) * 1000.0
             lines.append(
@@ -112,6 +134,8 @@ class OcrProfiler:
 
 OCR_PROFILER = OcrProfiler()
 PLAYER_NAME_FALLBACK_STATS = defaultdict(int)
+_EASYOCR_READERS: dict[tuple[str, ...], object] = {}
+_EASYOCR_READER_LOCK = threading.Lock()
 
 
 def reset_player_name_fallback_stats() -> None:
@@ -297,7 +321,7 @@ def get_race_points(position: int, num_players: int) -> int:
 
 def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple[Tuple[int, int], Tuple[int, int]]]],
                                  lang: str, config: str) -> Tuple[Dict[str, List[str]], List[int]]:
-    """Extract text and confidence scores from image ROIs using Tesseract OCR."""
+    """Extract text and confidence scores from image ROIs using EasyOCR."""
     extracted_text = {}
     confidence_scores = []
     if isinstance(image_source, str):
@@ -314,20 +338,11 @@ def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple
         region_confidence = []
         for (x1, y1), (x2, y2) in coord_list:
             roi = image[y1:y2, x1:x2]
-            data = run_tesseract_image_to_data(roi, lang, config, f"{region_type}_roi")
-
-            # Combine all words with a space
-            words_in_roi = []
-            confidences_in_roi = []
-            for idx, conf in enumerate(data["conf"]):
-                if conf >= 0 and data["text"][idx].strip():  # Only valid words
-                    words_in_roi.append(data["text"][idx].strip())
-                    confidences_in_roi.append(conf)
-
-            # Combine words into a single string and calculate average confidence
-            combined_text = " ".join(words_in_roi)
-            #print(f"text: {data["text"]} conf:{data["conf"]}")
-            average_confidence = sum(confidences_in_roi) // len(confidences_in_roi) if confidences_in_roi else 0
+            combined_text, average_confidence = _run_easyocr_single_roi(
+                roi,
+                TRACK_EASYOCR_LANGS,
+                profile_label=f"{region_type}_roi",
+            )
 
             region_text.append(combined_text)
             region_confidence.append(average_confidence)
@@ -337,12 +352,278 @@ def extract_text_with_confidence(image_source, coordinates: Dict[str, List[Tuple
 
     return extracted_text, confidence_scores
 
+def _get_easyocr_reader(languages: list[str] | tuple[str, ...]):
+    cache_key = tuple(languages)
+    if cache_key in _EASYOCR_READERS:
+        return _EASYOCR_READERS[cache_key]
+    if easyocr is None:
+        return None
+    with _EASYOCR_READER_LOCK:
+        if cache_key not in _EASYOCR_READERS:
+            _EASYOCR_READERS[cache_key] = easyocr.Reader(list(cache_key), gpu=False, verbose=False)
+    return _EASYOCR_READERS[cache_key]
 
-def run_tesseract_image_to_data(image: np.ndarray, lang: str, config: str, profile_label: str):
+
+def _run_easyocr_single_roi(
+    roi: np.ndarray,
+    languages: list[str] | tuple[str, ...],
+    *,
+    profile_label: str,
+) -> tuple[str, int]:
+    reader = _get_easyocr_reader(languages)
+    if reader is None or roi.size == 0:
+        return "", 0
+
     start_time = time.perf_counter()
-    data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+    result = reader.readtext(roi, detail=1, paragraph=False)
     OCR_PROFILER.record(profile_label, time.perf_counter() - start_time)
-    return data
+
+    parts = []
+    probabilities = []
+    for item in result:
+        if len(item) < 3:
+            continue
+        text = str(item[1]).strip()
+        probability = float(item[2])
+        if not text:
+            continue
+        parts.append(text)
+        probabilities.append(max(0.0, min(1.0, probability)))
+
+    combined_text = " ".join(parts).strip()
+    average_confidence = int(round((sum(probabilities) / len(probabilities)) * 100.0)) if probabilities else 0
+    return combined_text, average_confidence
+
+
+def _ocr_words_and_confidence(data: dict) -> tuple[str, int]:
+    words = []
+    confidences = []
+    for index, raw_conf in enumerate(data["conf"]):
+        try:
+            conf = int(raw_conf)
+        except (TypeError, ValueError):
+            continue
+        text = str(data["text"][index]).strip()
+        if conf >= 0 and text:
+            words.append(text)
+            confidences.append(conf)
+    combined_text = " ".join(words).strip()
+    average_confidence = int(sum(confidences) // len(confidences)) if confidences else 0
+    return combined_text, average_confidence
+
+
+def _player_name_candidate_score(text: str, confidence: int) -> float:
+    visible_chars = visible_name_characters(text)
+    visible_len = len(visible_chars)
+    if visible_len <= 0:
+        return float("-inf")
+    diversity = distinct_visible_name_count(text)
+    allowed_ratio = allowed_name_char_ratio(text)
+    unknown_count = len(unknown_name_chars(text))
+    unicode_bonus = sum(1 for char in visible_chars if ord(char) > 127)
+    alpha_bonus = sum(1 for char in visible_chars if char.isalpha())
+    return (
+        float(confidence)
+        + (allowed_ratio * 30.0)
+        + min(visible_len, 10) * 4.0
+        + min(diversity, 8) * 3.0
+        + unicode_bonus * 10.0
+        + alpha_bonus * 1.5
+        - unknown_count * 12.0
+    )
+
+
+def _allowed_unicode_bonus_count(text: str) -> int:
+    return sum(1 for char in visible_name_characters(text) if ord(char) > 127 and not unknown_name_chars(char))
+
+
+def _generate_player_name_fallback_candidates(
+    image: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    lang: str,
+) -> list[tuple[str, int, str]]:
+    roi = image[y1:y2, x1:x2]
+    if roi.size == 0:
+        return []
+
+    candidate_specs: list[tuple[str, np.ndarray, str, str]] = []
+    candidate_specs.append(("row_eng", roi, lang, "--psm 7"))
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    upscaled_gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    candidate_specs.append(("row_eng_upscaled", upscaled_gray, lang, "--oem 1 --psm 7"))
+
+    _, otsu_binary = cv2.threshold(upscaled_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    inverted_otsu = 255 - otsu_binary
+    candidate_specs.append(("row_eng_inv_otsu", inverted_otsu, lang, "--oem 1 --psm 7"))
+    candidate_specs.append(("row_latin_inv_otsu", inverted_otsu, "script/Latin", "--oem 1 --psm 7"))
+
+    focus_x1 = min(max(x1 + 6, 0), max(0, x2 - 1))
+    focus_y1 = max(0, y1 - 2)
+    if focus_x1 < x2 and focus_y1 < y2:
+        focus_roi = image[focus_y1:y2, focus_x1:x2]
+        if focus_roi.size > 0:
+            focus_gray = cv2.cvtColor(focus_roi, cv2.COLOR_BGR2GRAY)
+            focus_upscaled = cv2.resize(focus_gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            _, focus_otsu = cv2.threshold(focus_upscaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            focus_inverted_otsu = 255 - focus_otsu
+            candidate_specs.append(("row_eng_focus_inv_otsu", focus_inverted_otsu, lang, "--oem 1 --psm 7"))
+            candidate_specs.append(("row_latin_focus_inv_otsu", focus_inverted_otsu, "script/Latin", "--oem 1 --psm 7"))
+
+    candidates: list[tuple[str, int, str]] = []
+    seen: set[tuple[str, int]] = set()
+    for label, candidate_image, candidate_lang, candidate_config in candidate_specs:
+        candidate_text, candidate_confidence = _run_easyocr_player_name(
+            candidate_image if candidate_image.ndim == 3 else cv2.cvtColor(candidate_image, cv2.COLOR_GRAY2BGR),
+            0,
+            0,
+            candidate_image.shape[1],
+            candidate_image.shape[0],
+        )
+        key = (candidate_text, candidate_confidence)
+        if not candidate_text or key in seen:
+            continue
+        seen.add(key)
+        candidates.append((candidate_text, candidate_confidence, label))
+    return candidates
+
+
+def _run_easyocr_player_name(image: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple[str, int]:
+    reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
+    if reader is None:
+        return "", 0
+
+    roi = image[y1:y2, x1:x2]
+    if roi.size == 0:
+        return "", 0
+
+    candidates: list[tuple[str, int, float]] = []
+
+    def add_candidate(source_image: np.ndarray, label: str) -> None:
+        start_time = time.perf_counter()
+        result = reader.readtext(source_image, detail=1, paragraph=False)
+        OCR_PROFILER.record(label, time.perf_counter() - start_time)
+        parts = []
+        probabilities = []
+        for item in result:
+            if len(item) < 3:
+                continue
+            text = str(item[1]).strip()
+            probability = float(item[2])
+            if not text:
+                continue
+            parts.append(text)
+            probabilities.append(max(0.0, min(1.0, probability)))
+        combined_text = " ".join(parts).strip()
+        if not combined_text:
+            return
+        average_confidence = int(round((sum(probabilities) / len(probabilities)) * 100.0)) if probabilities else 0
+        candidate_score = _player_name_candidate_score(combined_text, average_confidence)
+        candidates.append((combined_text, average_confidence, candidate_score))
+
+    add_candidate(roi, "player_name_easyocr_roi")
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    upscaled_gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    _, otsu_binary = cv2.threshold(upscaled_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    inverted_otsu = 255 - otsu_binary
+    add_candidate(inverted_otsu, "player_name_easyocr_inv_otsu")
+
+    if not candidates:
+        return "", 0
+    best_text, best_confidence, _best_score = max(candidates, key=lambda item: item[2])
+    return best_text, best_confidence
+
+
+def _build_player_name_canvas(
+    image: np.ndarray,
+    coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+    *,
+    preprocess: str = "raw",
+) -> tuple[np.ndarray, list[list[int]]]:
+    rois = []
+    widths = []
+    heights = []
+    for (x1, y1), (x2, y2) in coord_list:
+        roi = image[y1:y2, x1:x2]
+        if preprocess == "inv_otsu3":
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            upscaled_gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            _, otsu_binary = cv2.threshold(upscaled_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            roi = 255 - otsu_binary
+        rois.append(roi)
+        heights.append(max(1, roi.shape[0]))
+        widths.append(max(1, roi.shape[1]))
+
+    separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
+    canvas_height = sum(heights) + separator_height * max(0, len(rois) - 1)
+    canvas_width = max(widths) if widths else 1
+    if preprocess == "raw":
+        canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+    else:
+        canvas = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
+
+    horizontal_list: list[list[int]] = []
+    cursor = 0
+    for roi in rois:
+        height, width = roi.shape[:2]
+        canvas[cursor:cursor + height, 0:width] = roi
+        horizontal_list.append([0, width, cursor, cursor + height])
+        cursor += height + separator_height
+    return canvas, horizontal_list
+
+
+def _run_easyocr_player_names_batched(
+    image: np.ndarray,
+    coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+) -> tuple[list[str], list[int]]:
+    reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
+    if reader is None:
+        return [""] * len(coord_list), [0] * len(coord_list)
+
+    per_row_candidates: list[list[tuple[str, int]]] = [[] for _ in coord_list]
+    for preprocess, profile_label in (
+        ("raw", "player_name_easyocr_batch_raw"),
+        ("inv_otsu3", "player_name_easyocr_batch_inv_otsu"),
+    ):
+        canvas, horizontal_list = _build_player_name_canvas(image, coord_list, preprocess=preprocess)
+        start_time = time.perf_counter()
+        result = reader.recognize(
+            canvas,
+            horizontal_list=horizontal_list,
+            free_list=[],
+            detail=1,
+            paragraph=False,
+            reformat=True,
+        )
+        OCR_PROFILER.record(profile_label, time.perf_counter() - start_time)
+        for row_index, item in enumerate(result):
+            if len(item) < 3:
+                continue
+            text = str(item[1]).strip()
+            probability = float(item[2])
+            if not text:
+                continue
+            confidence = int(round(max(0.0, min(1.0, probability)) * 100.0))
+            per_row_candidates[row_index].append((text, confidence))
+
+    extracted_names = []
+    confidence_scores = []
+    for row_candidates in per_row_candidates:
+        if not row_candidates:
+            extracted_names.append("")
+            confidence_scores.append(0)
+            continue
+        best_text, best_confidence = max(
+            row_candidates,
+            key=lambda item: _player_name_candidate_score(item[0], item[1]),
+        )
+        extracted_names.append(best_text)
+        confidence_scores.append(best_confidence)
+    return extracted_names, confidence_scores
 
 
 def extract_player_names_batched(
@@ -351,64 +632,65 @@ def extract_player_names_batched(
     lang: str = "eng",
     config: str = PLAYER_NAME_BATCH_CONFIG,
 ) -> Tuple[List[str], List[int]]:
-    rois = []
-    widths = []
-    heights = []
-    for (x1, y1), (x2, y2) in coord_list:
-        roi = image[y1:y2, x1:x2]
-        rois.append(roi)
-        heights.append(max(1, roi.shape[0]))
-        widths.append(max(1, roi.shape[1]))
+    extracted_names: list[str] = []
+    confidence_scores: list[int] = []
+    texts_by_row: list[list[str]] = []
+    confidences_by_row: list[list[int]] = []
 
-    separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
-    horizontal_padding = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
-    vertical_padding = PLAYER_NAME_BATCH_VERTICAL_PADDING
-    canvas_width = max(widths) + horizontal_padding * 2
-    canvas_height = sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
-    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
-    row_ranges = []
-    cursor = 0
-    for roi in rois:
-        height, width = roi.shape[:2]
-        start_y = cursor + vertical_padding
-        end_y = start_y + height
-        start_x = horizontal_padding
-        end_x = start_x + width
-        canvas[start_y:end_y, start_x:end_x] = roi
-        row_ranges.append((start_y, end_y))
-        cursor = end_y + vertical_padding + separator_height
+    if PLAYER_NAME_OCR_ENGINE == "easyocr":
+        easyocr_names, easyocr_confidences = _run_easyocr_player_names_batched(image, coord_list)
+        for ((x1, y1), (x2, y2)), easyocr_text, easyocr_confidence in zip(coord_list, easyocr_names, easyocr_confidences):
+            weak_candidate = (
+                easyocr_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
+                or visible_name_length(easyocr_text) < 3
+                or distinct_visible_name_count(easyocr_text) < 3
+            )
+            if weak_candidate:
+                refined_text, refined_confidence = _run_easyocr_player_name(image, x1, y1, x2, y2)
+                if _player_name_candidate_score(refined_text, refined_confidence) > _player_name_candidate_score(easyocr_text, easyocr_confidence):
+                    easyocr_text = refined_text
+                    easyocr_confidence = refined_confidence
+            texts_by_row.append([easyocr_text] if easyocr_text else [])
+            confidences_by_row.append([easyocr_confidence] if easyocr_text else [])
+    else:
+        rois = []
+        widths = []
+        heights = []
+        for (x1, y1), (x2, y2) in coord_list:
+            roi = image[y1:y2, x1:x2]
+            rois.append(roi)
+            heights.append(max(1, roi.shape[0]))
+            widths.append(max(1, roi.shape[1]))
 
-    data = run_tesseract_image_to_data(canvas, lang, config, "player_name_batch")
-    texts_by_row = [[] for _ in rois]
-    confidences_by_row = [[] for _ in rois]
-    for index, raw_text in enumerate(data["text"]):
-        text = raw_text.strip()
-        conf = data["conf"][index]
-        if conf < 0 or not text:
-            continue
-        y = int(data["top"][index])
-        height = int(data["height"][index])
-        center_y = y + max(1, height // 2)
-        for row_index, (start_y, end_y) in enumerate(row_ranges):
-            if start_y <= center_y < end_y:
-                texts_by_row[row_index].append(text)
-                confidences_by_row[row_index].append(conf)
-                break
+        separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
+        horizontal_padding = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
+        vertical_padding = PLAYER_NAME_BATCH_VERTICAL_PADDING
+        canvas_width = max(widths) + horizontal_padding * 2
+        canvas_height = sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
+        canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+        row_ranges = []
+        cursor = 0
+        for roi in rois:
+            height, width = roi.shape[:2]
+            start_y = cursor + vertical_padding
+            end_y = start_y + height
+            start_x = horizontal_padding
+            end_x = start_x + width
+            canvas[start_y:end_y, start_x:end_x] = roi
+            row_ranges.append((start_y, end_y))
+            cursor = end_y + vertical_padding + separator_height
 
-    extracted_names = []
-    confidence_scores = []
+        texts_by_row = [[] for _ in rois]
+        confidences_by_row = [[] for _ in rois]
+
     for row_index, ((x1, y1), (x2, y2)) in enumerate(coord_list):
         combined_text = " ".join(texts_by_row[row_index]).strip()
-        if confidences_by_row[row_index]:
-            average_confidence = int(sum(confidences_by_row[row_index]) // len(confidences_by_row[row_index]))
-        else:
-            average_confidence = 0
+        average_confidence = int(sum(confidences_by_row[row_index]) // len(confidences_by_row[row_index])) if confidences_by_row[row_index] else 0
 
-        stripped_name = re.sub(r"[^a-zA-Z0-9]", "", combined_text)
         low_confidence = average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
-        short_text = len(stripped_name) < 3
-        low_diversity = len(set(stripped_name)) < 3
-        if PLAYER_NAME_ROW_FALLBACK_ENABLED and (low_confidence or short_text or low_diversity):
+        short_text = visible_name_length(combined_text) < 3
+        low_diversity = distinct_visible_name_count(combined_text) < 3
+        if PLAYER_NAME_OCR_ENGINE != "easyocr" and PLAYER_NAME_ROW_FALLBACK_ENABLED and (low_confidence or short_text or low_diversity):
             PLAYER_NAME_FALLBACK_STATS["fallback_rows"] += 1
             if low_confidence:
                 PLAYER_NAME_FALLBACK_STATS["reason_low_confidence"] += 1
@@ -418,20 +700,42 @@ def extract_player_names_batched(
                 PLAYER_NAME_FALLBACK_STATS["reason_low_diversity"] += 1
             original_text = combined_text
             original_confidence = average_confidence
-            roi = image[y1:y2, x1:x2]
-            fallback_data = run_tesseract_image_to_data(roi, lang, "--psm 7", "player_name_row_fallback")
-            words_in_roi = []
-            confidences_in_roi = []
-            for text_index, fallback_conf in enumerate(fallback_data["conf"]):
-                fallback_text = fallback_data["text"][text_index].strip()
-                if fallback_conf >= 0 and fallback_text:
-                    words_in_roi.append(fallback_text)
-                    confidences_in_roi.append(fallback_conf)
-            combined_text = " ".join(words_in_roi).strip()
-            average_confidence = int(sum(confidences_in_roi) // len(confidences_in_roi)) if confidences_in_roi else 0
+            fallback_candidates = _generate_player_name_fallback_candidates(image, x1, y1, x2, y2, lang)
+            best_text = combined_text
+            best_confidence = average_confidence
+            best_score = _player_name_candidate_score(best_text, best_confidence)
+            for candidate_text, candidate_confidence, _candidate_label in fallback_candidates:
+                candidate_score = _player_name_candidate_score(candidate_text, candidate_confidence)
+                if candidate_score > best_score:
+                    best_text = candidate_text
+                    best_confidence = candidate_confidence
+                    best_score = candidate_score
+            if average_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE:
+                preferred_unicode_candidate = None
+                preferred_unicode_key = None
+                for candidate_text, candidate_confidence, _candidate_label in fallback_candidates:
+                    unicode_bonus = _allowed_unicode_bonus_count(candidate_text)
+                    if unicode_bonus <= 0:
+                        continue
+                    candidate_key = (
+                        unicode_bonus,
+                        allowed_name_char_ratio(candidate_text),
+                        visible_name_length(candidate_text),
+                        candidate_confidence,
+                    )
+                    if preferred_unicode_key is None or candidate_key > preferred_unicode_key:
+                        preferred_unicode_candidate = (candidate_text, candidate_confidence)
+                        preferred_unicode_key = candidate_key
+                if preferred_unicode_candidate is not None and _allowed_unicode_bonus_count(best_text) == 0:
+                    unicode_text, unicode_confidence = preferred_unicode_candidate
+                    if visible_name_length(unicode_text) >= max(2, visible_name_length(best_text) - 2):
+                        best_text = unicode_text
+                        best_confidence = unicode_confidence
+            combined_text = best_text
+            average_confidence = best_confidence
             if average_confidence > original_confidence:
                 PLAYER_NAME_FALLBACK_STATS["fallback_improved_confidence"] += 1
-            if len(re.sub(r"[^a-zA-Z0-9]", "", combined_text)) >= len(re.sub(r"[^a-zA-Z0-9]", "", original_text)):
+            if visible_name_length(combined_text) >= visible_name_length(original_text):
                 PLAYER_NAME_FALLBACK_STATS["fallback_kept_or_improved_length"] += 1
 
         extracted_names.append(combined_text)
@@ -709,6 +1013,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             row.get("PositionAfterRace"),
             *[row.get(column_name) for column_name in POSITION_TEMPLATE_COEFF_COLUMNS],
             row["NameConfidence"],
+            row.get("NameAllowedCharRatio", 0.0),
+            row.get("NameUnknownChars", ""),
+            row.get("NameValidationFlags", ""),
             row["DigitConsensus"],
             consensus["row_count_confidence"],
             race_score_players,
@@ -867,7 +1174,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
         "RacePoints", "DetectedRacePoints", "DetectedRacePointsSource", "DetectedOldTotalScore", "DetectedOldTotalScoreSource", "DetectedTotalScore", "DetectedTotalScoreSource", "DetectedNewTotalScore", "DetectedNewTotalScoreSource", "PositionAfterRace",
         *POSITION_TEMPLATE_COEFF_COLUMNS,
-        "NameConfidence",
+        "NameConfidence", "NameAllowedCharRatio", "NameUnknownChars", "NameValidationFlags",
         "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
         "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
         "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
@@ -950,7 +1257,6 @@ def main() -> None:
         help="Process only a specific race class identifier; may be supplied multiple times",
     )
     args = parser.parse_args()
-    configure_tesseract(pytesseract, APP_CONFIG)
 
     folder_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     selected_race_classes = list(args.race_classes or [])

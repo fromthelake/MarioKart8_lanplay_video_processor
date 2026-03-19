@@ -12,20 +12,16 @@ from typing import Any
 
 import cv2
 import numpy as np
-import pytesseract
 from PIL import Image, ImageDraw
 
-from mk8_local_play.app_runtime import configure_tesseract, load_app_config
 from mk8_local_play.extract_common import find_score_bundle_anchor_path, find_score_bundle_consensus_paths
 from mk8_local_play.extract_text import (
-    PLAYER_NAME_BATCH_CONFIG,
     PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE,
-    PLAYER_NAME_BATCH_HORIZONTAL_PADDING,
-    PLAYER_NAME_BATCH_SEPARATOR_HEIGHT,
-    PLAYER_NAME_BATCH_VERTICAL_PADDING,
+    _run_easyocr_player_name,
+    _run_easyocr_player_names_batched,
     extract_player_names_batched,
-    run_tesseract_image_to_data,
 )
+from mk8_local_play.name_unicode import distinct_visible_name_count, visible_name_length
 from mk8_local_play.ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
 from mk8_local_play.ocr_name_matching import preprocess_name, weighted_similarity
 from mk8_local_play.ocr_scoreboard_consensus import (
@@ -92,37 +88,6 @@ def full_frame_to_data_uri(
     pil_image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
-
-
-def build_batch_canvas(image: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int, int, int]]]:
-    rois = []
-    widths = []
-    heights = []
-    for (x1, y1), (x2, y2) in PLAYER_NAME_COORDS:
-        roi = image[y1:y2, x1:x2]
-        rois.append(roi)
-        heights.append(max(1, roi.shape[0]))
-        widths.append(max(1, roi.shape[1]))
-    separator_height = PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
-    horizontal_padding = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
-    vertical_padding = PLAYER_NAME_BATCH_VERTICAL_PADDING
-    canvas_width = max(widths) + horizontal_padding * 2
-    canvas_height = sum(height + vertical_padding * 2 for height in heights) + separator_height * (len(rois) - 1)
-    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
-    row_ranges: list[tuple[int, int, int, int]] = []
-    cursor = 0
-    for roi in rois:
-        height, width = roi.shape[:2]
-        start_y = cursor + vertical_padding
-        end_y = start_y + height
-        start_x = horizontal_padding
-        end_x = start_x + width
-        canvas[start_y:end_y, start_x:end_x] = roi
-        row_ranges.append((start_y, end_y, start_x, end_x))
-        cursor = end_y + vertical_padding + separator_height
-    return canvas, row_ranges
-
-
 def analyze_frame(image: np.ndarray) -> tuple[list[dict[str, Any]], np.ndarray, list[tuple[int, int, int, int]]]:
     # Actual runtime-faithful name-OCR input path.
     processed_img = process_image(image)
@@ -136,36 +101,15 @@ def analyze_frame(image: np.ndarray) -> tuple[list[dict[str, Any]], np.ndarray, 
     )
     scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height), Image.Resampling.NEAREST)
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
-    canvas, row_ranges = build_batch_canvas(annotated_image)
-    data = run_tesseract_image_to_data(canvas, "eng", PLAYER_NAME_BATCH_CONFIG, "html_batch_debug")
-    texts_by_row = [[] for _ in PLAYER_NAME_COORDS]
-    confs_by_row = [[] for _ in PLAYER_NAME_COORDS]
-    token_boxes_by_row = [[] for _ in PLAYER_NAME_COORDS]
-    for index, raw_text in enumerate(data["text"]):
-        text = raw_text.strip()
-        conf = int(data["conf"][index])
-        if conf < 0 or not text:
-            continue
-        y = int(data["top"][index])
-        height = int(data["height"][index])
-        x = int(data["left"][index])
-        width = int(data["width"][index])
-        center_y = y + max(1, height // 2)
-        for row_index, (start_y, end_y, _, _) in enumerate(row_ranges):
-            if start_y <= center_y < end_y:
-                texts_by_row[row_index].append(text)
-                confs_by_row[row_index].append(conf)
-                token_boxes_by_row[row_index].append((x, y, width, height))
-                break
+    batch_names, batch_confidences = _run_easyocr_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
 
     details: list[dict[str, Any]] = []
     for row_index, ((x1, y1), (x2, y2)) in enumerate(PLAYER_NAME_COORDS):
-        batch_text = " ".join(texts_by_row[row_index]).strip()
-        batch_conf = int(sum(confs_by_row[row_index]) // len(confs_by_row[row_index])) if confs_by_row[row_index] else 0
-        stripped = re.sub(r"[^a-zA-Z0-9]", "", batch_text)
+        batch_text = batch_names[row_index] if row_index < len(batch_names) else ""
+        batch_conf = batch_confidences[row_index] if row_index < len(batch_confidences) else 0
         low_conf = batch_conf < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
-        short_text = len(stripped) < 3
-        low_div = len(set(stripped)) < 3
+        short_text = visible_name_length(batch_text) < 3
+        low_div = distinct_visible_name_count(batch_text) < 3
         fallback_needed = low_conf or short_text or low_div
 
         row_roi = annotated_image[y1:y2, x1:x2]
@@ -173,25 +117,7 @@ def analyze_frame(image: np.ndarray) -> tuple[list[dict[str, Any]], np.ndarray, 
         fallback_conf = batch_conf
         fallback_boxes: list[tuple[int, int, int, int]] = []
         if fallback_needed:
-            fallback_data = run_tesseract_image_to_data(row_roi, "eng", "--psm 7", "html_row_fallback_debug")
-            words = []
-            confs = []
-            for i, fb_conf in enumerate(fallback_data["conf"]):
-                fb_text = fallback_data["text"][i].strip()
-                fb_conf_int = int(fb_conf)
-                if fb_conf_int >= 0 and fb_text:
-                    words.append(fb_text)
-                    confs.append(fb_conf_int)
-                    fallback_boxes.append(
-                        (
-                            int(fallback_data["left"][i]),
-                            int(fallback_data["top"][i]),
-                            int(fallback_data["width"][i]),
-                            int(fallback_data["height"][i]),
-                        )
-                    )
-            fallback_text = " ".join(words).strip()
-            fallback_conf = int(sum(confs) // len(confs)) if confs else 0
+            fallback_text, fallback_conf = _run_easyocr_player_name(annotated_image, x1, y1, x2, y2)
 
         details.append(
             {
@@ -220,33 +146,18 @@ def analyze_frame(image: np.ndarray) -> tuple[list[dict[str, Any]], np.ndarray, 
                 "preprocessed_frame_batch_uri": full_frame_to_data_uri(
                     annotated_image,
                     row_index,
-                    ocr_boxes=[
-                        (x1 + x, y1 + y, w, h)
-                        for (x, y, w, h) in token_boxes_by_row[row_index]
-                    ],
                 ),
                 "preprocessed_frame_combined_uri": full_frame_to_data_uri(
                     annotated_image,
                     row_index,
-                    ocr_boxes=[
-                        (x1 + x, y1 + y, w, h)
-                        for (x, y, w, h) in token_boxes_by_row[row_index]
-                    ],
-                    fallback_boxes=[
-                        (x1 + x, y1 + y, w, h)
-                        for (x, y, w, h) in fallback_boxes
-                    ],
+                    fallback_boxes=[],
                 ),
                 "row_roi_uri": image_to_data_uri(row_roi, scale=6, draw_boxes=fallback_boxes),
                 "preprocessed_row_roi_uri": image_to_data_uri(annotated_image[y1:y2, x1:x2], scale=6),
-                "batch_row_uri": image_to_data_uri(
-                    canvas[row_ranges[row_index][0]:row_ranges[row_index][1], row_ranges[row_index][2]:row_ranges[row_index][3]],
-                    scale=3,
-                    draw_boxes=[(x, y - row_ranges[row_index][0], w, h) for (x, y, w, h) in token_boxes_by_row[row_index]],
-                ),
+                "batch_row_uri": image_to_data_uri(annotated_image[y1:y2, x1:x2], scale=6),
             }
         )
-    return details, canvas, row_ranges
+    return details, annotated_image, []
 
 
 def render_html(
@@ -322,9 +233,9 @@ def render_html(
   <h1>Name OCR Debug</h1>
   <div class="intro">
     <p><strong>Video:</strong> {html.escape(video)} | <strong>Race:</strong> {race}</p>
-    <p>This table shows one race with all 12 rows. Each frame column is one of the 7 nearby RaceScore frames used for OCR voting. For each frame, the code first OCRs the stacked 12-row batch image. If that row looks weak, it OCRs the single row again as a fallback. The last column shows the final consensus result used for the race output.</p>
-    <p><strong>How to read it:</strong> “Batch” is what the stacked 12-row OCR saw for that row in that frame. “Fallback” is the second OCR pass on just that row, if triggered. All visuals on this page now come from the same preprocessed <code>annotated_image</code> that the runtime passes into name OCR.</p>
-    <p><strong>Legend:</strong> red = selected row ROI, green = batch OCR boxes, blue = fallback OCR boxes.</p>
+    <p>This table shows one race with all 12 rows. Each frame column is one of the 7 nearby RaceScore frames used for OCR voting. For each frame, the code first runs the batched EasyOCR path used by runtime. If that row looks weak, it OCRs the single row again as a fallback. The last column shows the final consensus result used for the race output.</p>
+    <p><strong>How to read it:</strong> “Batch” is what the batched EasyOCR path saw for that row in that frame. “Fallback” is the second OCR pass on just that row, if triggered. All visuals on this page come from the same preprocessed <code>annotated_image</code> that the runtime passes into name OCR.</p>
+    <p><strong>Legend:</strong> red = selected row ROI.</p>
   </div>
   <table>
     <thead>
@@ -344,7 +255,6 @@ def render_html(
 
 def main() -> int:
     args = parse_args()
-    configure_tesseract(pytesseract, load_app_config())
     base_dir = Path.cwd()
     metadata = load_exported_frame_metadata(base_dir)
     frames_dir = base_dir / "Output_Results" / "Frames"

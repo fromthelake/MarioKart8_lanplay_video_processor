@@ -61,7 +61,6 @@ The project has two main phases:
 
 - `mk8_local_play/app_runtime.py`
   - loads `config/app_config.json`
-  - resolves Tesseract
   - checks runtime dependencies
   - detects OpenCV GPU/OpenCL availability
 - `config/app_config.json`

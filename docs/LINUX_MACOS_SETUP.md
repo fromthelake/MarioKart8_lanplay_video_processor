@@ -17,7 +17,7 @@ For this project itself:
 System-wide installs are only for external tools such as:
 - Git
 - Python 3.12
-- Tesseract OCR
+- FFmpeg
 
 ## Step 1. Choose where the project should live
 
@@ -94,37 +94,36 @@ Important:
 - the Mario Kart tool itself is still installed only inside this project folder's local `.venv`
 - you do not need a global install of `mk8-local-play`
 
-## Step 4. Check Tesseract OCR
+## Step 4. Download the project
 
 Run:
 
 Terminal Command:
 --------------
-tesseract --version
+git clone https://github.com/fromthelake/MarioKart8_lanplay_video_processor
+cd MarioKart8_lanplay_video_processor
 --------------
 
-If it works:
-- continue to Step 5
+## Step 5. Run setup
 
-If it fails:
-- install Tesseract
-- if `tesseract --version` still fails, either fix your shell PATH or set `config/app_config.json` `tesseract_cmd` to the full executable path
-- then run `.venv/bin/mk8-local-play --check` after setup to confirm the app can resolve Tesseract
+Run:
 
-Typical install commands:
-
-Linux:
 Terminal Command:
 --------------
-sudo apt-get update
-sudo apt-get install tesseract-ocr
+chmod +x ./scripts/setup_unix.sh
+./scripts/setup_unix.sh
 --------------
 
-macOS:
-Terminal Command:
---------------
-brew install tesseract
---------------
+This setup script:
+- creates or reuses the local `.venv` in this project folder
+- uses `python3.12` by default and stops if the interpreter is not Python 3.12
+- installs the app into that local `.venv`
+- installs the Python OCR dependencies, including EasyOCR
+- does not require a global install of this app
+- does not require adding `mk8-local-play` to PATH
+
+If setup succeeds:
+- continue to Step 6
 
 Optional:
 - install `ffmpeg` only if you want merge-video features or manual repair workflows
@@ -142,43 +141,13 @@ Terminal Command:
 brew install ffmpeg
 --------------
 
-## Step 5. Download the project
-
-Run:
-
-Terminal Command:
---------------
-git clone https://github.com/fromthelake/MarioKart8_lanplay_video_processor
-cd MarioKart8_lanplay_video_processor
---------------
-
-## Step 6. Run setup
-
-Run:
-
-Terminal Command:
---------------
-chmod +x ./scripts/setup_unix.sh
-./scripts/setup_unix.sh
---------------
-
-This setup script:
-- creates or reuses the local `.venv` in this project folder
-- uses `python3.12` by default and stops if the interpreter is not Python 3.12
-- installs the app into that local `.venv`
-- does not require a global install of this app
-- does not require adding `mk8-local-play` to PATH
-
-If setup succeeds:
-- continue to Step 7
-
 If setup fails:
 - read the terminal error
 - if the script reports the wrong Python version, delete `.venv`, set `PYTHON_BIN` to Python 3.12, and rerun it
 - fix any other missing dependency
 - run `./scripts/setup_unix.sh` again
 
-## Step 7. Run the environment check
+## Step 6. Run the environment check
 
 Run:
 
@@ -188,17 +157,12 @@ Terminal Command:
 --------------
 
 If the check succeeds:
-- continue to Step 8
-
-If the check says Tesseract is missing:
-- install Tesseract for your platform
-- if your shell still cannot resolve `tesseract`, set `config/app_config.json` `tesseract_cmd` to the full executable path
-- run the check again
+- continue to Step 7
 
 If the check succeeds, the project is ready to run entirely from:
 - `.venv/bin/mk8-local-play`
 
-## Step 8. Add your videos
+## Step 7. Add your videos
 
 Put your video files in folder:
 
@@ -208,7 +172,7 @@ Optional:
 - you can also place videos inside subfolders under `./Input_Videos/`
 - use `--subfolders` if you want headless runs to include those subfolders
 
-## Step 9. Run the tool
+## Step 8. Run the tool
 
 Process everything in `Input_Videos`:
 
@@ -386,7 +350,6 @@ Terminal Command:
 --------------
 git --version
 python3.12 --version
-tesseract --version
 .venv/bin/mk8-local-play --check
 --------------
 

@@ -1,6 +1,7 @@
 import argparse
 import cProfile
 import glob
+import importlib.util
 import os
 import pstats
 import re
@@ -21,7 +22,7 @@ except Exception:
 
 from PIL import Image
 
-from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path, resolve_tesseract_cmd, tesseract_resolution_hint
+from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
@@ -182,8 +183,8 @@ def run_python_module(module_name: str, extra_args: list[str] | None = None) -> 
     subprocess.run(command, check=True)
 
 
-def ensure_runtime_or_raise(require_tesseract: bool = False, require_ffmpeg: bool = False) -> None:
-    issues = check_runtime(APP_CONFIG, require_tesseract=require_tesseract, require_ffmpeg=require_ffmpeg)
+def ensure_runtime_or_raise(require_ffmpeg: bool = False) -> None:
+    issues = check_runtime(APP_CONFIG, require_ffmpeg=require_ffmpeg)
     if issues:
         raise RuntimeError("\n".join(issues))
 
@@ -332,7 +333,7 @@ def run_ocr(
     include_subfolders: bool = False,
     selection_mode: bool = False,
 ) -> None:
-    ensure_runtime_or_raise(require_tesseract=True)
+    ensure_runtime_or_raise()
     extra_args = []
     if selection_mode:
         video_files = selected_input_video_files(
@@ -357,7 +358,7 @@ def run_ocr(
 
 
 def run_all(selected_video: str | None = None, selection_mode: bool = False, *, include_subfolders: bool = False) -> None:
-    ensure_runtime_or_raise(require_tesseract=True)
+    ensure_runtime_or_raise()
     from . import extract_frames, extract_text
 
     mode_label = "Run selection" if selection_mode else "Run all"
@@ -396,7 +397,6 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
         include_subfolders=include_subfolders,
     )
     LOGGER.blank_lines(2)
-    extract_text.configure_tesseract(extract_text.pytesseract, extract_text.APP_CONFIG)
     selected_race_classes = (
         selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
         if selection_mode else None
@@ -509,7 +509,8 @@ def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: in
             "extract_scoreboard_observation",
             "analyze_score_window_task",
             "match_template",
-            "run_tesseract_image_to_data",
+            "_run_easyocr_single_roi",
+            "_run_easyocr_player_names_batched",
         ):
             handle.write(f"\nCallers matching: {pattern}\n")
             stats.print_callers(pattern)
@@ -538,18 +539,16 @@ def gui_runtime_available() -> tuple[bool, str]:
 
 def print_runtime_status() -> int:
     ffmpeg_issues = check_runtime(APP_CONFIG, require_ffmpeg=True)
-    tesseract_issues = check_runtime(APP_CONFIG, require_tesseract=True)
     gpu_runtime = detect_gpu_runtime(APP_CONFIG)
     gui_available, gui_reason = gui_runtime_available()
+    easyocr_available = importlib.util.find_spec("easyocr") is not None
 
     print(f"Python executable: {sys.executable}")
     print(f"Child script Python: {resolve_project_python()}")
     print(f"Input folder: {INPUT_DIR}")
     print(f"Frames folder: {FRAMES_DIR}")
     print(f"Latest results file: {find_latest_results_xlsx(OUTPUT_DIR)}")
-    resolved_tesseract = resolve_tesseract_cmd(APP_CONFIG)
-    print(f"Tesseract: {'OK' if not tesseract_issues else 'MISSING'}")
-    print(f"Tesseract path: {resolved_tesseract or 'not resolved'}")
+    print(f"EasyOCR: {'OK' if easyocr_available else 'MISSING'}")
     print(f"FFmpeg: {'OK' if not ffmpeg_issues else 'MISSING'}")
     print(f"GUI runtime: {'OK' if gui_available else 'UNAVAILABLE'}")
     print(f"GUI detail: {gui_reason}")
@@ -572,13 +571,12 @@ def print_runtime_status() -> int:
 
     issues = []
     issues.extend(ffmpeg_issues)
-    issues.extend(tesseract_issues)
+    if not easyocr_available:
+        issues.append("EasyOCR is not installed in the local environment.")
     if issues:
         print("\nRuntime issues:")
         for issue in issues:
             print(f"- {issue}")
-        if tesseract_issues:
-            print(f"- {tesseract_resolution_hint(APP_CONFIG)}")
         return 1
     return 0
 

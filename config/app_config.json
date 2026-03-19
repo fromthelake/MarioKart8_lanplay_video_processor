@@ -1,5 +1,4 @@
 {
-  "tesseract_cmd": null,
   "execution_mode": "cpu",
   "export_image_format": "jpg",
   "ocr_workers": 16,

@@ -6,19 +6,29 @@ import pandas as pd
 import textdistance
 from jellyfish import soundex
 
+from .name_unicode import (
+    allowed_name_char_ratio,
+    collapse_name_whitespace,
+    distinct_visible_name_count,
+    normalize_name_key,
+)
+
 
 def preprocess_name(name):
     """Normalize OCR names before comparing them across races."""
-    text = "" if name is None else str(name)
-    text = re.sub(r"\W+", " ", text)
-    text = text.strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    return text
+    return normalize_name_key(name)
 
 
 def soundex_similarity(name1, name2):
     """Use Soundex as a weak phonetic tie-breaker for noisy OCR names."""
-    return 1 if soundex(name1) == soundex(name2) else 0
+    try:
+        ascii_name1 = preprocess_name(name1).encode("ascii", "ignore").decode("ascii")
+        ascii_name2 = preprocess_name(name2).encode("ascii", "ignore").decode("ascii")
+        if not ascii_name1 or not ascii_name2:
+            return 0
+        return 1 if soundex(ascii_name1) == soundex(ascii_name2) else 0
+    except Exception:
+        return 0
 
 
 def weighted_similarity(name1, name2):
@@ -46,8 +56,7 @@ def weighted_similarity(name1, name2):
 
 
 def normalize_name_for_vote(name: str) -> str:
-    text = "" if name is None else str(name)
-    return re.sub(r"\s+", " ", text.strip())
+    return collapse_name_whitespace(name)
 
 
 def choose_canonical_name(name_history):
@@ -60,11 +69,12 @@ def choose_canonical_name(name_history):
     best_name = candidates[0]
     best_score = float("-inf")
     for candidate, count in counts.items():
-        quality = len(set(re.sub(r"[^a-zA-Z0-9]", "", candidate)))
+        quality = distinct_visible_name_count(candidate)
+        allowed_ratio = allowed_name_char_ratio(candidate)
         support_score = 0.0
         for observed_name in candidates:
             support_score += weighted_similarity(candidate, observed_name)
-        score = (count * 3.0) + support_score + (quality * 0.25)
+        score = (count * 3.0) + support_score + (quality * 0.25) + allowed_ratio
         if score > best_score:
             best_score = score
             best_name = candidate

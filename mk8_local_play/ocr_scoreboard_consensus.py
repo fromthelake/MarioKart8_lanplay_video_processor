@@ -9,16 +9,30 @@ from typing import Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
-import pytesseract
 from PIL import Image, ImageDraw
+
+try:
+    import easyocr
+except Exception:
+    easyocr = None
 
 from .app_runtime import load_app_config
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT
 from .game_catalog import load_game_catalog
+from .name_unicode import (
+    allowed_name_char_ratio,
+    collapse_name_whitespace,
+    distinct_visible_name_count,
+    normalize_name_key,
+    unknown_name_chars,
+    visible_name_length,
+)
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, get_score_layout
 
 APP_CONFIG = load_app_config()
+_DIGIT_EASYOCR_READER = None
+_DIGIT_EASYOCR_LOCK = threading.Lock()
 PLAYER_NAME_COORDS = get_score_layout(DEFAULT_SCORE_LAYOUT_ID).player_name_coords
 BASE_POSITION_STRIP_ROI = get_score_layout(DEFAULT_SCORE_LAYOUT_ID).base_position_strip_roi
 POSITION_STRIP_OFFSET_X = -2
@@ -1190,10 +1204,11 @@ def ocr_digit_row_fallback(
     crop = crop.resize((crop.width * 3, crop.height * 3), Image.NEAREST)
     crop_np = np.array(crop)
     _, crop_np = cv2.threshold(crop_np, 180, 255, cv2.THRESH_BINARY)
-    text = pytesseract.image_to_string(
-        Image.fromarray(crop_np),
-        config='--psm 7 -c tessedit_char_whitelist=0123456789'
-    )
+    reader = _get_digit_easyocr_reader()
+    if reader is None:
+        return ''
+    result = reader.readtext(crop_np, detail=0, paragraph=False, allowlist='0123456789')
+    text = ' '.join(str(item).strip() for item in result if str(item).strip())
     digits_only = re.sub(r'[^0-9]', '', text)
     if not digits_only:
         return ''
@@ -1204,6 +1219,18 @@ def ocr_digit_row_fallback(
     if valid_min <= value <= valid_max:
         return digits_only
     return ''
+
+
+def _get_digit_easyocr_reader():
+    global _DIGIT_EASYOCR_READER
+    if _DIGIT_EASYOCR_READER is not None:
+        return _DIGIT_EASYOCR_READER
+    if easyocr is None:
+        return None
+    with _DIGIT_EASYOCR_LOCK:
+        if _DIGIT_EASYOCR_READER is None:
+            _DIGIT_EASYOCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
+    return _DIGIT_EASYOCR_READER
 
 
 def _digit_box_bounds(top_left: Tuple[int, int], box_dims: Tuple[int, int]) -> Tuple[int, int, int, int]:
@@ -1504,33 +1531,42 @@ def extract_scoreboard_observation(
 
 
 def normalize_name_for_vote(name: str) -> str:
-    text = "" if name is None else str(name)
-    return re.sub(r"\s+", " ", text.strip())
+    return collapse_name_whitespace(name)
 
 
 def _normalize_name_key(name: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9]", "", normalize_name_for_vote(name).lower())
+    return normalize_name_key(name)
 
 
-def weighted_name_vote(values: List[Tuple[str, float]]) -> Tuple[str, float]:
+def weighted_name_vote_details(values: List[Tuple[str, float]]) -> Tuple[str, float, dict[str, object]]:
     normalized_entries = []
     total_weight = 0.0
-    for value, weight in values:
+    for index, (value, weight) in enumerate(values):
         if value in (None, ""):
             continue
         numeric_weight = max(0.0, float(weight))
         if numeric_weight <= 0:
             continue
+        raw_value = normalize_name_for_vote(str(value))
+        key_value = _normalize_name_key(str(value))
+        if not key_value:
+            continue
         normalized_entries.append(
             {
-                "raw": normalize_name_for_vote(str(value)),
-                "key": _normalize_name_key(str(value)),
+                "raw": raw_value,
+                "key": key_value,
                 "weight": numeric_weight,
+                "allowed_ratio": allowed_name_char_ratio(raw_value),
+                "index": index,
             }
         )
         total_weight += numeric_weight
     if not normalized_entries:
-        return "", 0.0
+        return "", 0.0, {
+            "allowed_ratio": 0.0,
+            "unknown_chars": "",
+            "flags": "low_name_confidence|low_name_stability",
+        }
 
     clusters: list[dict[str, object]] = []
     for entry in normalized_entries:
@@ -1549,6 +1585,8 @@ def weighted_name_vote(values: List[Tuple[str, float]]) -> Tuple[str, float]:
                 "representative_raw": entry["raw"],
                 "representative_key": entry["key"],
                 "representative_weight": entry["weight"],
+                "representative_allowed_ratio": entry["allowed_ratio"],
+                "representative_index": entry["index"],
             }
             clusters.append(assigned_cluster)
         assigned_cluster["members"].append(entry)
@@ -1559,25 +1597,54 @@ def weighted_name_vote(values: List[Tuple[str, float]]) -> Tuple[str, float]:
             entry["weight"] > current_rep_weight
             or (
                 entry["weight"] == current_rep_weight
-                and len(entry["key"]) >= len(str(assigned_cluster["representative_key"]))
+                and (
+                    float(entry["allowed_ratio"]) > float(assigned_cluster["representative_allowed_ratio"])
+                    or (
+                        float(entry["allowed_ratio"]) == float(assigned_cluster["representative_allowed_ratio"])
+                        and visible_name_length(str(entry["raw"])) >= visible_name_length(str(assigned_cluster["representative_raw"]))
+                    )
+                )
                 and entry["raw"] != current_rep_raw
             )
         ):
             assigned_cluster["representative_raw"] = entry["raw"]
             assigned_cluster["representative_key"] = entry["key"]
             assigned_cluster["representative_weight"] = entry["weight"]
+            assigned_cluster["representative_allowed_ratio"] = entry["allowed_ratio"]
+            assigned_cluster["representative_index"] = entry["index"]
 
     best_cluster = max(
         clusters,
         key=lambda cluster: (
             float(cluster["weight"]),
+            sum(float(member["allowed_ratio"]) for member in cluster["members"]) / max(len(cluster["members"]), 1),
             float(cluster["representative_weight"]),
-            len(str(cluster["representative_key"])),
+            float(cluster["representative_allowed_ratio"]),
+            -int(cluster["representative_index"]),
         ),
     )
     best_name = str(best_cluster["representative_raw"])
     best_weight = float(best_cluster["weight"])
-    return best_name, (best_weight / total_weight if total_weight > 0 else 0.0)
+    best_ratio = best_weight / total_weight if total_weight > 0 else 0.0
+    mean_confidence = best_weight / max(len(best_cluster["members"]), 1)
+    flags = []
+    unknown_chars = unknown_name_chars(best_name)
+    if unknown_chars:
+        flags.append("unknown_chars")
+    if mean_confidence < 50.0:
+        flags.append("low_name_confidence")
+    if best_ratio < 0.6:
+        flags.append("low_name_stability")
+    return best_name, best_ratio, {
+        "allowed_ratio": round(allowed_name_char_ratio(best_name) * 100, 1),
+        "unknown_chars": unknown_chars,
+        "flags": "|".join(flags),
+    }
+
+
+def weighted_name_vote(values: List[Tuple[str, float]]) -> Tuple[str, float]:
+    best_name, best_ratio, _details = weighted_name_vote_details(values)
+    return best_name, best_ratio
 
 
 def weighted_vote(values: List[Tuple[object, float]]) -> Tuple[object, float]:
@@ -1684,12 +1751,12 @@ def build_consensus_rows(
                     )
                     character_method_votes[(character_key, str(character_match.get("CharacterMatchMethod", "")))] += character_weight
 
-        player_name, name_confidence = weighted_name_vote(name_votes)
+        player_name, name_confidence, name_vote_details = weighted_name_vote_details(name_votes)
         detected_value, point_confidence, detected_value_source = weighted_vote_with_source(point_votes)
         secondary_detected_value, _secondary_point_confidence, secondary_detected_value_source = weighted_vote_with_source(secondary_point_votes)
         character_vote, character_vote_confidence = weighted_vote(character_votes)
-        stripped_name = re.sub(r"[^a-zA-Z0-9]", "", str(player_name or ""))
-        if len(stripped_name) < 3 or len(set(stripped_name)) < 3:
+        visible_name = str(player_name or "")
+        if visible_name_length(visible_name) < 3 or distinct_visible_name_count(visible_name) < 3:
             if detected_value is None:
                 if not keep_all_visible_rows:
                     continue
@@ -1714,6 +1781,9 @@ def build_consensus_rows(
                 "RowIndex": row_index,
                 "PlayerName": player_name or "",
                 "NameConfidence": round(name_confidence * 100, 1),
+                "NameAllowedCharRatio": name_vote_details["allowed_ratio"],
+                "NameUnknownChars": name_vote_details["unknown_chars"],
+                "NameValidationFlags": name_vote_details["flags"],
                 "DetectedValue": detected_value,
                 "DetectedValueSource": detected_value_source,
                 "DetectedSecondaryValue": secondary_detected_value,
@@ -1760,6 +1830,9 @@ def map_total_rows_to_race_rows(
                     "DetectedTotalScoreSource": "",
                     "DetectedNewTotalScoreSource": "",
                     "NameConfidence": score_row["NameConfidence"],
+                    "NameAllowedCharRatio": score_row.get("NameAllowedCharRatio", 0.0),
+                    "NameUnknownChars": score_row.get("NameUnknownChars", ""),
+                    "NameValidationFlags": score_row.get("NameValidationFlags", ""),
                     "DigitConsensus": score_row["DigitConfidence"],
                     "TotalScoreMappingMethod": "missing_total_rows",
                     **{f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)},
@@ -1849,6 +1922,9 @@ def map_total_rows_to_race_rows(
                 "DetectedTotalScoreSource": total_row.get("DetectedValueSource", "") if matched_total_index is not None else "",
                 "DetectedNewTotalScoreSource": total_row.get("DetectedValueSource", "") if matched_total_index is not None else "",
                 "NameConfidence": score_row["NameConfidence"],
+                "NameAllowedCharRatio": score_row.get("NameAllowedCharRatio", 0.0),
+                "NameUnknownChars": score_row.get("NameUnknownChars", ""),
+                "NameValidationFlags": score_row.get("NameValidationFlags", ""),
                 "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
                 "TotalScoreMappingMethod": mapping_method,
                 **total_row_position_coefficients,

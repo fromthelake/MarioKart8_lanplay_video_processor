@@ -3,25 +3,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from collections import defaultdict
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
-import pytesseract
 from PIL import Image
 
-from mk8_local_play.app_runtime import configure_tesseract, load_app_config
 from mk8_local_play.extract_common import find_score_bundle_anchor_path
 from mk8_local_play.extract_text import (
-    PLAYER_NAME_BATCH_CONFIG,
-    PLAYER_NAME_BATCH_HORIZONTAL_PADDING,
-    PLAYER_NAME_BATCH_SEPARATOR_HEIGHT,
-    PLAYER_NAME_BATCH_VERTICAL_PADDING,
-    run_tesseract_image_to_data,
+    _run_easyocr_player_names_batched,
 )
+from mk8_local_play.name_unicode import collapse_name_whitespace
 from mk8_local_play.ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
 from mk8_local_play.ocr_name_matching import preprocess_name, weighted_similarity
 from mk8_local_play.ocr_scoreboard_consensus import (
@@ -48,37 +42,6 @@ def parse_args() -> argparse.Namespace:
         help="Write detailed JSON output here.",
     )
     return parser.parse_args()
-
-
-def build_batch_canvas(image: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int]]]:
-    rois = []
-    widths = []
-    heights = []
-    for (x1, y1), (x2, y2) in PLAYER_NAME_COORDS:
-        roi = image[y1:y2, x1:x2]
-        rois.append(roi)
-        heights.append(max(1, roi.shape[0]))
-        widths.append(max(1, roi.shape[1]))
-    canvas_width = max(widths) + PLAYER_NAME_BATCH_HORIZONTAL_PADDING * 2
-    canvas_height = (
-        sum(height + PLAYER_NAME_BATCH_VERTICAL_PADDING * 2 for height in heights)
-        + PLAYER_NAME_BATCH_SEPARATOR_HEIGHT * (len(rois) - 1)
-    )
-    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
-    row_ranges: list[tuple[int, int]] = []
-    cursor = 0
-    for roi in rois:
-        height, width = roi.shape[:2]
-        start_y = cursor + PLAYER_NAME_BATCH_VERTICAL_PADDING
-        end_y = start_y + height
-        start_x = PLAYER_NAME_BATCH_HORIZONTAL_PADDING
-        end_x = start_x + width
-        canvas[start_y:end_y, start_x:end_x] = roi
-        row_ranges.append((start_y, end_y))
-        cursor = end_y + PLAYER_NAME_BATCH_VERTICAL_PADDING + PLAYER_NAME_BATCH_SEPARATOR_HEIGHT
-    return canvas, row_ranges
-
-
 def extract_batch_names_only(frame_image: np.ndarray) -> tuple[list[str], list[int]]:
     processed_img = process_image(frame_image)
     (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi()
@@ -99,38 +62,13 @@ def extract_batch_names_only(frame_image: np.ndarray) -> tuple[list[str], list[i
     )
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
 
-    canvas, row_ranges = build_batch_canvas(annotated_image)
-    data = run_tesseract_image_to_data(canvas, "eng", PLAYER_NAME_BATCH_CONFIG, "eval_player_name_batch")
-    texts_by_row = [[] for _ in PLAYER_NAME_COORDS]
-    confidences_by_row = [[] for _ in PLAYER_NAME_COORDS]
-    for index, raw_text in enumerate(data["text"]):
-        text = raw_text.strip()
-        conf = int(data["conf"][index])
-        if conf < 0 or not text:
-            continue
-        y = int(data["top"][index])
-        height = int(data["height"][index])
-        center_y = y + max(1, height // 2)
-        for row_index, (start_y, end_y) in enumerate(row_ranges):
-            if start_y <= center_y < end_y:
-                texts_by_row[row_index].append(text)
-                confidences_by_row[row_index].append(conf)
-                break
-
-    names = []
-    confidences = []
-    for row_index in range(len(PLAYER_NAME_COORDS)):
-        combined_text = " ".join(texts_by_row[row_index]).strip()
-        average_confidence = int(sum(confidences_by_row[row_index]) // len(confidences_by_row[row_index])) if confidences_by_row[row_index] else 0
-        names.append(combined_text)
-        confidences.append(average_confidence)
-    return names, confidences
+    return _run_easyocr_player_names_batched(annotated_image, PLAYER_NAME_COORDS)
 
 
 def weighted_name_vote(values: list[tuple[str, float]]) -> tuple[str, float]:
     votes: dict[str, float] = defaultdict(float)
     for name, weight in values:
-        normalized = re.sub(r"\s+", " ", str(name or "").strip())
+        normalized = collapse_name_whitespace(name)
         if not normalized:
             continue
         votes[normalized] += max(1.0, float(weight))
@@ -163,7 +101,6 @@ def roster_consensus(values: list[tuple[str, float]], roster: list[str]) -> tupl
 
 def main() -> int:
     args = parse_args()
-    configure_tesseract(pytesseract, load_app_config())
 
     workbook_df = pd.read_excel(args.workbook)
     video_df = workbook_df[workbook_df["Video"].astype(str) == args.video].copy()

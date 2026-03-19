@@ -280,7 +280,6 @@ Current cleanup behavior:
 
 This keeps extraction, OCR, profiling, and debug-export code paths working after a full cleanup.
 - debug output toggles
-- optional Tesseract path override
 
 Current score-screen bundle usage:
 - `RaceScore` loads `APP_CONFIG.ocr_consensus_frames` frames, currently `7`
