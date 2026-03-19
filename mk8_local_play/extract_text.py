@@ -37,7 +37,8 @@ from .ocr_name_matching import (
     standardize_player_names,
     weighted_similarity,
 )
-from .ocr_common import find_metadata_entry, load_consensus_frames, load_exported_frame_metadata
+from .ocr_common import find_metadata_entry, load_consensus_frame_entries, load_consensus_frames, load_exported_frame_metadata
+from .extract_common import score_bundle_points_anchor_path, write_export_image
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .name_unicode import (
     allowed_name_char_ratio,
@@ -936,13 +937,14 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 
     race_bundle_key = (race_class, race_id_number, "RaceScore")
     total_bundle_key = (race_class, race_id_number, "TotalScore")
-    race_frames = load_consensus_frames(
+    race_frame_entries = load_consensus_frame_entries(
         race_score_image,
         race_metadata,
         input_videos_folder,
         OCR_CONSENSUS_FRAMES,
         in_memory_frames=(in_memory_frame_bundles or {}).get(race_bundle_key),
     )
+    race_frames = [frame for _frame_number, frame in race_frame_entries]
     total_frames = load_consensus_frames(
         total_score_image or race_score_image,
         total_metadata,
@@ -956,12 +958,34 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         extract_player_names_batched,
         preprocess_name,
         weighted_similarity,
-        annotate_path,
-        total_annotate_path,
+        frame_numbers=[frame_number for frame_number, _frame in race_frame_entries],
+        annotate_path=annotate_path,
+        total_annotate_path=total_annotate_path,
         video_context=race_class,
         is_low_res=is_low_res,
         score_layout_id=score_layout_id,
     )
+    selected_points_anchor_frame = consensus.get("race_point_anchor_frame")
+    if selected_points_anchor_frame is not None and race_metadata is not None:
+        selected_entry = next(
+            (
+                (frame_number, frame)
+                for frame_number, frame in race_frame_entries
+                if int(frame_number) == int(selected_points_anchor_frame)
+            ),
+            None,
+        )
+        if selected_entry is not None:
+            _frame_number, selected_frame = selected_entry
+            write_export_image(
+                score_bundle_points_anchor_path(
+                    str(race_metadata.get("video_label", "") or race_class),
+                    int(race_metadata.get("race", race_id_number) or race_id_number),
+                    "2RaceScore",
+                    int(selected_points_anchor_frame),
+                ),
+                selected_frame,
+            )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
     total_score_players = int(consensus.get("total_visible_rows", num_players))
@@ -1018,6 +1042,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus.get("race_score_recovery_used", False),
             consensus.get("race_score_recovery_source", ""),
             consensus.get("race_score_recovery_count", race_score_players),
+            consensus.get("race_point_anchor_frame"),
             row.get("TotalScoreMappingMethod", ""),
             source_video_width,
             source_video_height,
@@ -1166,6 +1191,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
         "RaceScoreRowSignals", "TotalScoreRowSignals",
         "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
+        "RacePointsAnchorFrame",
         "TotalScoreMappingMethod", "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)

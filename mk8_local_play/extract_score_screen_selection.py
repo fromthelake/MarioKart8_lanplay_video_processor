@@ -57,6 +57,8 @@ def fps_scaled_frames(base_frames_30fps, fps):
 
 
 RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS = 1
+RACE_SCORE_EARLY_EXPANSION_FRAMES = 7
+RACE_SCORE_LATE_EXPANSION_FRAMES = 6
 
 
 def _position_metrics_for_frame(frame_image, score_layout_id=None):
@@ -127,7 +129,9 @@ def refine_race_score_result_for_expected_players(result, expected_players):
     elif race_number == 1 and visible_rows == 11 and row11_present:
         should_search = not row12_present
 
-    if not should_search:
+    needs_early_expansion = int(expected_players or 0) >= 11
+
+    if not should_search and not needs_early_expansion:
         return result
 
     extra_search_frames = fps_scaled_frames(10, fps)
@@ -148,6 +152,24 @@ def refine_race_score_result_for_expected_players(result, expected_players):
         return result
 
     try:
+        if needs_early_expansion and result.get('actual_race_score_frame') is not None:
+            expanded_start_frame = max(
+                0,
+                int(result['actual_race_score_frame']) - RACE_SCORE_EARLY_EXPANSION_FRAMES,
+            )
+            expanded_end_frame = int(result['actual_race_score_frame']) + RACE_SCORE_LATE_EXPANSION_FRAMES
+            result['race_consensus_frames'] = collect_frame_range_from_capture(
+                local_cap,
+                expanded_start_frame,
+                expanded_end_frame,
+                left,
+                top,
+                crop_width,
+                crop_height,
+            )
+        if not should_search:
+            return result
+
         for frame_offset in range(1, extra_search_frames + 1):
             candidate_frame = start_frame + frame_offset
             actual_frame, refined_image = capture_export_frame(
@@ -169,16 +191,59 @@ def refine_race_score_result_for_expected_players(result, expected_players):
             result['race_score_frame'] = final_frame
             result['actual_race_score_frame'] = final_actual_frame
             result['race_score_image'] = final_image
-            result['race_consensus_frames'] = collect_consensus_frames_from_capture(
+            expanded_start_frame = max(0, int(final_actual_frame) - RACE_SCORE_EARLY_EXPANSION_FRAMES)
+            expanded_end_frame = int(final_actual_frame) + RACE_SCORE_LATE_EXPANSION_FRAMES
+            result['race_consensus_frames'] = collect_frame_range_from_capture(
                 local_cap,
-                final_actual_frame,
+                expanded_start_frame,
+                expanded_end_frame,
                 left,
                 top,
                 crop_width,
                 crop_height,
-                consensus_frame_count,
             )
             break
+    finally:
+        local_cap.release()
+
+    return result
+
+
+def expand_race_score_consensus_window(result, minimum_expected_players):
+    """Extend RaceScore bundles so OCR can use early frames for points and late frames for presence."""
+    if int(minimum_expected_players or 0) < 11:
+        return result
+
+    candidate = result.get('candidate', {})
+    actual_race_score_frame = result.get('actual_race_score_frame')
+    if actual_race_score_frame is None:
+        return result
+
+    left = candidate.get('left')
+    top = candidate.get('top')
+    crop_width = candidate.get('crop_width')
+    crop_height = candidate.get('crop_height')
+    consensus_frame_count = int(candidate.get('ocr_consensus_frames', 0) or 0)
+    video_path = candidate.get('video_path')
+    if not video_path or any(value is None for value in (left, top, crop_width, crop_height)):
+        return result
+
+    local_cap = cv2.VideoCapture(video_path)
+    if not local_cap.isOpened():
+        return result
+
+    try:
+        expanded_start_frame = max(0, int(actual_race_score_frame) - RACE_SCORE_EARLY_EXPANSION_FRAMES)
+        expanded_end_frame = int(actual_race_score_frame) + RACE_SCORE_LATE_EXPANSION_FRAMES
+        result['race_consensus_frames'] = collect_frame_range_from_capture(
+            local_cap,
+            expanded_start_frame,
+            expanded_end_frame,
+            left,
+            top,
+            crop_width,
+            crop_height,
+        )
     finally:
         local_cap.release()
 
@@ -354,6 +419,28 @@ def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop
     return bundled_frames
 
 
+def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top, crop_width, crop_height):
+    """Collect a specific inclusive frame range as OCR inputs."""
+    total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    bundled_frames = []
+    start_frame = max(0, int(start_frame))
+    end_frame = min(total_frames - 1, int(end_frame))
+    if end_frame < start_frame:
+        return bundled_frames
+    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    for _frame_number in range(start_frame, end_frame + 1):
+        ret, frame = capture.read()
+        if not ret:
+            continue
+        bundled_frames.append(
+            (
+                actual_frame_after_read(capture),
+                crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT),
+            )
+        )
+    return bundled_frames
+
+
 def save_score_frames(video_path, video_label, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
                       actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
                       total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None,
@@ -364,6 +451,11 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
     score_layout = get_score_layout(score_layout_id)
     frame_filename = score_bundle_anchor_path(video_label, race_number, "2RaceScore", actual_race_score_frame)
     write_export_image(frame_filename, race_score_image)
+    for existing_frame_path in Path(frame_filename).parent.glob("frame_*"):
+        try:
+            existing_frame_path.unlink()
+        except OSError:
+            pass
     for consensus_frame_number, consensus_frame_image in race_consensus_frames:
         write_export_image(
             score_bundle_consensus_path(video_label, race_number, "2RaceScore", consensus_frame_number),
@@ -396,6 +488,11 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
 
     frame_filename = score_bundle_anchor_path(video_label, race_number, "3TotalScore", actual_total_score_frame)
     write_export_image(frame_filename, total_score_image)
+    for existing_frame_path in Path(frame_filename).parent.glob("frame_*"):
+        try:
+            existing_frame_path.unlink()
+        except OSError:
+            pass
     for consensus_frame_number, consensus_frame_image in total_consensus_frames:
         write_export_image(
             score_bundle_consensus_path(video_label, race_number, "3TotalScore", consensus_frame_number),

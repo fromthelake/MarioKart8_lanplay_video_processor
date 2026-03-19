@@ -1681,6 +1681,7 @@ def weighted_vote_with_source(values: List[Tuple[object, float, str]]) -> Tuple[
 
 
 TOTAL_SCORE_CONSENSUS_WINDOW_SIZE = 3
+RACE_SCORE_POINT_WINDOW_SIZE = 5
 
 
 def select_consensus_window(observations: List[Dict[str, object]], mode: str, size: int = 3) -> List[Dict[str, object]]:
@@ -1697,6 +1698,38 @@ def select_consensus_window(observations: List[Dict[str, object]], mode: str, si
         start_index = max(0, (len(observations) - size) // 2)
         return observations[start_index:start_index + size]
     return observations
+
+
+def _parse_observation_value(observation: Dict[str, object], key: str, row_index: int) -> int | None:
+    values = observation.get(key, [])
+    if row_index >= len(values):
+        return None
+    return parse_detected_int(values[row_index])
+
+
+def find_points_animation_transition_index(observations: List[Dict[str, object]]) -> int | None:
+    """Find the first frame where both top rows switch from old totals/race points to animated values."""
+    if len(observations) < 2:
+        return None
+
+    for index in range(1, len(observations)):
+        previous = observations[index - 1]
+        current = observations[index]
+        changed_checks = []
+        for row_index in (0, 1):
+            previous_race = _parse_observation_value(previous, "race_points", row_index)
+            current_race = _parse_observation_value(current, "race_points", row_index)
+            previous_total = _parse_observation_value(previous, "total_points", row_index)
+            current_total = _parse_observation_value(current, "total_points", row_index)
+            changed_checks.extend(
+                [
+                    previous_race is not None and current_race is not None and previous_race != current_race,
+                    previous_total is not None and current_total is not None and previous_total != current_total,
+                ]
+            )
+        if len(changed_checks) == 4 and all(changed_checks):
+            return index
+    return None
 
 
 def build_consensus_rows(
@@ -1981,6 +2014,7 @@ def select_race_score_recovery(
 
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
+                                frame_numbers: List[int] | None = None,
                                 total_annotate_path: str | None = None,
                                 video_context: str | None = None, is_low_res: bool = False,
                                 score_layout_id: str | None = None) -> Dict[str, object]:
@@ -2001,6 +2035,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 score_layout_id=score_layout_id,
             )
         )
+    score_core_observations = score_observations[-APP_CONFIG.ocr_consensus_frames:] or score_observations
     total_frames_for_observation = select_consensus_window(
         total_frames,
         "center",
@@ -2020,11 +2055,27 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     if not total_observations:
         total_observations = score_observations
 
-    score_name_observations = select_consensus_window(score_observations, "all")
-    score_point_observations = select_consensus_window(score_observations, "early")
-    score_character_observations = select_consensus_window(score_observations, "late")
-    score_position_observations = select_consensus_window(score_observations, "late")
-    score_count_observations = select_consensus_window(score_observations, "early")
+    frame_numbers = frame_numbers or list(range(len(frames)))
+    race_point_anchor_frame = frame_numbers[-1] if frame_numbers else None
+    score_name_observations = select_consensus_window(score_core_observations, "all")
+    score_point_source_observations = score_observations
+    if len(score_observations) > APP_CONFIG.ocr_consensus_frames:
+        transition_index = find_points_animation_transition_index(score_observations)
+        if transition_index is not None:
+            score_point_source_observations = score_observations[max(0, transition_index - RACE_SCORE_POINT_WINDOW_SIZE):transition_index]
+            if transition_index - 1 < len(frame_numbers):
+                race_point_anchor_frame = frame_numbers[max(0, transition_index - 1)]
+        else:
+            score_radius = max(0, APP_CONFIG.ocr_consensus_frames // 2)
+            anchor_index = max(0, len(score_observations) - score_radius - 1)
+            point_window_start = max(0, anchor_index - (RACE_SCORE_POINT_WINDOW_SIZE - 1))
+            score_point_source_observations = score_observations[point_window_start:anchor_index + 1]
+            if anchor_index < len(frame_numbers):
+                race_point_anchor_frame = frame_numbers[anchor_index]
+    score_point_observations = select_consensus_window(score_point_source_observations, "early")
+    score_character_observations = select_consensus_window(score_core_observations, "late")
+    score_position_observations = select_consensus_window(score_core_observations, "late")
+    score_count_observations = select_consensus_window(score_core_observations, "early")
     total_consensus_observations = total_observations
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
@@ -2154,6 +2205,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "total_row_metrics_summary": representative_total_observation.get("row_metrics_summary", ""),
         "representative_score_observation": representative_score_observation,
         "representative_total_observation": representative_total_observation,
+        "race_point_anchor_frame": race_point_anchor_frame,
         "race_score_recovery_used": bool(recovery["used"]),
         "race_score_recovery_source": str(recovery.get("source", "")) or (
             (

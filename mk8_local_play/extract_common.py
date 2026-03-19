@@ -219,7 +219,11 @@ def score_bundle_anchor_path(video_label: str, race_number: int, frame_content: 
 
 
 def score_bundle_consensus_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
-    return score_bundle_dir(video_label, race_number, frame_content) / f"consensus_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+    return score_bundle_dir(video_label, race_number, frame_content) / f"frame_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+
+
+def score_bundle_points_anchor_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
+    return score_bundle_dir(video_label, race_number, frame_content) / f"12point_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
 
 
 def find_anchor_frame_path(video_label: str, race_number: int, frame_content: str) -> Path | None:
@@ -246,7 +250,7 @@ def find_score_bundle_consensus_paths(video_label: str, race_number: int, frame_
     bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
     candidates = [
         path
-        for path in bundle_dir.glob("consensus_*")
+        for path in bundle_dir.glob("frame_*")
         if is_exported_image_file(path)
     ]
     return sorted(

@@ -90,6 +90,7 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "RaceScoreRecoveryUsed": "RaceScore Recovery Used",
     "RaceScoreRecoverySource": "RaceScore Recovery Source",
     "RaceScoreRecoveryCount": "RaceScore Recovery Count",
+    "RacePointsAnchorFrame": "RacePoints Anchor Frame",
     "TotalScoreMappingMethod": "Total Score Match Method",
     "ScoreValidationStatus": "Validation Status",
     "ReviewNeeded": "Needs Review",

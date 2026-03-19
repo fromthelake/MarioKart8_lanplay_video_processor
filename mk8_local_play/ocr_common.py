@@ -1,4 +1,5 @@
 import csv
+import re
 from pathlib import Path
 
 import cv2
@@ -9,6 +10,11 @@ from .score_layouts import DEFAULT_SCORE_LAYOUT_ID
 
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
+
+
+def _extract_numeric_suffix(stem: str) -> int:
+    match = re.search(r"(\d+)$", stem)
+    return int(match.group(1)) if match else -1
 
 
 def calculate_sum_intensity(gray_image: np.ndarray):
@@ -95,8 +101,29 @@ def find_metadata_entry(metadata_index, race_class: str, race_id_number: int, ki
 def load_consensus_frames(image_path: str, metadata_entry, input_videos_folder: Path,
                           consensus_size: int, in_memory_frames=None):
     """Reload neighbouring frames around an exported frame for OCR voting."""
+    entries = load_consensus_frame_entries(
+        image_path,
+        metadata_entry,
+        input_videos_folder,
+        consensus_size,
+        in_memory_frames=in_memory_frames,
+    )
+    return [frame for _frame_number, frame in entries]
+
+
+def load_consensus_frame_entries(image_path: str, metadata_entry, input_videos_folder: Path,
+                                 consensus_size: int, in_memory_frames=None):
+    """Reload neighbouring frames together with their source frame numbers."""
     if in_memory_frames:
-        return in_memory_frames
+        actual_frame = int((metadata_entry or {}).get("actual_frame", 0) or 0)
+        core_window = max(1, int(consensus_size))
+        radius = max(0, core_window // 2)
+        extra_early = max(0, len(in_memory_frames) - ((radius * 2) + 1))
+        start_frame = max(0, actual_frame - radius - extra_early)
+        return [
+            (start_frame + index, frame)
+            for index, frame in enumerate(in_memory_frames)
+        ]
     if metadata_entry is not None:
         bundle_dir = Path(str(metadata_entry.get("bundle_path", "") or ""))
         if bundle_dir.exists():
@@ -106,15 +133,19 @@ def load_consensus_frames(image_path: str, metadata_entry, input_videos_folder: 
                 "2RaceScore" if str(metadata_entry.get("kind", "")).strip() == "RaceScore" else "3TotalScore",
             )
             if consensus_paths:
-                frames = [cv2.imread(str(path), cv2.IMREAD_COLOR) for path in consensus_paths]
-                frames = [frame for frame in frames if frame is not None]
-                if frames:
-                    return frames
+                entries = []
+                for path in consensus_paths:
+                    frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    entries.append((_extract_numeric_suffix(path.stem), frame))
+                if entries:
+                    return entries
     fallback_image = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if fallback_image is None:
         return []
     if metadata_entry is None:
-        return [fallback_image]
+        return [(0, fallback_image)]
 
     video_value = str(metadata_entry["video"])
     video_path = Path(video_value)
@@ -133,10 +164,10 @@ def load_consensus_frames(image_path: str, metadata_entry, input_videos_folder: 
     end_frame = min(total_frames, actual_frame + radius + 1)
     frames = []
     capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    for _frame_number in range(start_frame, end_frame):
+    for frame_number in range(start_frame, end_frame):
         ret, frame = capture.read()
         if not ret:
             continue
-        frames.append(crop_and_upscale_frame(frame))
+        frames.append((frame_number, crop_and_upscale_frame(frame)))
     capture.release()
-    return frames or [fallback_image]
+    return frames or [(actual_frame, fallback_image)]

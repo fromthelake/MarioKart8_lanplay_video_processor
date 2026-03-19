@@ -262,8 +262,13 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
 
     previous_total_score_players = None
     for result in sorted(results, key=lambda item: item["candidate"]["race_number"]):
-        expected_players = previous_total_score_players if int(result["candidate"].get("race_number", 0) or 0) >= 2 else None
+        race_number = int(result["candidate"].get("race_number", 0) or 0)
+        expected_players = previous_total_score_players if race_number >= 2 else None
         result = score_screen_selection.refine_race_score_result_for_expected_players(result, expected_players)
+        result = score_screen_selection.expand_race_score_consensus_window(
+            result,
+            11 if race_number >= 2 else expected_players,
+        )
         for key, value in result["stats"].items():
             stats[key] += value
         for row in result["debug_rows"]:
