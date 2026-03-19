@@ -908,16 +908,18 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         elif frame_content == "3TotalScore":
             total_score_image = image_path
 
-    if not track_name_image or not race_score_image:
+    if not race_score_image:
         return {"rows": [], "summary": None, "duration_s": time.perf_counter() - race_start_time}
 
     results = []
-    track_name_img = cv2.imread(track_name_image)
-    coordinates = {"TrackName": [((319, 633), (925, 685))]}
-    track_name_data, _ = extract_text_with_confidence(track_name_img, coordinates, 'eng', '--psm 7')
+    track_name_text = "UNKNOWN"
+    if track_name_image:
+        track_name_img = cv2.imread(track_name_image)
+        coordinates = {"TrackName": [((319, 633), (925, 685))]}
+        track_name_data, _ = extract_text_with_confidence(track_name_img, coordinates, 'eng', '--psm 7')
 
-    raw_track_name_text = " ".join(track_name_data['TrackName']).strip()
-    track_name_text = match_track_name(raw_track_name_text, tracks_list)
+        raw_track_name_text = " ".join(track_name_data['TrackName']).strip()
+        track_name_text = match_track_name(raw_track_name_text, tracks_list)
 
     race_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "RaceScore")
     total_metadata = find_metadata_entry(metadata_index, race_class, race_id_number, "TotalScore") if total_score_image else None

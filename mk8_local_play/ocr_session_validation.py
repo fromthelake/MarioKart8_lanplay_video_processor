@@ -140,6 +140,41 @@ def detect_rebase_candidate(prepared_rows, race_index: int) -> bool:
     return median_offset >= 5.0 and len(materially_higher_rows) >= max(4, int(len(rows_with_detected_totals) * 0.6))
 
 
+def detect_initial_old_total_baseline(prepared_rows, race_index: int) -> bool:
+    """Detect when the first visible race already has prior totals on-screen.
+
+    This covers recordings that start after race 1's track intro, where the first
+    exported race still has valid RaceScore/TotalScore screens but should not start
+    tournament totals from zero.
+    """
+    if race_index != 0:
+        return False
+
+    rows_with_old_totals = [
+        row for row in prepared_rows
+        if row.get("detected_old_total") is not None and int(row.get("detected_old_total", 0)) > 0
+    ]
+    if len(rows_with_old_totals) < max(4, len(prepared_rows) // 2):
+        return False
+
+    consistent_rows = []
+    materially_positive_rows = []
+    for row in rows_with_old_totals:
+        detected_old_total = int(row["detected_old_total"])
+        detected_total = row.get("detected_total")
+        race_points = int(row["race_points"])
+        if detected_total is not None and int(detected_total) == detected_old_total + race_points:
+            consistent_rows.append(row)
+        if detected_old_total >= 1:
+            materially_positive_rows.append(row)
+
+    required_rows = max(4, int(len(rows_with_old_totals) * 0.7))
+    return (
+        len(consistent_rows) >= required_rows
+        and len(materially_positive_rows) >= required_rows
+    )
+
+
 def detect_connection_reset(previous_validated_totals, prepared_rows) -> bool:
     """Detect a scoreboard reset where OCR totals drop, but tournament totals should keep running."""
     if not previous_validated_totals:
@@ -265,13 +300,18 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                         "new_total": old_total + race_points,
                         "session_new_total": session_old_total + race_points,
                         "detected_race": parse_detected_int(row["DetectedRacePoints"]),
+                        "detected_old_total": parse_detected_int(row.get("DetectedOldTotalScore")),
                         "detected_total": parse_detected_int(row["DetectedTotalScore"]),
                         "detected_race_source": str(row.get("DetectedRacePointsSource", "")),
+                        "detected_old_total_source": str(row.get("DetectedOldTotalScoreSource", "")),
                         "detected_total_source": str(row.get("DetectedTotalScoreSource", "")),
                     }
                 )
 
-            session_rebased = detect_rebase_candidate(prepared_rows, race_index)
+            session_rebased = (
+                detect_initial_old_total_baseline(prepared_rows, race_index)
+                or detect_rebase_candidate(prepared_rows, race_index)
+            )
             session_rebase_reason = (
                 "Session rebased from this race."
                 if session_rebased else ""
@@ -286,13 +326,20 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
 
             if session_rebased:
                 for prepared_row in prepared_rows:
-                    if prepared_row["detected_total"] is None:
+                    detected_old_total = prepared_row.get("detected_old_total")
+                    detected_total = prepared_row.get("detected_total")
+                    if detected_old_total is not None:
+                        rebased_old_total = max(0, int(detected_old_total))
+                        rebased_new_total = rebased_old_total + int(prepared_row["race_points"])
+                    elif detected_total is not None:
+                        rebased_old_total = max(0, int(detected_total) - int(prepared_row["race_points"]))
+                        rebased_new_total = int(detected_total)
+                    else:
                         continue
-                    rebased_old_total = max(0, int(prepared_row["detected_total"]) - int(prepared_row["race_points"]))
                     prepared_row["old_total"] = rebased_old_total
                     prepared_row["session_old_total"] = rebased_old_total
-                    prepared_row["new_total"] = int(prepared_row["detected_total"])
-                    prepared_row["session_new_total"] = int(prepared_row["detected_total"])
+                    prepared_row["new_total"] = rebased_new_total
+                    prepared_row["session_new_total"] = rebased_new_total
 
             if announce_connection_reset:
                 for prepared_row in prepared_rows:
