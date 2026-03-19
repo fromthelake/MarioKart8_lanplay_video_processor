@@ -786,25 +786,15 @@ def get_cup_name(track_name: str, track_list: List[Tuple[int, str, str, int, str
     return ""
 
 
-MII_FALLBACK_MAX_CONFIDENCE = 78.0
+# Use the raw anchor-frame template score here, not the exported consensus vote ratio.
+# In practice Mii lookalikes can still cluster around ~79 with extremely small winner margins.
+MII_FALLBACK_MAX_CONFIDENCE = 80.0
 MII_FALLBACK_MAX_MARGIN = 1.0
 MII_FALLBACK_MIN_SUSPECT_RACES = 3
 MII_FALLBACK_MIN_DISTINCT_WINNERS = 2
-MII_FALLBACK_REVIEW_REASON = "mii_fallback_unstable_character_match"
 MII_CHARACTER_NAME = "Mii"
 MII_CHARACTER_INDEX = 80
 MII_CHARACTER_METHOD = "mii_fallback_unstable_non_mii_matches"
-
-
-def _append_review_reason(existing: object, reason: str) -> str:
-    tokens = []
-    for token in str(existing or "").split(";"):
-        normalized = token.strip()
-        if normalized and normalized.lower() != "nan":
-            tokens.append(normalized)
-    if reason not in tokens:
-        tokens.append(reason)
-    return ";".join(tokens)
 
 
 def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
@@ -895,10 +885,6 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
             df.at[row_index, "CharacterIndex"] = MII_CHARACTER_INDEX
             df.at[row_index, "CharacterMatchMethod"] = (
                 f"{existing_method}+{MII_CHARACTER_METHOD}" if existing_method else MII_CHARACTER_METHOD
-            )
-            df.at[row_index, "ReviewReason"] = _append_review_reason(
-                df.at[row_index, "ReviewReason"],
-                MII_FALLBACK_REVIEW_REASON,
             )
     return df
 
