@@ -307,6 +307,7 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
         race_count_for_class = int(race_group["RaceIDNumber"].nunique())
         player_count_distribution = race_group.groupby("RaceIDNumber").size().value_counts().sort_index(ascending=False)
         dominant_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
+        distribution_text = ", ".join(f"{player_count} players x {count}" for player_count, count in player_count_distribution.items())
         review_row_count = int(race_group["ReviewNeeded"].sum())
         review_race_count = int(race_group.loc[race_group["ReviewNeeded"], "RaceIDNumber"].nunique())
         inconsistent_races = []
@@ -329,6 +330,11 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
             "review_row_count": review_row_count,
             "review_race_count": review_race_count,
             "player_count_distribution": {int(player_count): int(count) for player_count, count in player_count_distribution.items()},
+            "player_count_summary": (
+                f"consistent ({dominant_players} players)"
+                if not inconsistent_races else
+                f"mixed ({distribution_text})"
+            ),
         }
 
         if not inconsistent_races:
@@ -338,7 +344,6 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
             )
             continue
 
-        distribution_text = ", ".join(f"{player_count} players x {count}" for player_count, count in player_count_distribution.items())
         lines.append(f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | Player count was not consistent")
         lines.append(f"  Most races showed {dominant_players} players")
         lines.append(f"  Summary: {distribution_text}")

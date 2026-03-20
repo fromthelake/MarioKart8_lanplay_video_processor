@@ -138,6 +138,24 @@ def show_error(title: str, message: str) -> None:
         print(f"{title}: {message}", file=sys.stderr)
 
 
+def _format_simple_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    if not rows:
+        return []
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(str(value)))
+    table_lines = [
+        "  " + "  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))),
+        "  " + "  ".join(("-" * widths[index]).ljust(widths[index]) for index in range(len(headers))),
+    ]
+    for row in rows:
+        table_lines.append(
+            "  " + "  ".join(str(row[index]).ljust(widths[index]) for index in range(len(headers)))
+        )
+    return table_lines
+
+
 def confirm_yes_no(title: str, message: str) -> bool:
     if messagebox is not None:
         return bool(messagebox.askyesno(title, message))
@@ -354,6 +372,7 @@ def run_ocr(
 
 
 def run_all(selected_video: str | None = None, selection_mode: bool = False, *, include_subfolders: bool = False) -> None:
+    LOGGER.reset()
     ensure_runtime_or_raise()
     from . import extract_frames, extract_text
 
@@ -362,7 +381,10 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     video_files = selected_input_video_files(selected_video=selected_video, include_subfolders=include_subfolders)
     if not video_files:
         target = selected_video or "Input_Videos"
-        raise RuntimeError(f"No supported videos found for selection: {target}")
+        raise RuntimeError(
+            f"No supported videos found for selection: {target} | "
+            f"Searched under: {INPUT_DIR}"
+        )
     source_summaries = []
     total_source_seconds = 0.0
     for video_path in video_files:
@@ -425,13 +447,28 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     ]
     if per_video_summaries:
         performance_lines.extend(["", "Per-video durations"])
+        per_video_rows = []
         for summary in per_video_summaries:
             video_stem = Path(summary["video_name"]).stem
             video_ocr_summary = ocr_per_video_summary.get(video_stem, {})
-            performance_lines.append(
-                    f"- {summary['video_name']} | Source: {extract_frames.format_duration(summary['source_length_s'])} | "
-                    f"Processing: {extract_frames.format_duration(summary['processing_duration_s'])}"
-                )
+            player_summary = video_ocr_summary.get("player_count_summary", "n/a")
+            per_video_rows.append([
+                summary["video_name"],
+                extract_frames.format_duration(summary["source_length_s"]),
+                extract_frames.format_duration(summary["processing_duration_s"]),
+                str(video_ocr_summary.get("race_count", 0)),
+                player_summary,
+            ])
+        performance_lines.extend(
+            _format_simple_table(
+                ["Video", "Source", "Processing", "Races", "Players"],
+                per_video_rows,
+            )
+        )
+        for summary in per_video_summaries:
+            video_stem = Path(summary["video_name"]).stem
+            video_ocr_summary = ocr_per_video_summary.get(video_stem, {})
+            performance_lines.append(f"- {summary['video_name']}")
             performance_lines.append(f"  - Scan: {extract_frames.format_duration(summary['scan_duration_s'])}")
             corrupt_check_duration_s = float(summary.get('corrupt_check_duration_s', 0.0))
             corrupt_check_status = summary.get('corrupt_check_status', 'skipped')
@@ -456,10 +493,6 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
                 ocr_duration_s = 0.0
             performance_lines.append(f"  - OCR: {extract_frames.format_duration(ocr_duration_s)}")
             if video_ocr_summary:
-                performance_lines.append(
-                    f"  - Races found: {video_ocr_summary.get('race_count', 0)} | "
-                    f"Players: {video_ocr_summary.get('dominant_players', 0)}/12"
-                )
                 review_race_count = int(video_ocr_summary.get("review_race_count", 0))
                 review_row_count = int(video_ocr_summary.get("review_row_count", 0))
                 if review_race_count > 0 or review_row_count > 0:
@@ -513,6 +546,7 @@ def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: in
 
 
 def run_profiled_all(selected_video: str | None = None) -> None:
+    LOGGER.reset()
     profiler = cProfile.Profile()
     profiler.enable()
     try:

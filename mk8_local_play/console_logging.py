@@ -70,6 +70,10 @@ class ConsoleLogger:
         self.resources = ResourceMonitor()
         self.use_color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
+    def reset(self) -> None:
+        self.start_time = time.perf_counter()
+        self.resources = ResourceMonitor()
+
     def elapsed_seconds(self) -> float:
         return max(0.0, time.perf_counter() - self.start_time)
 

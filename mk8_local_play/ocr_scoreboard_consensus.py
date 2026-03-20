@@ -90,10 +90,36 @@ def observation_stage_summary_lines() -> List[str]:
     if not OBSERVATION_STAGE_STATS:
         return []
     total_seconds = sum(item["seconds"] for item in OBSERVATION_STAGE_STATS.values())
-    lines = [f"Observation stage time: {total_seconds:.2f}s"]
+    rows = []
     for label, item in sorted(OBSERVATION_STAGE_STATS.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
         avg_ms = (item["seconds"] / max(1, item["calls"])) * 1000.0
-        lines.append(f"- {label}: {item['calls']} calls | {item['seconds']:.2f}s total | {avg_ms:.1f} ms/call")
+        rows.append((str(label), f"{int(item['calls']):>5}", f"{item['seconds']:>10.2f}", f"{avg_ms:>9.1f}"))
+    headers = ("Stage", "Calls", "Total (s)", "Avg (ms)")
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(value))
+    lines = [
+        f"Observation stage profile (cumulative across all observations): {total_seconds:.2f}s",
+        "  "
+        + "  ".join(
+            header.ljust(widths[index]) if index == 0 else header.rjust(widths[index])
+            for index, header in enumerate(headers)
+        ),
+        "  "
+        + "  ".join(
+            ("-" * widths[index]).ljust(widths[index]) if index == 0 else ("-" * widths[index]).rjust(widths[index])
+            for index in range(len(headers))
+        ),
+    ]
+    for row in rows:
+        lines.append(
+            "  "
+            + "  ".join(
+                row[index].ljust(widths[index]) if index == 0 else row[index].rjust(widths[index])
+                for index in range(len(headers))
+            )
+        )
     return lines
 
 

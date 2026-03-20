@@ -361,7 +361,30 @@ Other debug artifacts are grouped by video so the debug tree sorts like `Output_
 - `Output_Results/Debug/Low_Res/<VideoLabel>/identity_assignment.csv`
 - `Output_Results/Debug/Low_Res/<VideoLabel>/identity_resolution.csv`
 
-## 10A. OCR Performance Guardrails
+## 10A. Console Reporting Baseline
+
+The console and GUI share the same runtime logger. Each new top-level run resets the timer and resource peaks, so elapsed timestamps always start at `00:00` for a fresh `Run`, `Selection`, or profiled run, even if the GUI has been open for a long time.
+
+Current reporting conventions:
+- elapsed timestamps shown in log prefixes are wall-clock time since the current run started
+- `Run - Performance Summary` reports wall-clock phase durations
+- OCR profiler sections explicitly label cumulative timing so they are not confused with wall-clock runtime
+- OCR progress lines show completed groups plus `In flight: N` while race bundles are still running
+- per-video run summaries use an aligned table for source length, processing time, race count, and player-count status
+
+Current OCR profiling sections:
+- `OCR Call Matrix`
+- `Totals By Field`
+- `Totals By Bundle`
+- `OCR engine profile (cumulative across all OCR calls)`
+- `Observation stage profile (cumulative across all observations)`
+
+When changing console output, preserve the distinction between:
+- wall-clock run timing
+- cumulative OCR engine timing
+- cumulative observation-stage timing
+
+## 10B. OCR Performance Guardrails
 
 The current OCR defaults are based on measured large-run benchmarks and should be treated as the performance baseline unless a new benchmark proves a better alternative.
 

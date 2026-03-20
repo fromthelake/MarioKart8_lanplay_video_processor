@@ -24,7 +24,9 @@ Runtime baseline:
 ### Entry points
 
 - `mk8_local_play/main.py`
-  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, and end-to-end orchestration.
+  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, and end-to-end orchestration.
+- `mk8_local_play/console_logging.py`
+  Shared console logger and resource monitor for CLI/GUI output. Owns elapsed-time formatting, summary blocks, resource peaks, and the per-run timer reset behavior.
 - `pyproject.toml`
   Defines the `mk8-local-play` console script pointing to `mk8_local_play.main:main`.
 

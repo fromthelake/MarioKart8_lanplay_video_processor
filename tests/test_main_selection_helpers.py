@@ -1,4 +1,5 @@
 import shutil
+import time
 import unittest
 import uuid
 from pathlib import Path
@@ -176,3 +177,17 @@ class MainSelectionHelpersTests(unittest.TestCase):
             self.assertFalse((output_dir / "result.csv").exists())
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_run_all_resets_logger_elapsed_time_before_start(self):
+        original_start = main.LOGGER.start_time
+        try:
+            main.LOGGER.start_time = time.perf_counter() - 999.0
+            with (
+                mock.patch.object(main, "ensure_runtime_or_raise"),
+                mock.patch.object(main, "selected_input_video_files", return_value=[]),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "No supported videos found for selection"):
+                    main.run_all(selection_mode=True)
+            self.assertLess(main.LOGGER.elapsed_seconds(), 1.0)
+        finally:
+            main.LOGGER.start_time = original_start

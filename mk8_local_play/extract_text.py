@@ -11,6 +11,7 @@ import difflib
 import openpyxl
 import re
 import threading
+import warnings
 from collections import defaultdict
 from functools import lru_cache
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -20,6 +21,12 @@ try:
     import easyocr
 except Exception:
     easyocr = None
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used\.",
+    category=UserWarning,
+)
 from .app_runtime import load_app_config
 from .extract_common import (
     build_video_identity,
@@ -130,14 +137,46 @@ class OcrProfiler:
         with self._lock:
             stats = {key: value.copy() for key, value in self._stats.items()}
         if not stats:
-            return ["OCR engine calls: none recorded"]
+            return ["OCR engine profile (cumulative across all OCR calls)", "No engine OCR calls recorded"]
         total_calls = sum(item["calls"] for item in stats.values())
         total_seconds = sum(item["seconds"] for item in stats.values())
-        lines = [f"OCR engine calls: {total_calls} | OCR engine time: {total_seconds:.2f}s"]
+        rows = []
         for label, item in sorted(stats.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
             avg_ms = (item["seconds"] / max(1, item["calls"])) * 1000.0
+            rows.append(
+                (
+                    str(label),
+                    f"{int(item['calls']):>5}",
+                    f"{item['seconds']:>10.2f}",
+                    f"{avg_ms:>9.1f}",
+                )
+            )
+        headers = ("Method", "Calls", "Total (s)", "Avg (ms)")
+        widths = [len(header) for header in headers]
+        for row in rows:
+            for index, value in enumerate(row):
+                widths[index] = max(widths[index], len(value))
+        lines = [
+            "OCR engine profile (cumulative across all OCR calls)",
+            f"Total calls: {total_calls} | Cumulative engine time: {total_seconds:.2f}s",
+            "  "
+            + "  ".join(
+                header.ljust(widths[index]) if index == 0 else header.rjust(widths[index])
+                for index, header in enumerate(headers)
+            ),
+            "  "
+            + "  ".join(
+                ("-" * widths[index]).ljust(widths[index]) if index == 0 else ("-" * widths[index]).rjust(widths[index])
+                for index in range(len(headers))
+            ),
+        ]
+        for row in rows:
             lines.append(
-                f"- {label}: {item['calls']} calls | {item['seconds']:.2f}s total | {avg_ms:.1f} ms/call"
+                "  "
+                + "  ".join(
+                    row[index].ljust(widths[index]) if index == 0 else row[index].rjust(widths[index])
+                    for index in range(len(headers))
+                )
             )
         return lines
 
@@ -1253,7 +1292,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         while pending:
             done, pending = wait(pending, timeout=3.0, return_when=FIRST_COMPLETED)
             if not done:
-                progress.heartbeat(completed_count, "Still processing OCR races")
+                progress.heartbeat(completed_count, f"In flight: {len(pending)} | Still processing OCR races")
                 continue
             for future in done:
                 completed_count += 1
@@ -1264,7 +1303,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
                 results.extend(race_result["rows"])
                 if race_result["summary"] is not None:
                     race_summaries.append(race_result["summary"])
-                progress.update(completed_count)
+                progress.update(completed_count, f"In flight: {len(pending)}")
                 if matching_summary is not None:
                     LOGGER.log(
                         "",
