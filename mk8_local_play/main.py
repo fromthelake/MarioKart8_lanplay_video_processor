@@ -21,7 +21,7 @@ except Exception:
 
 from PIL import Image
 
-from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path
+from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path, update_app_config_values
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
@@ -588,7 +588,9 @@ def print_runtime_status() -> int:
         f"cuda_devices={gpu_runtime['device_count']}, opencl={gpu_runtime['opencl_in_use']})"
     )
     print(f"GPU detail: {gpu_runtime['reason']}")
+    print(f"EasyOCR GPU: {'ON' if APP_CONFIG.easyocr_gpu else 'OFF'}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
+    print(f"Effective OCR workers: {1 if APP_CONFIG.easyocr_gpu else APP_CONFIG.ocr_workers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
     print(f"Initial scan workers: {APP_CONFIG.pass1_scan_workers}")
     print(f"OCR consensus frames: {APP_CONFIG.ocr_consensus_frames}")
@@ -722,11 +724,12 @@ def _create_step_card(parent, *, step_number: str, title: str, description: str,
     return card, body
 
 
-def _create_gui_toggle(parent, *, text: str, variable, bg: str, fg: str, selectcolor: str, active_bg: str):
+def _create_gui_toggle(parent, *, text: str, variable, bg: str, fg: str, selectcolor: str, active_bg: str, command=None):
     toggle = tk.Checkbutton(
         parent,
         text=text,
         variable=variable,
+        command=command,
         onvalue=True,
         offvalue=False,
         bg=bg,
@@ -814,6 +817,14 @@ def launch_gui() -> int:
     root.grid_rowconfigure(0, weight=1)
 
     include_subfolders_var = tk.BooleanVar(value=False)
+    easyocr_gpu_var = tk.BooleanVar(value=APP_CONFIG.easyocr_gpu)
+
+    def persist_easyocr_gpu_setting():
+        global APP_CONFIG
+        enabled = bool(easyocr_gpu_var.get())
+        os.environ["MK8_EASYOCR_GPU"] = "1" if enabled else "0"
+        update_app_config_values({"easyocr_gpu": enabled})
+        APP_CONFIG = load_app_config()
 
     def gui_run_extract():
         try:
@@ -1069,6 +1080,34 @@ def launch_gui() -> int:
         font=("TkDefaultFont", 13),
     )
     ocr_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+    ocr_options = tk.Frame(step3_body, bg=GUI_THEME["panel_bg"])
+    ocr_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    ocr_options.grid_columnconfigure(1, weight=1)
+
+    easyocr_gpu_toggle = _create_gui_toggle(
+        ocr_options,
+        text="Use GPU For EasyOCR",
+        variable=easyocr_gpu_var,
+        command=persist_easyocr_gpu_setting,
+        bg=GUI_THEME["panel_bg"],
+        fg="#d8f7df",
+        selectcolor="#17331f",
+        active_bg=GUI_THEME["panel_bg"],
+    )
+    easyocr_gpu_toggle.grid(row=0, column=0, sticky="w")
+
+    easyocr_gpu_note = tk.Label(
+        ocr_options,
+        text="Optional. Keeps CPU as the default path and forces OCR workers to 1 when enabled.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=520,
+        font=("TkDefaultFont", 13),
+    )
+    easyocr_gpu_note.grid(row=0, column=1, sticky="w", padx=(12, 0))
 
     selection_card, selection_body = _create_step_card(
         steps_frame,

@@ -253,10 +253,17 @@ Loaded by:
 - [app_runtime.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/app_runtime.py)
 
 Important settings include:
+- EasyOCR GPU toggle
 - OCR worker count
 - score-analysis worker count
 - pass-1 scan worker count
 - RaceScore consensus frame count
+
+Current GPU OCR setting:
+- `easyocr_gpu`
+  - default: `false`
+  - when enabled and CUDA is available, EasyOCR uses GPU for name/track OCR
+  - the OCR phase forces effective OCR workers to `1` in GPU mode, because that was the best measured configuration on the current test machine
 
 ## 10. Output Maintenance
 
@@ -394,6 +401,7 @@ Current intended defaults:
 - `MK8_TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED=0`
 - `MK8_TOTAL_SCORE_RACE_POINTS_ENABLED=0`
 - `MK8_DIGIT_OCR_FALLBACK_ENABLED=0`
+- `easyocr_gpu=false`
 
 These defaults were chosen after profiling showed that the old path spent most of its time on work that did not improve final exported results:
 - reading `RacePoints` on `3TotalScore` frames
@@ -406,6 +414,7 @@ When changing OCR process flow, preserve these rules unless a benchmark on repre
 - Seven-segment digit parsing is the primary digit reader. Re-enable digit OCR fallback only with measured proof that it improves final business output.
 - `inv_otsu` is the primary batch name OCR path. Additional raw OCR should stay conditional unless profiling proves otherwise.
 - Any change to fallback thresholds or OCR pass counts should be validated on larger extracted race classes, not only on the single-race demo.
+- In GPU OCR mode, keep effective OCR workers at `1` unless a new benchmark proves a better GPU worker count on representative source videos.
  
 ## 11. Files To Read First
 

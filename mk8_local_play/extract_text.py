@@ -22,6 +22,11 @@ try:
 except Exception:
     easyocr = None
 
+try:
+    import torch
+except Exception:
+    torch = None
+
 warnings.filterwarnings(
     "ignore",
     message=r"'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used\.",
@@ -82,7 +87,6 @@ POSITION_TEMPLATE_COEFF_COLUMNS = [f"PositionTemplate{template_index:02}_Coeff" 
 # Record the start time
 start_run_time = time.time()
 APP_CONFIG = load_app_config()
-OCR_WORKERS = APP_CONFIG.ocr_workers
 OCR_CONSENSUS_FRAMES = APP_CONFIG.ocr_consensus_frames
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
@@ -120,6 +124,20 @@ TRACK_EASYOCR_LANGS = [
     for part in os.environ.get("MK8_TRACK_EASYOCR_LANGS", "en,nl").split(",")
     if part.strip()
 ]
+
+
+def easyocr_gpu_enabled() -> bool:
+    runtime_config = load_app_config()
+    return (
+        os.environ.get("MK8_EASYOCR_GPU", "1" if runtime_config.easyocr_gpu else "0").lower() not in {"0", "false", "no"}
+        and torch is not None
+        and bool(torch.cuda.is_available())
+    )
+
+
+def current_ocr_workers() -> int:
+    runtime_config = load_app_config()
+    return 1 if easyocr_gpu_enabled() else runtime_config.ocr_workers
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -409,7 +427,7 @@ def _get_easyocr_reader(languages: list[str] | tuple[str, ...]):
         return None
     with _EASYOCR_READER_LOCK:
         if cache_key not in _EASYOCR_READERS:
-            _EASYOCR_READERS[cache_key] = easyocr.Reader(list(cache_key), gpu=False, verbose=False)
+            _EASYOCR_READERS[cache_key] = easyocr.Reader(list(cache_key), gpu=easyocr_gpu_enabled(), verbose=False)
     return _EASYOCR_READERS[cache_key]
 
 
@@ -1211,6 +1229,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 
 def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, selected_race_classes=None):
     phase_start_time = time.time()
+    ocr_workers = current_ocr_workers()
+    ocr_consensus_frames = load_app_config().ocr_consensus_frames
     reset_observation_stage_stats()
     reset_call_matrix_stats()
     reset_character_shortlist_state()
@@ -1256,7 +1276,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")
     LOGGER.log(
         "[OCR - Settings]",
-        f"OCR workers: {OCR_WORKERS} | Consensus frames: {OCR_CONSENSUS_FRAMES} | Input race groups: {len(sorted_grouped_images)}",
+        f"OCR workers: {ocr_workers} | Consensus frames: {ocr_consensus_frames} | Input race groups: {len(sorted_grouped_images)}",
         color_name="magenta",
     )
     if selected_classes is not None:
@@ -1273,7 +1293,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         race_totals_by_class[race_class] = race_totals_by_class.get(race_class, 0) + 1
     progress = ProgressPrinter("[OCR]", len(sorted_grouped_images), percent_step=5, min_interval_s=2.0)
 
-    with ThreadPoolExecutor(max_workers=OCR_WORKERS) as executor:
+    with ThreadPoolExecutor(max_workers=ocr_workers) as executor:
         # Each race group is independent, so the safest parallelism boundary is one
         # worker per race bundle.
         future_map = {

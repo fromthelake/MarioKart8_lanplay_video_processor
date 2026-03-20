@@ -16,6 +16,7 @@ from .project_paths import PROJECT_ROOT
 class AppConfig:
     execution_mode: str
     export_image_format: str
+    easyocr_gpu: bool
     ocr_workers: int
     score_analysis_workers: int
     pass1_scan_workers: int
@@ -86,6 +87,17 @@ def _load_json_config(config_path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def update_app_config_values(overrides: dict, base_dir: Optional[Path] = None) -> None:
+    base_dir = Path(base_dir or PROJECT_ROOT)
+    config_path = base_dir / "config" / "app_config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    json_config = _load_json_config(config_path)
+    json_config.update(overrides)
+    with config_path.open("w", encoding="utf-8") as handle:
+        json.dump(json_config, handle, indent=2)
+        handle.write("\n")
+
+
 def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     base_dir = Path(base_dir or PROJECT_ROOT)
     config_path = base_dir / "config" / "app_config.json"
@@ -110,6 +122,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     export_image_format = _parse_export_image_format(
         os.environ.get("MK8_EXPORT_IMAGE_FORMAT", json_config.get("export_image_format")),
         "png",
+    )
+    easyocr_gpu = _parse_bool(
+        os.environ.get("MK8_EASYOCR_GPU", json_config.get("easyocr_gpu")),
+        False,
     )
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
@@ -221,6 +237,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     return AppConfig(
         execution_mode=execution_mode,
         export_image_format=export_image_format,
+        easyocr_gpu=easyocr_gpu,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
         pass1_scan_workers=pass1_scan_workers,

@@ -17,6 +17,11 @@ try:
 except Exception:
     easyocr = None
 
+try:
+    import torch
+except Exception:
+    torch = None
+
 from .app_runtime import load_app_config
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT
@@ -78,6 +83,15 @@ ULTRA_LOW_RES_ROW_MIN_STDDEV = APP_CONFIG.ultra_low_res_row_min_stddev
 ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY = APP_CONFIG.ultra_low_res_row_min_edge_density
 TOTAL_SCORE_RACE_POINTS_ENABLED = os.environ.get("MK8_TOTAL_SCORE_RACE_POINTS_ENABLED", "0").lower() not in {"0", "false", "no"}
 DIGIT_OCR_FALLBACK_ENABLED = os.environ.get("MK8_DIGIT_OCR_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
+
+
+def easyocr_gpu_enabled() -> bool:
+    runtime_config = load_app_config()
+    return (
+        os.environ.get("MK8_EASYOCR_GPU", "1" if runtime_config.easyocr_gpu else "0").lower() not in {"0", "false", "no"}
+        and torch is not None
+        and bool(torch.cuda.is_available())
+    )
 
 
 def record_observation_stage(label: str, duration_s: float) -> None:
@@ -1362,8 +1376,8 @@ def _get_digit_easyocr_reader():
         return None
     with _DIGIT_EASYOCR_LOCK:
         if _DIGIT_EASYOCR_READER is None:
-            _DIGIT_EASYOCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
-    return _DIGIT_EASYOCR_READER
+            _DIGIT_EASYOCR_READER = easyocr.Reader(['en'], gpu=easyocr_gpu_enabled(), verbose=False)
+        return _DIGIT_EASYOCR_READER
 
 
 def _digit_box_bounds(top_left: Tuple[int, int], box_dims: Tuple[int, int]) -> Tuple[int, int, int, int]:

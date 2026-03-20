@@ -24,7 +24,7 @@ Runtime baseline:
 ### Entry points
 
 - `mk8_local_play/main.py`
-  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, and end-to-end orchestration.
+  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, EasyOCR GPU toggle persistence, and end-to-end orchestration.
 - `mk8_local_play/console_logging.py`
   Shared console logger and resource monitor for CLI/GUI output. Owns elapsed-time formatting, summary blocks, resource peaks, and the per-run timer reset behavior.
 - `pyproject.toml`
@@ -66,7 +66,7 @@ Runtime baseline:
 ### Metadata and runtime support
 
 - `mk8_local_play/app_runtime.py`
-  Loads `config/app_config.json`, checks FFmpeg, and reports GPU/OpenCL runtime status.
+  Loads `config/app_config.json`, persists simple runtime settings, checks FFmpeg, and reports GPU/OpenCL runtime status.
 - `mk8_local_play/game_catalog.py`
   Loads the compact game catalog used for cups, tracks, and characters.
 - `mk8_local_play/track_metadata.py`
@@ -83,7 +83,7 @@ Runtime baseline:
 - `Input_Videos/`
   Source videos. The app can process the root only or recurse with `--subfolders`.
 - `config/app_config.json`
-  Runtime settings for worker counts, export image format, consensus frames, debug-output toggles, and low-res thresholds.
+  Runtime settings for worker counts, export image format, EasyOCR GPU toggle, consensus frames, debug-output toggles, and low-res thresholds.
 - `reference_data/game_catalog.json`
   Runtime metadata source for tracks, cups, and characters.
 - `assets/templates/`
