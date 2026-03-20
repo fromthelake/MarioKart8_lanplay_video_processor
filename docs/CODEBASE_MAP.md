@@ -97,6 +97,7 @@ Runtime baseline:
   Timestamped tournament outputs.
 - `Output_Results/Debug/`
   Debug workbooks, CSVs, score-frame annotations, and score-layout demo images.
+  Per-race debug images now mirror the `Frames/` video/race folder structure under `Debug/Score_Frames/<Video>/Race_###/`.
 
 ### Helper tools and scripts
 

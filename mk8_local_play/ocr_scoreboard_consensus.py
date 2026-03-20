@@ -5,6 +5,7 @@ import time
 import threading
 from collections import Counter, defaultdict
 from functools import lru_cache
+from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
 import cv2
@@ -59,6 +60,7 @@ CHARACTER_ROW_PADDING_TOP = 2
 CHARACTER_ROW_PADDING_BOTTOM = 2
 EXCLUDED_CHARACTER_TEMPLATE_INDICES = {79, 80, 81}
 OBSERVATION_STAGE_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
+CALL_MATRIX_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(set)
 CHARACTER_SHORTLIST_LOCK = threading.Lock()
 CHARACTER_SHORTLIST_STATS = defaultdict(int)
@@ -74,6 +76,8 @@ ULTRA_LOW_RES_ROW_LEFT = CHARACTER_ROI_LEFT
 ULTRA_LOW_RES_ROW_RIGHT = PLAYER_NAME_COORDS[0][1][0]
 ULTRA_LOW_RES_ROW_MIN_STDDEV = APP_CONFIG.ultra_low_res_row_min_stddev
 ULTRA_LOW_RES_ROW_MIN_EDGE_DENSITY = APP_CONFIG.ultra_low_res_row_min_edge_density
+TOTAL_SCORE_RACE_POINTS_ENABLED = os.environ.get("MK8_TOTAL_SCORE_RACE_POINTS_ENABLED", "0").lower() not in {"0", "false", "no"}
+DIGIT_OCR_FALLBACK_ENABLED = os.environ.get("MK8_DIGIT_OCR_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
 
 
 def record_observation_stage(label: str, duration_s: float) -> None:
@@ -95,6 +99,105 @@ def observation_stage_summary_lines() -> List[str]:
 
 def reset_observation_stage_stats() -> None:
     OBSERVATION_STAGE_STATS.clear()
+
+
+def record_call_matrix(bundle_kind: str, field_name: str, method_name: str, duration_s: float) -> None:
+    stats = CALL_MATRIX_STATS[(str(bundle_kind), str(field_name), str(method_name))]
+    stats["calls"] += 1
+    stats["seconds"] += float(duration_s)
+
+
+def reset_call_matrix_stats() -> None:
+    CALL_MATRIX_STATS.clear()
+
+
+def call_matrix_summary_lines(colorize=None) -> List[str]:
+    if not CALL_MATRIX_STATS:
+        return []
+
+    entries = []
+    for (bundle_kind, field_name, method_name), item in CALL_MATRIX_STATS.items():
+        calls = int(item["calls"])
+        seconds = float(item["seconds"])
+        avg_ms = (seconds / max(1, calls)) * 1000.0
+        entries.append(
+            {
+                "bundle": bundle_kind,
+                "field": field_name,
+                "method": method_name,
+                "calls": calls,
+                "seconds": seconds,
+                "avg_ms": avg_ms,
+            }
+        )
+
+    ranked_entries = sorted(entries, key=lambda item: item["seconds"], reverse=True)
+    highlight_colors: dict[tuple[str, str, str], str] = {}
+    if ranked_entries:
+        highlight_colors[(ranked_entries[0]["bundle"], ranked_entries[0]["field"], ranked_entries[0]["method"])] = "red"
+    if len(ranked_entries) > 1:
+        highlight_colors[(ranked_entries[1]["bundle"], ranked_entries[1]["field"], ranked_entries[1]["method"])] = "yellow"
+
+    lines = ["OCR Call Matrix"]
+    bundle_width = max(len("Bundle"), max(len(str(entry["bundle"])) for entry in entries))
+    field_width = max(len("Field"), max(len(str(entry["field"])) for entry in entries))
+    method_width = max(len("Method"), max(len(str(entry["method"])) for entry in entries))
+    detail_header = (
+        f"{'Bundle':<{bundle_width}}  {'Field':<{field_width}}  {'Method':<{method_width}}  "
+        f"{'Calls':>5}  {'Total (s)':>10}  {'Avg (ms)':>9}"
+    )
+    detail_divider = (
+        f"{'-' * bundle_width}  {'-' * field_width}  {'-' * method_width}  "
+        f"{'-' * 5}  {'-' * 10}  {'-' * 9}"
+    )
+    lines.append(detail_header)
+    lines.append(detail_divider)
+    bundle_order = {"2RaceScore": 0, "3TotalScore": 1}
+    for entry in sorted(
+        entries,
+        key=lambda item: (bundle_order.get(str(item["bundle"]), 99), str(item["bundle"]), -float(item["seconds"]), str(item["field"]), str(item["method"])),
+    ):
+        row = (
+            f"{entry['bundle']:<{bundle_width}}  {entry['field']:<{field_width}}  {entry['method']:<{method_width}}  "
+            f"{entry['calls']:>5d}  {entry['seconds']:>10.2f}  {entry['avg_ms']:>9.1f}"
+        )
+        row_color = highlight_colors.get((entry["bundle"], entry["field"], entry["method"]))
+        lines.append(colorize(row, row_color) if colorize and row_color else row)
+    lines.append("")
+
+    field_totals = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
+    for entry in entries:
+        field_totals[entry["field"]]["calls"] += entry["calls"]
+        field_totals[entry["field"]]["seconds"] += entry["seconds"]
+    lines.append("Totals By Field")
+    summary_field_width = max(len("Field"), max(len(str(field_name)) for field_name in field_totals))
+    summary_header = f"{'Field':<{summary_field_width}}  {'Calls':>5}  {'Total (s)':>10}  {'Avg (ms)':>9}"
+    summary_divider = f"{'-' * summary_field_width}  {'-' * 5}  {'-' * 10}  {'-' * 9}"
+    lines.append(summary_header)
+    lines.append(summary_divider)
+    for field_name, item in sorted(field_totals.items(), key=lambda pair: pair[1]["seconds"], reverse=True):
+        calls = int(item["calls"])
+        seconds = float(item["seconds"])
+        avg_ms = (seconds / max(1, calls)) * 1000.0
+        lines.append(f"{field_name:<{summary_field_width}}  {calls:>5d}  {seconds:>10.2f}  {avg_ms:>9.1f}")
+    lines.append("")
+
+    bundle_totals = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
+    for entry in entries:
+        bundle_totals[entry["bundle"]]["calls"] += entry["calls"]
+        bundle_totals[entry["bundle"]]["seconds"] += entry["seconds"]
+    lines.append("Totals By Bundle")
+    bundle_summary_width = max(len("Bundle"), max(len(str(bundle_name)) for bundle_name in bundle_totals))
+    bundle_header = f"{'Bundle':<{bundle_summary_width}}  {'Calls':>5}  {'Total (s)':>10}  {'Avg (ms)':>9}"
+    bundle_divider = f"{'-' * bundle_summary_width}  {'-' * 5}  {'-' * 10}  {'-' * 9}"
+    lines.append(bundle_header)
+    lines.append(bundle_divider)
+    for bundle_name, item in sorted(bundle_totals.items(), key=lambda pair: (bundle_order.get(str(pair[0]), 99), str(pair[0]))):
+        calls = int(item["calls"])
+        seconds = float(item["seconds"])
+        avg_ms = (seconds / max(1, calls)) * 1000.0
+        lines.append(f"{bundle_name:<{bundle_summary_width}}  {calls:>5d}  {seconds:>10.2f}  {avg_ms:>9.1f}")
+    return lines
 
 
 def character_shortlist_summary_lines() -> List[str]:
@@ -1193,6 +1296,8 @@ def ocr_digit_row_fallback(
     *,
     valid_min: int,
     valid_max: int,
+    bundle_kind: str,
+    field_name: str,
 ) -> str:
     y_offset = row_index * row_offset
     x1 = start_coords[0][0]
@@ -1207,7 +1312,9 @@ def ocr_digit_row_fallback(
     reader = _get_digit_easyocr_reader()
     if reader is None:
         return ''
+    start_time = time.perf_counter()
     result = reader.readtext(crop_np, detail=0, paragraph=False, allowlist='0123456789')
+    record_call_matrix(bundle_kind, field_name, "ocr_fallback", time.perf_counter() - start_time)
     text = ' '.join(str(item).strip() for item in result if str(item).strip())
     digits_only = re.sub(r'[^0-9]', '', text)
     if not digits_only:
@@ -1260,11 +1367,12 @@ def _row_bounds(
 def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int]], row_offset: int,
                            box_dims: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]],
                            num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int,
-                           annotation_prefix: str = "") -> Tuple[List[str], List[str]]:
+                           annotation_prefix: str = "", bundle_kind: str = "", field_name: str = "") -> Tuple[List[str], List[str]]:
     coordinate_set = []
     coordinate_sources = []
     draw = ImageDraw.Draw(image)
     for row_index in range(num_rows):
+        row_stage_start = time.perf_counter()
         y_offset = row_index * row_offset
         row_bounds = _row_bounds(start_coords, row_offset, box_dims, row_index, boxes_per_row)
         draw.rectangle(row_bounds, outline="cyan", width=2)
@@ -1302,7 +1410,8 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
         if has_unknown_digit and not contiguous_digit_block:
             should_fallback = True
         row_source = "7-segment"
-        if should_fallback:
+        record_call_matrix(bundle_kind, field_name, "seven_segment", time.perf_counter() - row_stage_start)
+        if should_fallback and DIGIT_OCR_FALLBACK_ENABLED:
             fallback_value = ocr_digit_row_fallback(
                 image,
                 start_coords,
@@ -1312,6 +1421,8 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
                 boxes_per_row,
                 valid_min=valid_min,
                 valid_max=valid_max,
+                bundle_kind=bundle_kind,
+                field_name=field_name,
             )
             if fallback_value:
                 row_number = fallback_value
@@ -1427,6 +1538,10 @@ def extract_scoreboard_observation(
     annotation_prefix: str = "",
     video_context: str | None = None,
     score_layout_id: str | None = None,
+    bundle_kind: str = "",
+    name_field_name: str = "",
+    race_points_field_name: str = "",
+    total_points_field_name: str = "",
 ) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
     score_layout = get_score_layout(score_layout_id)
@@ -1452,15 +1567,22 @@ def extract_scoreboard_observation(
     record_observation_stage("scale_image", time.perf_counter() - stage_start)
     layout = score_digit_layout(scale_factor, score_layout_id=score_layout.layout_id)
 
-    stage_start = time.perf_counter()
-    race_points, race_point_sources = detect_digits_in_image(
-        scaled_image,
-        *layout["race_points"],
-        valid_min=1,
-        valid_max=15,
-        annotation_prefix=f"{annotation_prefix}RP",
-    )
-    record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
+    race_points = [""] * layout["race_points"][4]
+    race_point_sources = ["skipped"] * layout["race_points"][4]
+    if race_points_field_name and (
+        race_points_field_name != "RacePointsOnTotalScore" or TOTAL_SCORE_RACE_POINTS_ENABLED
+    ):
+        stage_start = time.perf_counter()
+        race_points, race_point_sources = detect_digits_in_image(
+            scaled_image,
+            *layout["race_points"],
+            valid_min=1,
+            valid_max=15,
+            annotation_prefix=f"{annotation_prefix}RP",
+            bundle_kind=bundle_kind,
+            field_name=race_points_field_name,
+        )
+        record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
     total_points, total_point_sources = detect_digits_in_image(
@@ -1469,6 +1591,8 @@ def extract_scoreboard_observation(
         valid_min=0,
         valid_max=999,
         annotation_prefix=f"{annotation_prefix}TP",
+        bundle_kind=bundle_kind,
+        field_name=total_points_field_name,
     )
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
@@ -1477,11 +1601,17 @@ def extract_scoreboard_observation(
     annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
     record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
+        Path(annotate_path).parent.mkdir(parents=True, exist_ok=True)
         save_kwargs = {"format": "JPEG", "quality": 95} if EXPORT_IMAGE_FORMAT == "jpg" else {"format": "PNG"}
-        scaled_image.save(annotate_path, **save_kwargs)
+        scaled_image_resized.save(annotate_path, **save_kwargs)
 
     stage_start = time.perf_counter()
-    names, confidence_scores = extract_player_names_batched(annotated_image, score_layout.player_name_coords)
+    names, confidence_scores = extract_player_names_batched(
+        annotated_image,
+        score_layout.player_name_coords,
+        bundle_kind=bundle_kind,
+        field_name=name_field_name,
+    )
     record_observation_stage("extract_player_names", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -1868,12 +1998,16 @@ def map_total_rows_to_race_rows(
                     "NameValidationFlags": score_row.get("NameValidationFlags", ""),
                     "DigitConsensus": score_row["DigitConfidence"],
                     "TotalScoreMappingMethod": "missing_total_rows",
+                    "TotalScoreMappingScore": None,
+                    "TotalScoreMappingMargin": None,
+                    "TotalScoreNameSimilarity": None,
                     **{f"PositionTemplate{template_index:02}_Coeff": None for template_index in range(1, 13)},
                 }
             )
         return mapped_rows
 
     candidate_matches = []
+    candidate_matches_by_score_index = defaultdict(list)
     for score_index, score_row in enumerate(score_rows):
         normalized_score_name = preprocess_name(str(score_row["PlayerName"] or ""))
         for total_index, total_row in enumerate(total_rows):
@@ -1893,6 +2027,7 @@ def map_total_rows_to_race_rows(
             combined_score = (similarity * 0.65) + (confidence_floor * 0.15) + (character_score * 0.20)
             if similarity >= 0.72 or normalized_score_name == normalized_total_name:
                 candidate_matches.append((combined_score, similarity, score_index, total_index))
+                candidate_matches_by_score_index[score_index].append((combined_score, similarity, total_index))
 
     assigned_score_indices = set()
     assigned_total_indices = set()
@@ -1914,6 +2049,18 @@ def map_total_rows_to_race_rows(
         elif remaining_pointer < len(remaining_total_indices):
             matched_total_index = remaining_total_indices[remaining_pointer]
             remaining_pointer += 1
+
+        mapping_score = None
+        mapping_margin = None
+        mapping_similarity = None
+        scored_candidates = sorted(candidate_matches_by_score_index.get(score_index, []), reverse=True)
+        if matched_total_index is not None and scored_candidates:
+            matched_candidate = next((item for item in scored_candidates if int(item[2]) == int(matched_total_index)), None)
+            if matched_candidate is not None:
+                mapping_score = float(matched_candidate[0])
+                mapping_similarity = float(matched_candidate[1])
+                best_other_score = next((float(item[0]) for item in scored_candidates if int(item[2]) != int(matched_total_index)), None)
+                mapping_margin = mapping_score - best_other_score if best_other_score is not None else mapping_score
 
         total_score = None
         total_digit_confidence = 0.0
@@ -1960,6 +2107,9 @@ def map_total_rows_to_race_rows(
                 "NameValidationFlags": score_row.get("NameValidationFlags", ""),
                 "DigitConsensus": round((float(score_row["DigitConfidence"]) + total_digit_confidence) / 2.0, 1),
                 "TotalScoreMappingMethod": mapping_method,
+                "TotalScoreMappingScore": round(mapping_score, 4) if mapping_score is not None else None,
+                "TotalScoreMappingMargin": round(mapping_margin, 4) if mapping_margin is not None else None,
+                "TotalScoreNameSimilarity": round(mapping_similarity, 4) if mapping_similarity is not None else None,
                 **total_row_position_coefficients,
             }
         )
@@ -2033,6 +2183,10 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 annotation_prefix="RS-",
                 video_context=video_context,
                 score_layout_id=score_layout_id,
+                bundle_kind="2RaceScore",
+                name_field_name="RacePlayerName",
+                race_points_field_name="RacePoints",
+                total_points_field_name="OldTotalScore",
             )
         )
     score_core_observations = score_observations[-APP_CONFIG.ocr_consensus_frames:] or score_observations
@@ -2050,6 +2204,10 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 annotation_prefix="TS-",
                 video_context=video_context,
                 score_layout_id=score_layout_id,
+                bundle_kind="3TotalScore",
+                name_field_name="TotalPlayerName",
+                race_points_field_name="RacePointsOnTotalScore",
+                total_points_field_name="NewTotalScore",
             )
         )
     if not total_observations:

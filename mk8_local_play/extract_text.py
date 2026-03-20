@@ -23,6 +23,7 @@ except Exception:
 from .app_runtime import load_app_config
 from .extract_common import (
     build_video_identity,
+    debug_score_frame_path,
     find_anchor_frame_path,
     find_score_bundle_anchor_path,
     iter_video_race_dirs,
@@ -52,13 +53,16 @@ from .ocr_scoreboard_consensus import (
     best_character_matches,
     build_consensus_observation,
     build_race_warning_messages,
+    call_matrix_summary_lines,
     character_row_roi,
     character_shortlist_summary_lines,
     exact_total_score_fallback,
     load_character_templates,
     observation_stage_summary_lines,
     parse_detected_int,
+    record_call_matrix,
     reset_character_shortlist_state,
+    reset_call_matrix_stats,
     reset_observation_stage_stats,
 )
 from .ocr_session_validation import apply_session_validation
@@ -77,7 +81,7 @@ TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE = max(
     0,
-    min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "80"))),
+    min(100, int(os.environ.get("MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE", "50"))),
 )
 PLAYER_NAME_BATCH_SEPARATOR_HEIGHT = max(
     0,
@@ -93,7 +97,12 @@ PLAYER_NAME_BATCH_VERTICAL_PADDING = max(
 )
 PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm 6")
 PLAYER_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_PLAYER_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
+RACE_SCORE_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_RACE_SCORE_NAME_ROW_FALLBACK_ENABLED", "1").lower() not in {"0", "false", "no"}
+TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
 PLAYER_NAME_OCR_ENGINE = os.environ.get("MK8_PLAYER_NAME_OCR_ENGINE", "easyocr").strip().lower()
+PLAYER_NAME_BATCH_RAW_MODE = os.environ.get("MK8_PLAYER_NAME_BATCH_RAW_MODE", "weak").strip().lower()
+if PLAYER_NAME_BATCH_RAW_MODE not in {"all", "weak", "off"}:
+    PLAYER_NAME_BATCH_RAW_MODE = "all"
 PLAYER_NAME_EASYOCR_LANGS = [
     part.strip()
     for part in os.environ.get("MK8_PLAYER_NAME_EASYOCR_LANGS", "en,es,fr,de,nl,pl").split(",")
@@ -493,6 +502,20 @@ def _generate_player_name_fallback_candidates(
 
 
 def _run_easyocr_player_name(image: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> tuple[str, int]:
+    return _run_easyocr_player_name_for_context(image, x1, y1, x2, y2, bundle_kind="", field_name="", method_prefix="row_fallback")
+
+
+def _run_easyocr_player_name_for_context(
+    image: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    *,
+    bundle_kind: str,
+    field_name: str,
+    method_prefix: str,
+) -> tuple[str, int]:
     reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
     if reader is None:
         return "", 0
@@ -503,10 +526,13 @@ def _run_easyocr_player_name(image: np.ndarray, x1: int, y1: int, x2: int, y2: i
 
     candidates: list[tuple[str, int, float]] = []
 
-    def add_candidate(source_image: np.ndarray, label: str) -> None:
+    def add_candidate(source_image: np.ndarray, label: str, method_name: str) -> None:
         start_time = time.perf_counter()
         result = reader.readtext(source_image, detail=1, paragraph=False)
-        OCR_PROFILER.record(label, time.perf_counter() - start_time)
+        duration_s = time.perf_counter() - start_time
+        OCR_PROFILER.record(label, duration_s)
+        if bundle_kind and field_name:
+            record_call_matrix(bundle_kind, field_name, method_name, duration_s)
         parts = []
         probabilities = []
         for item in result:
@@ -525,13 +551,13 @@ def _run_easyocr_player_name(image: np.ndarray, x1: int, y1: int, x2: int, y2: i
         candidate_score = _player_name_candidate_score(combined_text, average_confidence)
         candidates.append((combined_text, average_confidence, candidate_score))
 
-    add_candidate(roi, "player_name_easyocr_roi")
+    add_candidate(roi, "player_name_easyocr_roi", f"{method_prefix}_raw")
 
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     upscaled_gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
     _, otsu_binary = cv2.threshold(upscaled_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     inverted_otsu = 255 - otsu_binary
-    add_candidate(inverted_otsu, "player_name_easyocr_inv_otsu")
+    add_candidate(inverted_otsu, "player_name_easyocr_inv_otsu", f"{method_prefix}_inv_otsu")
 
     if not candidates:
         return "", 0
@@ -577,38 +603,94 @@ def _build_player_name_canvas(
     return canvas, horizontal_list
 
 
+def _run_easyocr_player_names_batched_variant(
+    image: np.ndarray,
+    coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+    *,
+    preprocess: str,
+    bundle_kind: str = "",
+    field_name: str = "",
+) -> tuple[list[str], list[int]]:
+    reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
+    if reader is None:
+        return [""] * len(coord_list), [0] * len(coord_list)
+
+    canvas, horizontal_list = _build_player_name_canvas(image, coord_list, preprocess=preprocess)
+    start_time = time.perf_counter()
+    result = reader.recognize(
+        canvas,
+        horizontal_list=horizontal_list,
+        free_list=[],
+        detail=1,
+        paragraph=False,
+        reformat=True,
+    )
+    duration_s = time.perf_counter() - start_time
+    profile_label = "player_name_easyocr_batch_raw" if preprocess == "raw" else "player_name_easyocr_batch_inv_otsu"
+    OCR_PROFILER.record(profile_label, duration_s)
+    if bundle_kind and field_name:
+        method_name = "batch_raw" if preprocess == "raw" else "batch_inv_otsu"
+        record_call_matrix(bundle_kind, field_name, method_name, duration_s)
+
+    extracted_names = [""] * len(coord_list)
+    confidence_scores = [0] * len(coord_list)
+    for row_index, item in enumerate(result):
+        if len(item) < 3:
+            continue
+        text = str(item[1]).strip()
+        probability = float(item[2])
+        if not text:
+            continue
+        extracted_names[row_index] = text
+        confidence_scores[row_index] = int(round(max(0.0, min(1.0, probability)) * 100.0))
+    return extracted_names, confidence_scores
+
+
 def _run_easyocr_player_names_batched(
     image: np.ndarray,
     coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+    *,
+    bundle_kind: str,
+    field_name: str,
 ) -> tuple[list[str], list[int]]:
     reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
     if reader is None:
         return [""] * len(coord_list), [0] * len(coord_list)
 
     per_row_candidates: list[list[tuple[str, int]]] = [[] for _ in coord_list]
-    for preprocess, profile_label in (
-        ("raw", "player_name_easyocr_batch_raw"),
-        ("inv_otsu3", "player_name_easyocr_batch_inv_otsu"),
-    ):
-        canvas, horizontal_list = _build_player_name_canvas(image, coord_list, preprocess=preprocess)
-        start_time = time.perf_counter()
-        result = reader.recognize(
-            canvas,
-            horizontal_list=horizontal_list,
-            free_list=[],
-            detail=1,
-            paragraph=False,
-            reformat=True,
+    inv_names, inv_confidences = _run_easyocr_player_names_batched_variant(
+        image,
+        coord_list,
+        preprocess="inv_otsu3",
+        bundle_kind=bundle_kind,
+        field_name=field_name,
+    )
+    for row_index, (text, confidence) in enumerate(zip(inv_names, inv_confidences)):
+        if not text:
+            continue
+        per_row_candidates[row_index].append((text, confidence))
+
+    raw_mode = PLAYER_NAME_BATCH_RAW_MODE
+    should_run_raw = raw_mode == "all"
+    if raw_mode == "weak":
+        should_run_raw = any(
+            confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
+            or visible_name_length(text) < 3
+            or distinct_visible_name_count(text) < 3
+            for text, confidence in zip(inv_names, inv_confidences)
         )
-        OCR_PROFILER.record(profile_label, time.perf_counter() - start_time)
-        for row_index, item in enumerate(result):
-            if len(item) < 3:
-                continue
-            text = str(item[1]).strip()
-            probability = float(item[2])
+
+    if should_run_raw:
+        raw_names, raw_confidences = _run_easyocr_player_names_batched_variant(
+            image,
+            coord_list,
+            preprocess="raw",
+            bundle_kind=bundle_kind,
+            field_name=field_name,
+        )
+        for row_index, (text, confidence) in enumerate(zip(raw_names, raw_confidences)):
             if not text:
                 continue
-            confidence = int(round(max(0.0, min(1.0, probability)) * 100.0))
             per_row_candidates[row_index].append((text, confidence))
 
     extracted_names = []
@@ -632,6 +714,9 @@ def extract_player_names_batched(
     coord_list: List[Tuple[Tuple[int, int], Tuple[int, int]]],
     lang: str = "eng",
     config: str = PLAYER_NAME_BATCH_CONFIG,
+    *,
+    bundle_kind: str = "",
+    field_name: str = "",
 ) -> Tuple[List[str], List[int]]:
     extracted_names: list[str] = []
     confidence_scores: list[int] = []
@@ -639,15 +724,34 @@ def extract_player_names_batched(
     confidences_by_row: list[list[int]] = []
 
     if PLAYER_NAME_OCR_ENGINE == "easyocr":
-        easyocr_names, easyocr_confidences = _run_easyocr_player_names_batched(image, coord_list)
+        easyocr_names, easyocr_confidences = _run_easyocr_player_names_batched(
+            image,
+            coord_list,
+            bundle_kind=bundle_kind,
+            field_name=field_name,
+        )
+        bundle_fallback_enabled = True
+        if bundle_kind == "2RaceScore":
+            bundle_fallback_enabled = RACE_SCORE_NAME_ROW_FALLBACK_ENABLED
+        elif bundle_kind == "3TotalScore":
+            bundle_fallback_enabled = TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED
         for ((x1, y1), (x2, y2)), easyocr_text, easyocr_confidence in zip(coord_list, easyocr_names, easyocr_confidences):
             weak_candidate = (
                 easyocr_confidence < PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE
                 or visible_name_length(easyocr_text) < 3
                 or distinct_visible_name_count(easyocr_text) < 3
             )
-            if weak_candidate:
-                refined_text, refined_confidence = _run_easyocr_player_name(image, x1, y1, x2, y2)
+            if weak_candidate and bundle_fallback_enabled:
+                refined_text, refined_confidence = _run_easyocr_player_name_for_context(
+                    image,
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    bundle_kind=bundle_kind,
+                    field_name=field_name,
+                    method_prefix="row_fallback",
+                )
                 if _player_name_candidate_score(refined_text, refined_confidence) > _player_name_candidate_score(easyocr_text, easyocr_confidence):
                     easyocr_text = refined_text
                     easyocr_confidence = refined_confidence
@@ -933,9 +1037,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     annotate_path = None
     total_annotate_path = None
     if APP_CONFIG.write_debug_score_images:
-        annotate_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(race_score_image)}')
+        annotate_path = str(debug_score_frame_path(race_class, race_id_number, "2RaceScore"))
         if total_score_image:
-            total_annotate_path = os.path.join(text_detected_folder, f'annotated_{os.path.basename(total_score_image)}')
+            total_annotate_path = str(debug_score_frame_path(race_class, race_id_number, "3TotalScore"))
 
     race_bundle_key = (race_class, race_id_number, "RaceScore")
     total_bundle_key = (race_class, race_id_number, "TotalScore")
@@ -1046,6 +1150,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus.get("race_score_recovery_count", race_score_players),
             consensus.get("race_point_anchor_frame"),
             row.get("TotalScoreMappingMethod", ""),
+            row.get("TotalScoreMappingScore"),
+            row.get("TotalScoreMappingMargin"),
+            row.get("TotalScoreNameSimilarity"),
             source_video_width,
             source_video_height,
             is_low_res,
@@ -1066,6 +1173,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, selected_race_classes=None):
     phase_start_time = time.time()
     reset_observation_stage_stats()
+    reset_call_matrix_stats()
     reset_character_shortlist_state()
     reset_player_name_fallback_stats()
     race_dirs = iter_video_race_dirs(folder_path)
@@ -1194,7 +1302,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         "RaceScoreRowSignals", "TotalScoreRowSignals",
         "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
         "RacePointsAnchorFrame",
-        "TotalScoreMappingMethod", "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
+        "TotalScoreMappingMethod", "TotalScoreMappingScore", "TotalScoreMappingMargin", "TotalScoreNameSimilarity",
+        "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     if df.empty:
@@ -1243,7 +1352,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         folder_path,
         phase_start_time,
         progress.peak_lines(),
-        OCR_PROFILER.summary_lines()
+        call_matrix_summary_lines(colorize=LOGGER.color)
+        + OCR_PROFILER.summary_lines()
         + observation_stage_summary_lines()
         + character_shortlist_summary_lines()
         + player_name_fallback_summary_lines(),

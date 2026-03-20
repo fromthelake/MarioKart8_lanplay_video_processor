@@ -3,6 +3,8 @@ import re
 from collections import Counter, defaultdict
 
 import pandas as pd
+
+from .extract_common import debug_identity_workbook_path
 import textdistance
 from jellyfish import soundex
 
@@ -150,7 +152,9 @@ def _assign_identity_labels(identity_state):
 
 def _write_identity_debug_excel(output_folder, race_class, identity_rows):
     debug_df = pd.DataFrame(identity_rows)
-    debug_df.to_excel(f"{output_folder}/identity_linking_{race_class}.xlsx", index=False)
+    workbook_path = debug_identity_workbook_path(race_class)
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    debug_df.to_excel(workbook_path, index=False)
 
 
 def standardize_player_names(df, output_folder, write_debug_linking_excel=False):

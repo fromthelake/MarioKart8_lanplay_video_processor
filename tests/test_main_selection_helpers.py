@@ -5,8 +5,13 @@ from pathlib import Path
 from unittest import mock
 
 from mk8_local_play.extract_common import (
+    DEBUG_ROOT,
     EXPORT_IMAGE_FORMAT,
     choose_preferred_exported_image,
+    debug_identity_workbook_path,
+    debug_low_res_assignment_path,
+    debug_low_res_resolution_path,
+    debug_score_frame_path,
     normalize_export_image_format,
 )
 from mk8_local_play import main
@@ -73,6 +78,26 @@ class MainSelectionHelpersTests(unittest.TestCase):
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
 
+    def test_debug_paths_follow_video_and_race_structure(self):
+        expected_extension = ".jpg" if EXPORT_IMAGE_FORMAT == "jpg" else ".png"
+
+        self.assertEqual(
+            debug_score_frame_path("Demo_CaptureCard_Race", 7, "2RaceScore"),
+            DEBUG_ROOT / "Score_Frames" / "Demo_CaptureCard_Race" / "Race_007" / f"annotated_2RaceScore{expected_extension}",
+        )
+        self.assertEqual(
+            debug_identity_workbook_path("Demo_CaptureCard_Race"),
+            DEBUG_ROOT / "Identity_Linking" / "Demo_CaptureCard_Race" / "identity_linking.xlsx",
+        )
+        self.assertEqual(
+            debug_low_res_assignment_path("Demo_CaptureCard_Race"),
+            DEBUG_ROOT / "Low_Res" / "Demo_CaptureCard_Race" / "identity_assignment.csv",
+        )
+        self.assertEqual(
+            debug_low_res_resolution_path("Demo_CaptureCard_Race"),
+            DEBUG_ROOT / "Low_Res" / "Demo_CaptureCard_Race" / "identity_resolution.csv",
+        )
+
     def test_selected_input_video_files_prefers_exact_filename_match(self):
         case_dir = _make_case_dir("select_exact")
         try:
@@ -117,5 +142,37 @@ class MainSelectionHelpersTests(unittest.TestCase):
                     main.selected_race_classes_for_videos(video_paths, include_subfolders=True),
                     ["Division_A__Demo_One", "Division_B__Demo_Two"],
                 )
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_clear_output_results_preserves_gitkeep_files(self):
+        case_dir = _make_case_dir("clear_output_results_gitkeep")
+        try:
+            output_dir = case_dir / "Output_Results"
+            frames_dir = output_dir / "Frames"
+            debug_dir = output_dir / "Debug"
+            score_frames_dir = debug_dir / "Score_Frames"
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            score_frames_dir.mkdir(parents=True, exist_ok=True)
+
+            (frames_dir / ".gitkeep").write_text("")
+            (debug_dir / ".gitkeep").write_text("")
+            (frames_dir / "generated.txt").write_text("x")
+            (score_frames_dir / "annotated.png").write_text("x")
+            (output_dir / "result.csv").write_text("x")
+
+            with (
+                mock.patch.object(main, "OUTPUT_DIR", output_dir),
+                mock.patch.object(main, "FRAMES_DIR", frames_dir),
+                mock.patch.object(main, "DEBUG_DIR", debug_dir),
+                mock.patch.object(main, "DEBUG_SCORE_FRAMES_DIR", score_frames_dir),
+            ):
+                self.assertTrue(main.clear_output_results(require_confirmation=False))
+
+            self.assertTrue((frames_dir / ".gitkeep").exists())
+            self.assertTrue((debug_dir / ".gitkeep").exists())
+            self.assertFalse((frames_dir / "generated.txt").exists())
+            self.assertFalse((score_frames_dir / "annotated.png").exists())
+            self.assertFalse((output_dir / "result.csv").exists())
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)

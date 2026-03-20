@@ -1,6 +1,5 @@
 import argparse
 import cProfile
-import glob
 import importlib.util
 import os
 import pstats
@@ -164,8 +163,10 @@ def clear_output_results(*, require_confirmation: bool = True) -> bool:
         for child in OUTPUT_DIR.iterdir():
             try:
                 if child.is_dir():
-                    shutil.rmtree(child)
+                    remove_tree_contents(child)
                 else:
+                    if child.name == ".gitkeep":
+                        continue
                     child.unlink()
             except Exception as exc:
                 raise RuntimeError(f"Unable to delete {child}: {exc}") from exc
@@ -239,16 +240,11 @@ def clear_all_races_found() -> None:
         return
 
     if DEBUG_SCORE_FRAMES_DIR.exists():
-        annotated_files = []
-        for pattern in ("annotated_*.png", "annotated_*.jpg", "annotated_*.jpeg"):
-            annotated_files.extend(glob.glob(str(DEBUG_SCORE_FRAMES_DIR / pattern)))
-        for file in annotated_files:
-            try:
-                os.remove(file)
-                deleted_anything = True
-            except Exception as exc:
-                show_error("Error", f"Unable to delete file {file}: {exc}")
-                return
+        try:
+            deleted_anything = remove_tree_contents(DEBUG_SCORE_FRAMES_DIR) or deleted_anything
+        except Exception as exc:
+            show_error("Error", f"Unable to clear debug score frames folder: {exc}")
+            return
 
     if deleted_anything:
         show_info("Success", "Found race screenshots and annotated screenshots have been deleted.")

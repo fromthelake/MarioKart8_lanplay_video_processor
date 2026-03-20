@@ -92,6 +92,9 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "RaceScoreRecoveryCount": "RaceScore Recovery Count",
     "RacePointsAnchorFrame": "RacePoints Anchor Frame",
     "TotalScoreMappingMethod": "Total Score Match Method",
+    "TotalScoreMappingScore": "Total Score Match Score",
+    "TotalScoreMappingMargin": "Total Score Match Margin",
+    "TotalScoreNameSimilarity": "Total Score Name Similarity",
     "ScoreValidationStatus": "Validation Status",
     "ReviewNeeded": "Needs Review",
     "ReviewReason": "Review Reason",
@@ -161,7 +164,11 @@ def build_user_export_df(df):
 
 
 def build_debug_export_df(df):
-    ordered_df = df[list(DEBUG_EXPORT_COLUMN_MAP.keys())].copy()
+    ordered_df = df.copy()
+    for column_name in DEBUG_EXPORT_COLUMN_MAP.keys():
+        if column_name not in ordered_df.columns:
+            ordered_df[column_name] = ""
+    ordered_df = ordered_df[list(DEBUG_EXPORT_COLUMN_MAP.keys())].copy()
     ordered_df["ReviewReason"] = ordered_df["ReviewReason"].apply(
         lambda value: format_review_reason_for_export(value, DEBUG_REVIEW_REASON_MAX_LENGTH)
     )

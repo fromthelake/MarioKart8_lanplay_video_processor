@@ -51,6 +51,15 @@ INITIAL_SCAN_TARGETS = (
     },
 )
 
+IGNORE_FRAME_TARGET = {
+    "kind": "ignore",
+    "label": "Ignore",
+    "match_threshold": 0.75,
+    "skip_seconds": 5,
+    # User-provided ROI (415, 669, 804, 32), expanded by 2 pixels on all sides.
+    "roi": (413, 667, 808, 36),
+}
+
 
 def _match_score_target_layouts(gray_image, templates, stats):
     """Evaluate the score anchor against both supported score layouts."""
@@ -119,6 +128,38 @@ def _expanded_roi(gray_image, roi_definition):
     return roi_x, roi_y, roi_width, roi_height
 
 
+def _bounded_roi(gray_image, roi_definition):
+    """Clamp a fixed ROI without adding the broader scan padding used by normal anchors."""
+    roi_x, roi_y, roi_width, roi_height = roi_definition
+    roi_x = max(int(roi_x), 0)
+    roi_y = max(int(roi_y), 0)
+    roi_width = min(int(roi_width), gray_image.shape[1] - roi_x)
+    roi_height = min(int(roi_height), gray_image.shape[0] - roi_y)
+    return roi_x, roi_y, roi_width, roi_height
+
+
+def _match_ignore_frame_target(gray_image, templates, stats):
+    """Detect gallery/review UI frames that should never become race detections."""
+    if len(templates) < 5:
+        return 0.0, True
+
+    roi_x, roi_y, roi_width, roi_height = _bounded_roi(gray_image, IGNORE_FRAME_TARGET["roi"])
+    roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+
+    template_binary, alpha_mask = templates[4]
+    if roi.shape[0] < template_binary.shape[0] or roi.shape[1] < template_binary.shape[1]:
+        roi = cv2.resize(
+            roi,
+            (max(template_binary.shape[1], roi.shape[1]), max(template_binary.shape[0], roi.shape[0])),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+    stage_start = time.perf_counter()
+    max_val = match_template(roi, template_binary, alpha_mask)
+    video_io.add_timing(stats, "initial_match_s", stage_start)
+    return float(max_val), False
+
+
 def _match_initial_scan_target(gray_image, target, templates, stats):
     """Prepare, filter, and match one anchor target inside the current frame."""
     roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, target["roi"])
@@ -154,6 +195,14 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
     upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
     gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
     video_io.add_timing(stats, "initial_frame_prepare_s", stage_start)
+
+    ignore_max_val, ignore_rejected_as_blank = _match_ignore_frame_target(gray_image, templates, stats)
+    ignore_timecode = frame_to_timecode(frame_number, fps)
+    if not ignore_rejected_as_blank:
+        csv_writer.writerow([video_source_path or os.path.basename(video_path), IGNORE_FRAME_TARGET["label"], frame_number, ignore_max_val, ignore_timecode])
+        if ignore_max_val > IGNORE_FRAME_TARGET["match_threshold"] and not np.isinf(ignore_max_val):
+            video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
+            return int(fps * IGNORE_FRAME_TARGET["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":
@@ -250,6 +299,14 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
     upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
     gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
     stats["initial_frame_prepare_s"] += time.perf_counter() - process_frame_start
+
+    ignore_max_val, ignore_rejected_as_blank = _match_ignore_frame_target(gray_image, templates, stats)
+    if emit_results and not ignore_rejected_as_blank:
+        timecode = frame_to_timecode(frame_number, fps)
+        debug_rows.append([video_source_path or os.path.basename(video_path), IGNORE_FRAME_TARGET["label"], frame_number, ignore_max_val, timecode])
+    if not ignore_rejected_as_blank and ignore_max_val > IGNORE_FRAME_TARGET["match_threshold"] and not np.isinf(ignore_max_val):
+        video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
+        return int(fps * IGNORE_FRAME_TARGET["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":

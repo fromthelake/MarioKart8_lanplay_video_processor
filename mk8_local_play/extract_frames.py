@@ -322,7 +322,8 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
         (str(resolve_asset_file('templates', 'Score_template.png')), None),
         (str(resolve_asset_file('templates', 'Trackname_template.png')), None),
         (str(resolve_asset_file('templates', 'Race_template.png')), None),
-        (str(resolve_asset_file('templates', '12th_pos_template.png')), None)
+        (str(resolve_asset_file('templates', '12th_pos_template.png')), None),
+        (str(resolve_asset_file('templates', 'ignore.png')), None),
     ]
 
     templates = []

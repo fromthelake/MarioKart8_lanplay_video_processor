@@ -11,7 +11,11 @@ import numpy as np
 import pandas as pd
 
 from .app_runtime import load_app_config
-from .extract_common import find_score_bundle_anchor_path
+from .extract_common import (
+    debug_low_res_assignment_path,
+    debug_low_res_resolution_path,
+    find_score_bundle_anchor_path,
+)
 from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote
 from .ocr_scoreboard_consensus import (
     character_row_roi,
@@ -589,13 +593,13 @@ def _resolve_placeholder_names(identity_state: Dict[str, dict]) -> Dict[str, dic
 
 
 def _write_debug_outputs(debug_dir: Path, race_class: str, assignment_rows: List[dict], resolution_rows: List[dict]) -> None:
-    debug_dir.mkdir(parents=True, exist_ok=True)
-    assignment_path = debug_dir / f'low_res_identity_assignment_{race_class}.csv'
+    assignment_path = debug_low_res_assignment_path(race_class)
+    assignment_path.parent.mkdir(parents=True, exist_ok=True)
     with assignment_path.open('w', encoding='utf-8-sig', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(assignment_rows[0].keys()) if assignment_rows else ['Race'])
         writer.writeheader()
         writer.writerows(assignment_rows)
-    resolution_path = debug_dir / f'low_res_identity_resolution_{race_class}.csv'
+    resolution_path = debug_low_res_resolution_path(race_class)
     with resolution_path.open('w', encoding='utf-8-sig', newline='') as handle:
         writer = csv.DictWriter(handle, fieldnames=['Placeholder', 'TopCandidate', 'TopScore', 'SecondScore', 'EvidenceCount', 'ResolvedName', 'Reason'])
         writer.writeheader()

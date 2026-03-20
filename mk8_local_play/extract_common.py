@@ -29,6 +29,7 @@ def normalize_export_image_format(value: str | None) -> str:
 EXPORT_IMAGE_FORMAT = normalize_export_image_format(APP_CONFIG.export_image_format)
 EXPORT_IMAGE_SUFFIX = f".{EXPORT_IMAGE_FORMAT}"
 FRAMES_ROOT = PROJECT_ROOT / "Output_Results" / "Frames"
+DEBUG_ROOT = PROJECT_ROOT / "Output_Results" / "Debug"
 
 
 def calculate_sum_intensity(gray_image):
@@ -226,6 +227,38 @@ def score_bundle_points_anchor_path(video_label: str, race_number: int, frame_co
     return score_bundle_dir(video_label, race_number, frame_content) / f"12point_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
 
 
+def debug_score_frames_root() -> Path:
+    return DEBUG_ROOT / "Score_Frames"
+
+
+def debug_score_race_dir(video_label: str, race_number: int) -> Path:
+    return debug_score_frames_root() / str(video_label) / f"Race_{int(race_number):03d}"
+
+
+def debug_score_frame_path(video_label: str, race_number: int, frame_content: str) -> Path:
+    return debug_score_race_dir(video_label, race_number) / f"annotated_{frame_content}{EXPORT_IMAGE_SUFFIX}"
+
+
+def debug_identity_video_dir(video_label: str) -> Path:
+    return DEBUG_ROOT / "Identity_Linking" / str(video_label)
+
+
+def debug_identity_workbook_path(video_label: str) -> Path:
+    return debug_identity_video_dir(video_label) / "identity_linking.xlsx"
+
+
+def debug_low_res_video_dir(video_label: str) -> Path:
+    return DEBUG_ROOT / "Low_Res" / str(video_label)
+
+
+def debug_low_res_assignment_path(video_label: str) -> Path:
+    return debug_low_res_video_dir(video_label) / "identity_assignment.csv"
+
+
+def debug_low_res_resolution_path(video_label: str) -> Path:
+    return debug_low_res_video_dir(video_label) / "identity_resolution.csv"
+
+
 def find_anchor_frame_path(video_label: str, race_number: int, frame_content: str) -> Path | None:
     candidates = [
         path
@@ -284,6 +317,8 @@ def remove_tree_contents(root_path: str | os.PathLike[str]) -> bool:
     if not root.exists():
         return False
     for child in list(root.iterdir()):
+        if child.is_file() and child.name == ".gitkeep":
+            continue
         if child.is_dir():
             shutil.rmtree(child)
             deleted_anything = True

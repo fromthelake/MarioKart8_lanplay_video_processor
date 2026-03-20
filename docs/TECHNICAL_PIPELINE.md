@@ -354,6 +354,36 @@ Annotated score-layout demo images are also written under:
 
 These show the active score ROIs on exported `2RaceScore` and `3TotalScore` frames for human review.
 
+Other debug artifacts are grouped by video so the debug tree sorts like `Output_Results/Frames/`:
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/annotated_2RaceScore.<ext>`
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/annotated_3TotalScore.<ext>`
+- `Output_Results/Debug/Identity_Linking/<VideoLabel>/identity_linking.xlsx`
+- `Output_Results/Debug/Low_Res/<VideoLabel>/identity_assignment.csv`
+- `Output_Results/Debug/Low_Res/<VideoLabel>/identity_resolution.csv`
+
+## 10A. OCR Performance Guardrails
+
+The current OCR defaults are based on measured large-run benchmarks and should be treated as the performance baseline unless a new benchmark proves a better alternative.
+
+Current intended defaults:
+- `MK8_PLAYER_NAME_BATCH_RAW_MODE=weak`
+- `MK8_PLAYER_NAME_BATCH_FALLBACK_CONFIDENCE=50`
+- `MK8_TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED=0`
+- `MK8_TOTAL_SCORE_RACE_POINTS_ENABLED=0`
+- `MK8_DIGIT_OCR_FALLBACK_ENABLED=0`
+
+These defaults were chosen after profiling showed that the old path spent most of its time on work that did not improve final exported results:
+- reading `RacePoints` on `3TotalScore` frames
+- per-row digit OCR fallback after seven-segment parsing
+- unconditional `batch_raw` name OCR on every observation
+- `3TotalScore` row-level name fallback
+
+When changing OCR process flow, preserve these rules unless a benchmark on representative multi-race inputs shows a better result:
+- `3TotalScore` does not carry race points and should not trigger race-point OCR work.
+- Seven-segment digit parsing is the primary digit reader. Re-enable digit OCR fallback only with measured proof that it improves final business output.
+- `inv_otsu` is the primary batch name OCR path. Additional raw OCR should stay conditional unless profiling proves otherwise.
+- Any change to fallback thresholds or OCR pass counts should be validated on larger extracted race classes, not only on the single-race demo.
+ 
 ## 11. Files To Read First
 
 If you want to continue development, start here:
