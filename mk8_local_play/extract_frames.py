@@ -26,6 +26,7 @@ from .extract_common import (
     load_videos_from_folder,
     relative_video_path,
 )
+from .ocr_common import load_exported_frame_metadata
 
 # Record the start time
 start_run_time = time.time()
@@ -302,7 +303,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             )
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
-def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False):
+def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False, per_video_complete_callback=None):
     """Main function to process videos and apply template matching."""
     phase_start_time = time.time()
     CONSENSUS_FRAME_CACHE.clear()
@@ -831,6 +832,29 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                     "total_score_screens": exported_counts["total"],
                 }
             )
+            if per_video_complete_callback is not None:
+                if metadata_context is not None:
+                    metadata_context.flush()
+                per_video_cache = {
+                    key: value[:]
+                    for key, value in CONSENSUS_FRAME_CACHE.items()
+                    if str(key[0]) == str(video_label)
+                }
+                metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
+                per_video_complete_callback(
+                    {
+                        "video_name": video_name,
+                        "video_label": video_label,
+                        "summary": per_video_summaries[-1],
+                        "frame_bundle_cache": per_video_cache,
+                        "metadata_index": {
+                            key: value
+                            for key, value in metadata_index.items()
+                            if str(value.get("video_label", "")).strip() == str(video_label)
+                            or Path(str(value.get("video", ""))).stem == str(video_label)
+                        },
+                    }
+                )
     finally:
         if csv_context is not None:
             csv_context.close()

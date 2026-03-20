@@ -41,7 +41,7 @@ from .extract_common import (
     iter_video_race_dirs,
 )
 from .console_logging import LOGGER
-from .ocr_export import build_completion_payload
+from .ocr_export import build_completion_payload, build_player_count_summary_lines
 from .ocr_name_matching import (
     append_identity_relink_review_notes,
     compact_identity_labels,
@@ -1227,7 +1227,15 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     return {"rows": results, "summary": summary, "duration_s": time.perf_counter() - race_start_time}
 
 
-def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, selected_race_classes=None):
+def process_images_in_folder(
+    folder_path: str,
+    in_memory_frame_bundles=None,
+    selected_race_classes=None,
+    metadata_index_override=None,
+    *,
+    write_outputs: bool = True,
+    emit_logs: bool = True,
+):
     phase_start_time = time.time()
     ocr_workers = current_ocr_workers()
     ocr_consensus_frames = load_app_config().ocr_consensus_frames
@@ -1238,7 +1246,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     race_dirs = iter_video_race_dirs(folder_path)
 
     if not race_dirs:
-        LOGGER.log("[OCR - Read text from image - Phase Start]", "The Frames folder is empty. Run extraction first.", color_name="red")
+        if emit_logs:
+            LOGGER.log("[OCR - Read text from image - Phase Start]", "The Frames folder is empty. Run extraction first.", color_name="red")
         raise RuntimeError("The Frames folder is empty. Run extraction first.")
 
     base_dir = Path(PROJECT_ROOT)
@@ -1250,7 +1259,7 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     if APP_CONFIG.write_debug_linking_excel and not os.path.exists(linking_data_folder):
         os.makedirs(linking_data_folder)
 
-    metadata_index = load_exported_frame_metadata(base_dir)
+    metadata_index = metadata_index_override if metadata_index_override is not None else load_exported_frame_metadata(base_dir)
     input_videos_folder = base_dir / "Input_Videos"
 
     grouped_images = {}
@@ -1273,18 +1282,19 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
             grouped_images[key].append(("3TotalScore", str(total_score_path)))
 
     sorted_grouped_images = sorted(grouped_images.items(), key=lambda item: item[0])
-    LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")
-    LOGGER.log(
-        "[OCR - Settings]",
-        f"OCR workers: {ocr_workers} | Consensus frames: {ocr_consensus_frames} | Input race groups: {len(sorted_grouped_images)}",
-        color_name="magenta",
-    )
-    if selected_classes is not None:
+    if emit_logs:
+        LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")
         LOGGER.log(
             "[OCR - Settings]",
-            f"Selection scope: {len(selected_classes)} video classes",
+            f"OCR workers: {ocr_workers} | Consensus frames: {ocr_consensus_frames} | Input race groups: {len(sorted_grouped_images)}",
             color_name="magenta",
         )
+        if selected_classes is not None:
+            LOGGER.log(
+                "[OCR - Settings]",
+                f"Selection scope: {len(selected_classes)} video classes",
+                color_name="magenta",
+            )
     results = []
     race_summaries = []
     per_video_ocr_durations = defaultdict(float)
@@ -1312,7 +1322,8 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
         while pending:
             done, pending = wait(pending, timeout=3.0, return_when=FIRST_COMPLETED)
             if not done:
-                progress.heartbeat(completed_count, f"In flight: {len(pending)} | Still processing OCR races")
+                if emit_logs:
+                    progress.heartbeat(completed_count, f"In flight: {len(pending)} | Still processing OCR races")
                 continue
             for future in done:
                 completed_count += 1
@@ -1323,31 +1334,35 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
                 results.extend(race_result["rows"])
                 if race_result["summary"] is not None:
                     race_summaries.append(race_result["summary"])
-                progress.update(completed_count, f"In flight: {len(pending)}")
+                if emit_logs:
+                    progress.update(completed_count, f"In flight: {len(pending)}")
                 if matching_summary is not None:
-                    LOGGER.log(
-                        "",
-                        f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03} | Track: {matching_summary['track_name']}",
-                        color_name="magenta",
-                    )
-                    LOGGER.log(
-                        "",
-                        f"Players: race score {matching_summary['race_score_players']} | total score {matching_summary['total_score_players']}",
-                        color_name="magenta",
-                    )
+                    if emit_logs:
+                        LOGGER.log(
+                            "",
+                            f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03} | Track: {matching_summary['track_name']}",
+                            color_name="magenta",
+                        )
+                        LOGGER.log(
+                            "",
+                            f"Players: race score {matching_summary['race_score_players']} | total score {matching_summary['total_score_players']}",
+                            color_name="magenta",
+                        )
                 else:
-                    LOGGER.log(
-                        "",
-                        f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03}",
-                        color_name="magenta",
-                    )
+                    if emit_logs:
+                        LOGGER.log(
+                            "",
+                            f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03}",
+                            color_name="magenta",
+                        )
                 if matching_summary is not None:
                     for warning_message in matching_summary["warning_messages"]:
-                        LOGGER.log(
-                            f"[OCR - Warning]",
-                            f"Video: {race_class} | Race: {race_id_number:03} | Track: {matching_summary['track_name']} | {warning_message}",
-                            color_name="yellow",
-                        )
+                        if emit_logs:
+                            LOGGER.log(
+                                f"[OCR - Warning]",
+                                f"Video: {race_class} | Race: {race_id_number:03} | Track: {matching_summary['track_name']} | {warning_message}",
+                                color_name="yellow",
+                            )
 
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
@@ -1366,8 +1381,9 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     ])
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     if df.empty:
-        LOGGER.log("[OCR - Phase Complete]", "No races were extracted", color_name="yellow")
-        return {"duration_s": 0.0, "output_excel_path": None, "per_video_durations": {}}
+        if emit_logs:
+            LOGGER.log("[OCR - Phase Complete]", "No races were extracted", color_name="yellow")
+        return {"duration_s": 0.0, "output_excel_path": None, "per_video_durations": {}, "df": df, "per_video_summary": {}}
 
     # Add the CupName column
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
@@ -1406,28 +1422,49 @@ def process_images_in_folder(folder_path: str, in_memory_frame_bundles=None, sel
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = append_identity_relink_review_notes(df)
 
-    completion_payload = build_completion_payload(
-        df,
-        folder_path,
-        phase_start_time,
-        progress.peak_lines(),
+    ocr_profiler_lines = (
         call_matrix_summary_lines(colorize=LOGGER.color)
         + OCR_PROFILER.summary_lines()
         + observation_stage_summary_lines()
         + character_shortlist_summary_lines()
-        + player_name_fallback_summary_lines(),
-        per_video_ocr_durations,
-        build_race_warning_messages,
-        pluralize,
-        format_duration,
+        + player_name_fallback_summary_lines()
     )
-    LOGGER.summary_block("[OCR - Phase Complete]", completion_payload["lines"], color_name="green")
+    if write_outputs:
+        completion_payload = build_completion_payload(
+            df,
+            folder_path,
+            phase_start_time,
+            progress.peak_lines(),
+            ocr_profiler_lines,
+            per_video_ocr_durations,
+            build_race_warning_messages,
+            pluralize,
+            format_duration,
+        )
+        if emit_logs:
+            LOGGER.summary_block("[OCR - Phase Complete]", completion_payload["lines"], color_name="green")
+        return {
+            "duration_s": completion_payload["duration_s"],
+            "output_excel_path": completion_payload["output_excel_path"],
+            "race_count": completion_payload["race_count"],
+            "per_video_durations": completion_payload["per_video_durations"],
+            "per_video_summary": completion_payload["per_video_summary"],
+            "df": df,
+            "progress_peak_lines": progress.peak_lines(),
+            "ocr_profiler_lines": ocr_profiler_lines,
+        }
+
+    summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     return {
-        "duration_s": completion_payload["duration_s"],
-        "output_excel_path": completion_payload["output_excel_path"],
-        "race_count": completion_payload["race_count"],
-        "per_video_durations": completion_payload["per_video_durations"],
-        "per_video_summary": completion_payload["per_video_summary"],
+        "duration_s": time.time() - phase_start_time,
+        "output_excel_path": None,
+        "race_count": int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0]),
+        "per_video_durations": dict(per_video_ocr_durations),
+        "per_video_summary": per_video_summary,
+        "df": df,
+        "progress_peak_lines": progress.peak_lines(),
+        "ocr_profiler_lines": ocr_profiler_lines,
+        "summary_lines": summary_lines,
     }
 
 def main() -> None:

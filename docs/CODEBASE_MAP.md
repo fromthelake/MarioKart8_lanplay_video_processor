@@ -24,7 +24,7 @@ Runtime baseline:
 ### Entry points
 
 - `mk8_local_play/main.py`
-  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, EasyOCR GPU toggle persistence, and end-to-end orchestration.
+  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, EasyOCR GPU toggle persistence, overlap-by-video full-run orchestration, and end-to-end orchestration.
 - `mk8_local_play/console_logging.py`
   Shared console logger and resource monitor for CLI/GUI output. Owns elapsed-time formatting, summary blocks, resource peaks, and the per-run timer reset behavior.
 - `pyproject.toml`
@@ -46,7 +46,7 @@ Runtime baseline:
 ### OCR and identity phase
 
 - `mk8_local_play/extract_text.py`
-  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, and export.
+  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, export, and overlap-mode in-memory OCR consumption of finalized per-video frame bundles.
 - `mk8_local_play/ocr_scoreboard_consensus.py`
   Core score-screen OCR logic: ROIs, row presence detection, position-template matching, score digit reading, character matching, and multi-frame consensus.
 - `mk8_local_play/low_res_identity.py`
@@ -139,6 +139,7 @@ Notes:
 - `--selection` is the safer baseline for scoped verification because OCR stays limited to the selected video classes.
 - Child scripts are expected to run through the repo-local `.venv`.
 - The first curated baseline is `benchmarks/baselines/demo_capturecard_race/` and must be validated with both `--prefix Demo_CaptureCard_Race` and `--race-class Demo_CaptureCard_Race`.
+- With EasyOCR GPU enabled and more than one selected input video, full runs can overlap extraction and OCR by video while keeping GPU OCR at a single consumer worker.
 
 ## Major Dependencies
 

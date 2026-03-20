@@ -24,6 +24,13 @@ The processing flow is:
 8. Resolve track / cup / character metadata from the game catalog.
 9. Export the final workbook.
 
+Current runtime overlap behavior:
+- default CPU runs remain sequential: extraction phase then OCR phase
+- when EasyOCR GPU mode is enabled and more than one input video is selected, full runs may overlap by video
+- in overlap mode, extraction remains the producer and a single GPU OCR consumer starts after each video's frame bundles are finalized
+- overlap starts only after a video's exported frame bundles and metadata are complete; it does not OCR partially written race bundles
+- GPU overlap intentionally keeps effective OCR workers at `1`
+
 ## 2. Working Image Size
 
 The extraction and OCR pipeline use a fixed working image size:
@@ -153,6 +160,12 @@ Current RaceScore selection behavior:
 Main OCR logic lives in:
 - [extract_text.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_text.py)
 - [ocr_scoreboard_consensus.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/ocr_scoreboard_consensus.py)
+
+Current OCR runtime notes:
+- CPU remains the default OCR mode
+- EasyOCR GPU mode is opt-in through `config/app_config.json:easyocr_gpu` or the GUI
+- when GPU OCR is active, the pipeline forces effective OCR workers to `1`
+- this is intentional; local benchmarks showed GPU OCR scales poorly with higher worker counts while overlap-by-video gives the meaningful throughput gain
 
 Important OCR geometry on the normalized `1280x720` frame:
 
