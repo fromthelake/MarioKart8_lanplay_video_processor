@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .app_runtime import easyocr_gpu_enabled as runtime_easyocr_gpu_enabled, load_app_config
+from .app_runtime import load_app_config
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .project_paths import PROJECT_ROOT
@@ -43,7 +43,7 @@ INITIAL_SCAN_EOF_GUARD_SECONDS = 10.0
 INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
 INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS = 10.0
 INITIAL_SCAN_FFPROBE_COUNTFRAME_MIN_DELTA_FRAMES = 30
-DEFAULT_PARALLEL_VIDEO_SCAN_WORKERS = 2 if runtime_easyocr_gpu_enabled(APP_CONFIG) else 1
+DEFAULT_PARALLEL_VIDEO_SCAN_WORKERS = 2
 PARALLEL_VIDEO_SCAN_WORKERS = max(
     1,
     int(os.environ.get("MK8_PARALLEL_VIDEO_SCAN_WORKERS", str(DEFAULT_PARALLEL_VIDEO_SCAN_WORKERS))),

@@ -189,8 +189,7 @@ Runtime GPU mode defaults:
 - `overlap_ocr_consumers` now defaults to `2`
 - in overlap `auto`, multi-video full runs use the streamed per-race overlap path only when EasyOCR CUDA is available; otherwise runs stay on the existing sequential path
 - you can still override overlap mode to `video` or `race`, and raise `overlap_ocr_consumers` later for experiments
-- multi-video initial scan now defaults to `2` workers only when EasyOCR CUDA is available
-- when EasyOCR CUDA is unavailable, multi-video initial scan defaults back to `1` worker
+- multi-video initial scan now defaults to `2` workers for multi-video runs
 - `MK8_PARALLEL_VIDEO_SCAN_WORKERS` can still override this manually
 - higher values such as `3` or `4` oversubscribed the machine in local testing and were slower than `2`
 
