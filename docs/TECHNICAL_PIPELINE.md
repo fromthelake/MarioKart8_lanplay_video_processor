@@ -34,8 +34,9 @@ Current runtime overlap behavior:
 
 Current extraction parallelism notes:
 - a single video initial scan still uses overlapped parallel segments internally
-- an additional experimental multi-video initial-scan path is available through `MK8_PARALLEL_VIDEO_SCAN_WORKERS`
+- an additional multi-video initial-scan path is available through `MK8_PARALLEL_VIDEO_SCAN_WORKERS`
 - when enabled with more than one selected video, the extractor prepares each video, runs the initial scan for multiple videos in one shared process pool, then keeps the later score-window selection and export path serial
+- the default is `2` workers when EasyOCR CUDA is available and `1` worker otherwise
 - on the current Windows benchmark laptop, `MK8_PARALLEL_VIDEO_SCAN_WORKERS=2` is the best verified setting so far
 - higher values such as `3` and `4` oversubscribed CPU and memory bandwidth in local testing and were slower than `2`
 

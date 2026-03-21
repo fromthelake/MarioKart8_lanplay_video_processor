@@ -189,8 +189,9 @@ Runtime GPU mode defaults:
 - `overlap_ocr_consumers` now defaults to `2`
 - in overlap `auto`, multi-video full runs use the streamed per-race overlap path only when EasyOCR CUDA is available; otherwise runs stay on the existing sequential path
 - you can still override overlap mode to `video` or `race`, and raise `overlap_ocr_consumers` later for experiments
-- multi-video initial scan can also be enabled experimentally with `MK8_PARALLEL_VIDEO_SCAN_WORKERS`
-- `MK8_PARALLEL_VIDEO_SCAN_WORKERS=2` is the current best verified extraction setting on the ASUS ROG Strix G18 benchmark set
+- multi-video initial scan now defaults to `2` workers only when EasyOCR CUDA is available
+- when EasyOCR CUDA is unavailable, multi-video initial scan defaults back to `1` worker
+- `MK8_PARALLEL_VIDEO_SCAN_WORKERS` can still override this manually
 - higher values such as `3` or `4` oversubscribed the machine in local testing and were slower than `2`
 
 Recommended performance profile on the current benchmark laptop:
