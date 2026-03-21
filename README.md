@@ -193,6 +193,15 @@ Runtime GPU mode defaults:
 - `MK8_PARALLEL_VIDEO_SCAN_WORKERS=2` is the current best verified extraction setting on the ASUS ROG Strix G18 benchmark set
 - higher values such as `3` or `4` oversubscribed the machine in local testing and were slower than `2`
 
+Recommended performance profile on the current benchmark laptop:
+- `execution_mode=cpu`
+- `easyocr_gpu_mode=auto`
+- `overlap_ocr_mode=race`
+- `overlap_ocr_consumers=2`
+- `MK8_PARALLEL_VIDEO_SCAN_WORKERS=2`
+
+This combination is the current best verified throughput profile for the full local tournament benchmark set.
+
 ## Step 7. Add your videos
 
 Put your video files in folder:
