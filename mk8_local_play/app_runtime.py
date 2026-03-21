@@ -134,7 +134,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
 
     execution_mode = _parse_mode(
         os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
-        "auto",
+        "cpu",
     )
     export_image_format = _parse_export_image_format(
         os.environ.get("MK8_EXPORT_IMAGE_FORMAT", json_config.get("export_image_format")),
@@ -313,7 +313,7 @@ def detect_gpu_runtime(config: AppConfig) -> dict:
     except Exception:
         opencl_available = False
         opencl_in_use = False
-    mode = _parse_mode(config.execution_mode, "auto")
+    mode = _parse_mode(config.execution_mode, "cpu")
     backend = "cpu"
     reason = "CPU mode selected" if mode == "cpu" else "No GPU backend available"
     if mode == "cpu":

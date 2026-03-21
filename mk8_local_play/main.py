@@ -891,9 +891,9 @@ def _create_gui_button(parent, *, text: str, command, bg: str, fg: str, active_b
         highlightcolor=border,
         cursor="hand2",
         font=("TkDefaultFont", font_size, "bold"),
-        padx=14,
-        pady=10,
-        wraplength=300,
+        padx=10,
+        pady=6,
+        wraplength=220,
     )
     _bind_button_hover(
         button,
@@ -919,39 +919,61 @@ def _create_step_card(parent, *, step_number: str, title: str, description: str,
         text=step_number,
         bg=number_bg,
         fg=number_fg,
-        font=("TkDefaultFont", 12, "bold"),
-        padx=8,
-        pady=4,
+        font=("TkDefaultFont", 11, "bold"),
+        padx=7,
+        pady=3,
     )
-    number_label.grid(row=0, column=0, padx=(14, 10), pady=(12, 6), sticky="w")
+    number_label.grid(row=0, column=0, padx=(12, 10), pady=(10, 4), sticky="w")
 
     title_label = tk.Label(
         header,
         text=title,
         bg=header_bg,
         fg="white",
-        font=("TkDefaultFont", 16, "bold"),
+        font=("TkDefaultFont", 15, "bold"),
         anchor="w",
         justify="left",
     )
-    title_label.grid(row=0, column=1, padx=(0, 14), pady=(12, 6), sticky="w")
+    title_label.grid(row=0, column=1, padx=(0, 12), pady=(10, 4), sticky="w")
 
     description_label = tk.Label(
         header,
         text=description,
         bg=header_bg,
         fg=GUI_THEME["muted_fg"],
-        font=("TkDefaultFont", 14),
+        font=("TkDefaultFont", 12),
         anchor="w",
         justify="left",
         wraplength=460,
     )
-    description_label.grid(row=1, column=0, columnspan=2, padx=14, pady=(2, 12), sticky="w")
+    description_label.grid(row=1, column=0, columnspan=2, padx=12, pady=(1, 10), sticky="w")
 
     body = tk.Frame(card, bg=GUI_THEME["panel_bg"])
-    body.grid(row=1, column=0, sticky="nsew", padx=16, pady=14)
+    body.grid(row=1, column=0, sticky="nsew", padx=14, pady=12)
     body.grid_columnconfigure(0, weight=1)
     card.grid_rowconfigure(1, weight=1)
+
+    return card, body
+
+
+def _create_compact_card(parent, *, title: str, accent_border: str):
+    card = tk.Frame(parent, bg=GUI_THEME["panel_bg"], highlightthickness=1, highlightbackground=accent_border, bd=0)
+    card.grid_columnconfigure(0, weight=1)
+
+    body = tk.Frame(card, bg=GUI_THEME["panel_bg"])
+    body.grid(row=0, column=0, sticky="nsew", padx=14, pady=10)
+    body.grid_columnconfigure(0, weight=1)
+
+    title_label = tk.Label(
+        body,
+        text=title,
+        bg=GUI_THEME["panel_bg"],
+        fg="white",
+        font=("TkDefaultFont", 14, "bold"),
+        anchor="w",
+        justify="left",
+    )
+    title_label.grid(row=0, column=0, sticky="w")
 
     return card, body
 
@@ -1026,7 +1048,7 @@ def _create_tinted_tile_image(base_image: Image.Image, *, tint_color: tuple[int,
 
 
 def _fit_shell_width(viewport_width: int) -> int:
-    return max(860, min(1080, viewport_width - 56))
+    return max(980, min(1240, viewport_width - 40))
 
 
 def launch_gui() -> int:
@@ -1042,9 +1064,13 @@ def launch_gui() -> int:
     root = tk.Tk()
     root.title("Mario Kart 8 Race Analysis")
     root.configure(bg=GUI_THEME["window_bg"])
-    root.tk.call("tk", "scaling", 1.0)
-    root.geometry("1120x940")
-    root.minsize(980, 820)
+    try:
+        current_scaling = float(root.tk.call("tk", "scaling"))
+        root.tk.call("tk", "scaling", max(0.9, min(1.0, current_scaling * 0.95)))
+    except Exception:
+        pass
+    root.geometry("1260x860")
+    root.minsize(1040, 760)
     root.grid_columnconfigure(0, weight=1)
     root.grid_rowconfigure(0, weight=1)
 
@@ -1108,7 +1134,7 @@ def launch_gui() -> int:
     background_canvas = tk.Canvas(root, bg=GUI_THEME["window_bg"], bd=0, highlightthickness=0)
     background_canvas.grid(row=0, column=0, sticky="nsew")
 
-    shell = tk.Frame(background_canvas, bg=GUI_THEME["window_bg"], padx=28, pady=24)
+    shell = tk.Frame(background_canvas, bg=GUI_THEME["window_bg"], padx=24, pady=20)
     shell.grid_columnconfigure(0, weight=1)
     shell.grid_rowconfigure(1, weight=1)
     shell_window_id = background_canvas.create_window(0, 0, anchor="n", window=shell)
@@ -1121,7 +1147,7 @@ def launch_gui() -> int:
     stripe_top = tk.Canvas(app_frame, height=6, bg=GUI_THEME["panel_bg"], bd=0, highlightthickness=0)
     stripe_top.grid(row=0, column=0, sticky="ew")
 
-    hero_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], height=124)
+    hero_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], height=96)
     hero_frame.grid(row=1, column=0, sticky="ew")
     hero_frame.grid_columnconfigure(0, weight=1)
     hero_frame.grid_rowconfigure(0, weight=1)
@@ -1134,7 +1160,7 @@ def launch_gui() -> int:
     hero_overlay.grid_columnconfigure(0, weight=1)
 
     title_row = tk.Frame(hero_overlay, bg="#08101f")
-    title_row.grid(row=0, column=0, sticky="ew", padx=28, pady=(12, 2))
+    title_row.grid(row=0, column=0, sticky="ew", padx=22, pady=(10, 2))
     title_row.grid_columnconfigure(1, weight=1)
 
     title_block = tk.Frame(title_row, bg="#08101f")
@@ -1145,7 +1171,7 @@ def launch_gui() -> int:
         text="MARIO KART 8",
         bg="#08101f",
         fg=GUI_THEME["title_fg"],
-        font=("TkDefaultFont", 24, "bold"),
+        font=("TkDefaultFont", 21, "bold"),
     )
     title_label.grid(row=0, column=0, sticky="w")
 
@@ -1154,9 +1180,9 @@ def launch_gui() -> int:
         text="DELUXE · LAN TOURNAMENT · VIDEO ANALYSER",
         bg="#08101f",
         fg=GUI_THEME["subtitle_fg"],
-        font=("TkDefaultFont", 16, "bold"),
+        font=("TkDefaultFont", 13, "bold"),
     )
-    subtitle_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+    subtitle_label.grid(row=1, column=0, sticky="w", pady=(4, 0))
 
     exit_button = _create_gui_button(
         title_row,
@@ -1173,11 +1199,11 @@ def launch_gui() -> int:
     exit_button.grid(row=0, column=1, sticky="e")
 
     divider = tk.Frame(hero_overlay, bg=GUI_THEME["divider_gold"], height=2)
-    divider.grid(row=1, column=0, sticky="ew", padx=28, pady=(0, 2))
+    divider.grid(row=1, column=0, sticky="ew", padx=22, pady=(0, 2))
     divider.grid_propagate(False)
 
     hero_copy = tk.Frame(hero_overlay, bg="#08101f")
-    hero_copy.grid(row=2, column=0, sticky="ew", padx=28, pady=(2, 4))
+    hero_copy.grid(row=2, column=0, sticky="ew", padx=22, pady=(1, 4))
     hero_copy.grid_columnconfigure(0, weight=1)
 
     hero_summary = tk.Label(
@@ -1188,58 +1214,86 @@ def launch_gui() -> int:
         justify="left",
         anchor="w",
         wraplength=760,
-        font=("TkDefaultFont", 14),
+        font=("TkDefaultFont", 12),
     )
     hero_summary.grid(row=0, column=0, sticky="w")
 
     hero_window_id = hero_canvas.create_window(0, 0, anchor="nw", window=hero_overlay)
 
-    body_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], padx=24, pady=16)
+    body_frame = tk.Frame(app_frame, bg=GUI_THEME["panel_bg"], padx=20, pady=12)
     body_frame.grid(row=2, column=0, sticky="nsew")
     body_frame.grid_columnconfigure(0, weight=1)
     body_frame.grid_rowconfigure(0, weight=1)
 
     steps_frame = tk.Frame(body_frame, bg=GUI_THEME["panel_bg"])
     steps_frame.grid(row=0, column=0, sticky="nsew")
-    steps_frame.grid_columnconfigure(0, weight=8)
-    steps_frame.grid_columnconfigure(1, weight=3)
+    steps_frame.grid_columnconfigure(0, weight=1)
+    steps_frame.grid_columnconfigure(1, weight=1)
+    steps_frame.grid_columnconfigure(2, weight=1)
     steps_frame.grid_rowconfigure(1, weight=1)
-    steps_frame.grid_rowconfigure(2, weight=1)
 
     step1_card, step1_body = _create_step_card(
         steps_frame,
         step_number="STEP 1",
-        title="Choose Your Videos",
-        description="Get your recordings ready",
+        title="Input Videos",
+        description="Open the input folder or combine source clips",
         accent_bg="#a07800",
         accent_border="#826815",
         number_bg="#4f4310",
         number_fg="#ffe88f",
         header_bg="#17170e",
     )
-    step1_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+    step1_card.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
     step1_body.grid_columnconfigure(0, weight=1)
-    step1_body.grid_columnconfigure(1, weight=1)
-    _create_gui_button(step1_body, text="Open Video Folder", command=open_videos_folder, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=0, column=0, padx=(0, 8), pady=(0, 8), sticky="ew")
-    _create_gui_button(step1_body, text="Combine Video Clips", command=merge_videos, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=0, column=1, padx=(8, 0), pady=(0, 8), sticky="ew")
+    _create_gui_button(step1_body, text="Open Video Folder", command=open_videos_folder, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=0, column=0, sticky="ew")
+    _create_gui_button(step1_body, text="Combine Video Clips", command=merge_videos, bg="#8c6a00", fg="#fff1b3", active_bg="#a97f00", border="#c59d2a", hover_bg="#c39200", hover_border="#e2bf58").grid(row=1, column=0, sticky="ew", pady=(8, 0))
     merge_note = tk.Label(
         step1_body,
-        text="Optional: join multiple clips into one video when they belong to the same set of races.",
+        text="Use this first to prepare the videos you want to process.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=700,
-        font=("TkDefaultFont", 13),
+        wraplength=260,
+        font=("TkDefaultFont", 12),
     )
-    merge_note.grid(row=1, column=0, columnspan=2, sticky="w")
+    merge_note.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
-    step1_options = tk.Frame(step1_body, bg=GUI_THEME["panel_bg"])
-    step1_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-    step1_options.grid_columnconfigure(1, weight=1)
+    settings_card, settings_body = _create_compact_card(
+        steps_frame,
+        title="Global Settings",
+        accent_border="#8a6436",
+    )
+    settings_card.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    settings_body.grid_columnconfigure(1, weight=1)
+    settings_body.grid_columnconfigure(3, weight=1)
+    settings_body.grid_columnconfigure(5, weight=1)
 
-    subfolders_toggle = _create_gui_toggle(
-        step1_options,
+    settings_intro = tk.Label(
+        settings_body,
+        text="Persistent runtime settings for all GUI actions.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=560,
+        font=("TkDefaultFont", 11),
+    )
+    settings_intro.grid(row=0, column=1, columnspan=5, sticky="w", padx=(14, 0))
+
+    settings_subfolders_label = tk.Label(
+        settings_body,
+        text="Input Scope",
+        bg=GUI_THEME["panel_bg"],
+        fg="#fff1b3",
+        anchor="w",
+        justify="left",
+        font=("TkDefaultFont", 13, "bold"),
+    )
+    settings_subfolders_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+    settings_subfolders_toggle = _create_gui_toggle(
+        settings_body,
         text="Also Look In Subfolders",
         variable=include_subfolders_var,
         bg=GUI_THEME["panel_bg"],
@@ -1247,55 +1301,38 @@ def launch_gui() -> int:
         selectcolor="#4f4310",
         active_bg=GUI_THEME["panel_bg"],
     )
-    subfolders_toggle.grid(row=0, column=0, sticky="w")
-
-    subfolders_note = tk.Label(
-        step1_options,
-        text="Turn this on if your videos are stored inside folders within the main Input_Videos folder.",
-        bg=GUI_THEME["panel_bg"],
-        fg=GUI_THEME["muted_fg"],
-        anchor="w",
-        justify="left",
-        wraplength=520,
-        font=("TkDefaultFont", 13),
-    )
-    subfolders_note.grid(row=0, column=1, sticky="w", padx=(12, 0))
+    settings_subfolders_toggle.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(8, 0))
 
     step2_card, step2_body = _create_step_card(
         steps_frame,
         step_number="STEP 2",
-        title="Find The Race Screens",
-        description="Prepare the race images",
+        title="Extract Race Frames from Video",
+        description="Find and save the race and score screenshots",
         accent_bg="#154d9e",
         accent_border="#335b91",
         number_bg="#132845",
         number_fg="#b9dcff",
         header_bg="#101826",
     )
-    step2_card.grid(row=1, column=0, sticky="nsew", pady=(0, 12), padx=(0, 10))
+    step2_card.grid(row=1, column=1, sticky="nsew", padx=8, pady=(0, 8))
     step2_body.grid_columnconfigure(0, weight=1)
-    step2_body.grid_columnconfigure(1, weight=1)
-    _create_gui_button(step2_body, text="Find Races In Videos", command=gui_run_extract, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=0, column=0, padx=(0, 8), sticky="ew")
-    _create_gui_button(step2_body, text="View Races Found", command=open_frames_folder, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=0, column=1, padx=(8, 0), sticky="ew")
+    _create_gui_button(step2_body, text="Extract Race Frames", command=gui_run_extract, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=0, column=0, sticky="ew")
+    _create_gui_button(step2_body, text="Open Extracted Frames", command=open_frames_folder, bg="#103b79", fg="#cbe4ff", active_bg="#18559f", border="#4473ae", hover_bg="#2166bc", hover_border="#6d9de0").grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
     step2_note = tk.Label(
         step2_body,
-        text="This looks through your videos and saves the race result screens.\nYou can check the screenshots first before creating the Excel file.",
+        text="Creates the saved race-frame bundles used by OCR and review.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=720,
-        font=("TkDefaultFont", 13),
+        wraplength=260,
+        font=("TkDefaultFont", 12),
     )
-    step2_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 2))
-
-    extract_options = tk.Frame(step2_body, bg=GUI_THEME["panel_bg"])
-    extract_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-    extract_options.grid_columnconfigure(1, weight=1)
+    step2_note.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
     extract_mode_label = tk.Label(
-        extract_options,
+        settings_body,
         text="Extraction GPU Mode",
         bg=GUI_THEME["panel_bg"],
         fg="#cbe4ff",
@@ -1303,60 +1340,43 @@ def launch_gui() -> int:
         justify="left",
         font=("TkDefaultFont", 13, "bold"),
     )
-    extract_mode_label.grid(row=0, column=0, sticky="w")
+    extract_mode_label.grid(row=1, column=2, sticky="w", padx=(20, 0), pady=(8, 0))
 
-    extract_mode_menu = tk.OptionMenu(extract_options, execution_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
+    extract_mode_menu = tk.OptionMenu(settings_body, execution_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
     extract_mode_menu.config(bg="#132845", fg="#cbe4ff", activebackground="#18559f", activeforeground="#ffffff", highlightthickness=0, bd=0)
     extract_mode_menu["menu"].config(bg="#132845", fg="#cbe4ff", activebackground="#2166bc", activeforeground="#ffffff")
-    extract_mode_menu.grid(row=0, column=1, sticky="w", padx=(12, 0))
-
-    extract_mode_note = tk.Label(
-        extract_options,
-        text="Default is Auto: use CUDA/OpenCL when OpenCV can access it, otherwise stay on CPU.",
-        bg=GUI_THEME["panel_bg"],
-        fg=GUI_THEME["muted_fg"],
-        anchor="w",
-        justify="left",
-        wraplength=520,
-        font=("TkDefaultFont", 13),
-    )
-    extract_mode_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    extract_mode_menu.grid(row=1, column=3, sticky="w", padx=(10, 0), pady=(8, 0))
 
     step3_card, step3_body = _create_step_card(
         steps_frame,
         step_number="STEP 3",
-        title="Create The Excel File",
-        description="Read the saved race screens",
+        title="OCR on Extracted Race Frames and Export",
+        description="Read saved screenshots and build the workbook",
         accent_bg="#1f6a34",
         accent_border="#3a7f53",
         number_bg="#17331f",
         number_fg="#c7f2d1",
         header_bg="#101d16",
     )
-    step3_card.grid(row=2, column=0, sticky="nsew", padx=(0, 10))
+    step3_card.grid(row=1, column=2, sticky="nsew", padx=(8, 0), pady=(0, 8))
     step3_body.grid_columnconfigure(0, weight=1)
-    step3_body.grid_columnconfigure(1, weight=1)
-    _create_gui_button(step3_body, text="Create Excel Results", command=gui_run_ocr, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=0, column=0, padx=(0, 8), sticky="ew")
-    _create_gui_button(step3_body, text="Open Excel Scores", command=open_excel_scores, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=0, column=1, padx=(8, 0), sticky="ew")
+    _create_gui_button(step3_body, text="OCR and Export", command=gui_run_ocr, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=0, column=0, sticky="ew")
+    _create_gui_button(step3_body, text="Open Excel Scores", command=open_excel_scores, bg="#1a5c28", fg="#d8f7df", active_bg="#27763a", border="#4a8a5b", hover_bg="#2e8a46", hover_border="#75b286").grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
     ocr_note = tk.Label(
         step3_body,
-        text="This reads the race screens that were already found and turns them into the Excel results file.",
+        text="Uses the extracted frames from Step 2 and writes the final workbook.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=760,
-        font=("TkDefaultFont", 13),
+        wraplength=260,
+        font=("TkDefaultFont", 12),
     )
-    ocr_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-    ocr_options = tk.Frame(step3_body, bg=GUI_THEME["panel_bg"])
-    ocr_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-    ocr_options.grid_columnconfigure(1, weight=1)
+    ocr_note.grid(row=2, column=0, sticky="w", pady=(8, 0))
 
     easyocr_mode_label = tk.Label(
-        ocr_options,
+        settings_body,
         text="EasyOCR Mode",
         bg=GUI_THEME["panel_bg"],
         fg="#d8f7df",
@@ -1364,48 +1384,48 @@ def launch_gui() -> int:
         justify="left",
         font=("TkDefaultFont", 13, "bold"),
     )
-    easyocr_mode_label.grid(row=0, column=0, sticky="w")
+    easyocr_mode_label.grid(row=1, column=4, sticky="w", padx=(20, 0), pady=(8, 0))
 
-    easyocr_mode_menu = tk.OptionMenu(ocr_options, easyocr_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
+    easyocr_mode_menu = tk.OptionMenu(settings_body, easyocr_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
     easyocr_mode_menu.config(bg="#17331f", fg="#d8f7df", activebackground="#27763a", activeforeground="#ffffff", highlightthickness=0, bd=0)
     easyocr_mode_menu["menu"].config(bg="#17331f", fg="#d8f7df", activebackground="#2e8a46", activeforeground="#ffffff")
-    easyocr_mode_menu.grid(row=0, column=1, sticky="w", padx=(12, 0))
+    easyocr_mode_menu.grid(row=1, column=5, sticky="w", padx=(10, 0), pady=(8, 0))
 
-    easyocr_gpu_note = tk.Label(
-        ocr_options,
-        text="Default is Auto: use CUDA for EasyOCR when PyTorch can see it, otherwise stay on CPU. GPU OCR still forces effective OCR workers to 1.",
+    settings_note = tk.Label(
+        settings_body,
+        text="Subfolders affects all run buttons. Extraction is fastest on CPU here; OCR Auto uses CUDA when available.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=640,
-        font=("TkDefaultFont", 13),
+        wraplength=1040,
+        font=("TkDefaultFont", 11),
     )
-    easyocr_gpu_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    settings_note.grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
 
     selection_card, selection_body = _create_step_card(
         steps_frame,
         step_number="STEP 2 + STEP 3",
         title="Full Run",
-        description="Find races and create Excel in one go",
+        description="Run extraction, OCR, and export in one go",
         accent_bg="#7b1fa2",
         accent_border="#7d4ca0",
         number_bg="#30163f",
         number_fg="#e8c7ff",
         header_bg="#181024",
     )
-    selection_card.grid(row=1, column=1, rowspan=2, sticky="nsew")
+    selection_card.grid(row=2, column=1, columnspan=2, sticky="ew")
     selection_body.grid_columnconfigure(0, weight=1)
 
     selection_intro = tk.Label(
         selection_body,
-        text="Use this when you want to do everything in one go, but only for the videos you have currently selected.",
+        text="This combines Step 2 and Step 3 for the currently selected videos.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["subtitle_fg"],
         anchor="w",
         justify="left",
-        wraplength=380,
-        font=("TkDefaultFont", 14),
+        wraplength=560,
+        font=("TkDefaultFont", 12),
     )
     selection_intro.grid(row=0, column=0, sticky="w")
 
@@ -1419,22 +1439,33 @@ def launch_gui() -> int:
         border="#9260bb",
         hover_bg="#8740bd",
         hover_border="#bc8be0",
-    ).grid(row=1, column=0, sticky="ew", pady=(14, 0))
+    ).grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
-    selection_detail = tk.Label(
-        selection_body,
-        text="This finds the race screens and creates the Excel file for the selected videos only.",
+    cleanup_card, cleanup_body = _create_compact_card(
+        steps_frame,
+        title="Cleanup",
+        accent_border="#ab4747",
+    )
+    cleanup_card.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+    cleanup_body.grid_columnconfigure(0, weight=1)
+
+    cleanup_note = tk.Label(
+        cleanup_body,
+        text="Clear saved screenshots or generated outputs when you want a fresh rerun.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=320,
-        font=("TkDefaultFont", 13),
+        wraplength=260,
+        font=("TkDefaultFont", 11),
     )
-    selection_detail.grid(row=2, column=0, sticky="w", pady=(10, 0))
+    cleanup_note.grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+    _create_gui_button(cleanup_body, text="Delete Found Race Screenshots", command=clear_all_races_found, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b", font_size=12).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+    _create_gui_button(cleanup_body, text="Clear Output Folder", command=clear_output_results_gui, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b", font_size=12).grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
     bottom_bar = tk.Frame(body_frame, bg=GUI_THEME["panel_bg"])
-    bottom_bar.grid(row=1, column=0, sticky="ew", pady=(18, 0))
+    bottom_bar.grid(row=1, column=0, sticky="ew", pady=(12, 0))
     bottom_bar.grid_columnconfigure(0, weight=1)
 
     status_frame = tk.Frame(bottom_bar, bg=GUI_THEME["panel_bg"])
@@ -1452,11 +1483,6 @@ def launch_gui() -> int:
         font=("TkDefaultFont", 10, "bold"),
     )
     status_label.grid(row=0, column=1, sticky="w")
-
-    danger_frame = tk.Frame(bottom_bar, bg=GUI_THEME["panel_bg"])
-    danger_frame.grid(row=0, column=1, sticky="e")
-    _create_gui_button(danger_frame, text="Delete Found Race Screenshots", command=clear_all_races_found, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b").grid(row=0, column=0, padx=(0, 8), sticky="ew")
-    _create_gui_button(danger_frame, text="Clear Output Folder", command=clear_output_results_gui, bg="#7a1010", fg="#ffd7d7", active_bg="#9d1818", border="#ab4747", hover_bg="#b71f1f", hover_border="#d85b5b").grid(row=0, column=1, sticky="ew")
 
     stripe_bottom = tk.Canvas(app_frame, height=6, bg=GUI_THEME["panel_bg"], bd=0, highlightthickness=0)
     stripe_bottom.grid(row=3, column=0, sticky="ew")

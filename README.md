@@ -178,9 +178,10 @@ Screenshot export format:
 - `MK8_EXPORT_IMAGE_FORMAT` can still override the config for a single run
 
 Runtime GPU mode defaults:
-- `config/app_config.json` now defaults both `execution_mode` and `easyocr_gpu_mode` to `auto`
+- `config/app_config.json` now defaults `execution_mode` to `cpu` and `easyocr_gpu_mode` to `auto`
 - `execution_mode` controls OpenCV extraction acceleration and accepts `auto`, `gpu`, or `cpu`
 - `easyocr_gpu_mode` controls EasyOCR and accepts `auto`, `gpu`, or `cpu`
+- extraction defaults to `cpu` because that is the fastest verified setting on this machine profile
 - in `auto`, extraction uses CUDA when available and otherwise falls back to CPU
 - OpenCL extraction remains available through explicit `GPU` mode, but is not chosen automatically
 - when EasyOCR is using GPU, effective OCR workers stay at `1`

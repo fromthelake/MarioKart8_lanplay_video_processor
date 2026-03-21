@@ -296,9 +296,10 @@ Important settings include:
 
 Current GPU-related settings:
 - `execution_mode`
-  - default: `auto`
+  - default: `cpu`
   - values: `auto`, `gpu`, `cpu`
   - controls the OpenCV extraction/runtime GPU path
+  - `cpu` is the current default because it benchmarked better than OpenCL on the active laptop profile
   - `auto` prefers CUDA and otherwise uses CPU
   - `gpu` allows OpenCL fallback when CUDA is unavailable
 - `easyocr_gpu_mode`
