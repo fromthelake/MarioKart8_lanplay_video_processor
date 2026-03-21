@@ -43,6 +43,7 @@ INITIAL_SCAN_EOF_GUARD_SECONDS = 10.0
 INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
 INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS = 10.0
 INITIAL_SCAN_FFPROBE_COUNTFRAME_MIN_DELTA_FRAMES = 30
+PARALLEL_VIDEO_SCAN_WORKERS = max(1, int(os.environ.get("MK8_PARALLEL_VIDEO_SCAN_WORKERS", "1")))
 
 CONSENSUS_FRAME_CACHE = {}
 
@@ -318,6 +319,692 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     next_race_to_flush += 1
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
+
+def _format_parallel_scan_diagnostics(parallel_scan_diag, merged_score_detections, merged_track_detections, merged_race_detections, parallel_merge_s, parallel_dedupe_s, auxiliary_save_s):
+    def _format_seconds_precise(value):
+        return f"{float(value):.2f}s"
+
+    return [
+        f"Mode: parallel {parallel_scan_diag.get('executor', 'unknown')} x {parallel_scan_diag.get('segment_count', 0)}",
+        f"Task submit/startup: {_format_seconds_precise(parallel_scan_diag.get('submit_startup_s', 0.0))}",
+        f"First segment result: {_format_seconds_precise(parallel_scan_diag.get('first_result_s', 0.0))}",
+        f"Parallel wait/collect: {_format_seconds_precise(parallel_scan_diag.get('parallel_wait_s', 0.0))}",
+        f"Merge worker results: {_format_seconds_precise(parallel_merge_s)}",
+        f"Deduplicate detections: {_format_seconds_precise(parallel_dedupe_s)}",
+        f"Save auxiliary frames: {_format_seconds_precise(auxiliary_save_s)}",
+        f"Raw merged detections: score {len(merged_score_detections)} | track {len(merged_track_detections)} | race {len(merged_race_detections)}",
+    ]
+
+
+def _prepare_video_context(video_path, folder_path, include_subfolders, video_index, total_videos, template_load_time_s, templates):
+    video_start = time.perf_counter()
+    video_stats = defaultdict(float)
+    video_stats["template_load_s"] = template_load_time_s
+    capture_poisoned = False
+
+    probe = cv2.VideoCapture(video_path)
+    if not probe.isOpened():
+        LOGGER.log(f"[Video {video_index}/{total_videos} - Start]", f"Could not open video: {video_path}", color_name="red")
+        return None
+    nominal_total_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
+    nominal_fps = probe.get(cv2.CAP_PROP_FPS) or 1
+    nominal_duration_s = nominal_total_frames / max(nominal_fps, 1)
+    corrupt_check_status = "checked"
+    preflight_result = video_io.sample_video_readability(video_path, nominal_total_frames, stats=video_stats)
+    corrupt_check_status = str(preflight_result.get("status", "checked"))
+    probe.release()
+    if preflight_result is not None and preflight_result.get("is_suspect"):
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Start]",
+            f"Corrupt preflight flagged file: {preflight_result.get('reason', 'sample probe failed')}",
+            color_name="yellow",
+        )
+    processing_video_path = video_io.repair_video_if_needed(
+        video_path,
+        nominal_total_frames,
+        preflight_result,
+        duration_s=nominal_duration_s,
+        stats=video_stats,
+    )
+
+    cap = cv2.VideoCapture(processing_video_path)
+    if not cap.isOpened():
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Start]",
+            f"Could not open video: {processing_video_path}",
+            color_name="red",
+        )
+        return None
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_skip = int(3 * max(1, int(fps)))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    processing_is_suspect = bool(preflight_result and preflight_result.get("is_suspect") and processing_video_path == video_path)
+    scan_worker_count = 1 if processing_is_suspect else INITIAL_SCAN_WORKERS
+    if processing_is_suspect:
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Start]",
+            "Using conservative single-process scan for suspect video",
+            color_name="yellow",
+        )
+    sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
+    scales = []
+    video_name = os.path.basename(processing_video_path)
+    video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
+    source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
+    LOGGER.log(
+        f"[Video {video_index}/{total_videos} - Start]",
+        f"{source_display_name if include_subfolders else video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
+        color_name="cyan",
+    )
+    stage_start = time.perf_counter()
+    eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
+    for frame_num in sample_frames:
+        video_io.seek_to_frame(cap, frame_num, video_stats)
+        read_timeout_s = (
+            INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS
+            if total_frames - int(frame_num) <= eof_guard_frames
+            else None
+        )
+        if read_timeout_s is None:
+            ret, frame = video_io.read_video_frame(cap, video_stats)
+            timed_out = False
+        else:
+            ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
+        if timed_out:
+            LOGGER.log(
+                f"[Video {video_index}/{total_videos} - Start]",
+                (
+                    f"Aborting video after frame-read stall during scaling scan "
+                    f"(requested frame {int(frame_num)}/{total_frames})"
+                ),
+                color_name="yellow",
+            )
+            capture_poisoned = True
+            break
+        if not ret:
+            continue
+        scale_x, scale_y, left, top, crop_width, crop_height = determine_scaling(frame)
+        scales.append((scale_x, scale_y, left, top, crop_width, crop_height))
+    video_io.add_timing(video_stats, "scaling_scan_s", stage_start)
+    cap.release()
+
+    if not scales:
+        if capture_poisoned:
+            LOGGER.log(
+                f"[Video {video_index}/{total_videos} - Start]",
+                f"Skipping poisoned capture after read timeout: {processing_video_path}",
+                color_name="yellow",
+            )
+        else:
+            LOGGER.log(
+                f"[Video {video_index}/{total_videos} - Start]",
+                f"No valid frames found for scaling: {processing_video_path}",
+                color_name="red",
+            )
+        return None
+
+    context = {
+        "video_path": video_path,
+        "video_index": video_index,
+        "total_videos": total_videos,
+        "video_start": video_start,
+        "video_stats": video_stats,
+        "corrupt_check_status": corrupt_check_status,
+        "processing_video_path": processing_video_path,
+        "video_name": video_name,
+        "video_label": video_label,
+        "source_display_name": source_display_name,
+        "fps": fps,
+        "frame_skip": frame_skip,
+        "total_frames": total_frames,
+        "eof_guard_frames": eof_guard_frames,
+        "capture_poisoned": capture_poisoned,
+        "median_scale_x": np.median([s[0] for s in scales]),
+        "median_scale_y": np.median([s[1] for s in scales]),
+        "median_left": int(np.median([s[2] for s in scales])),
+        "median_top": int(np.median([s[3] for s in scales])),
+        "median_crop_width": int(np.median([s[4] for s in scales])),
+        "median_crop_height": int(np.median([s[5] for s in scales])),
+    }
+    context["detection_segment_tasks"] = initial_scan.build_detection_segment_tasks(
+        context["processing_video_path"],
+        context["video_label"],
+        context["source_display_name"] if include_subfolders else os.path.basename(video_path),
+        context["total_frames"],
+        context["fps"],
+        templates,
+        context["median_scale_x"],
+        context["median_scale_y"],
+        context["median_left"],
+        context["median_top"],
+        context["median_crop_width"],
+        context["median_crop_height"],
+        scan_worker_count,
+        APP_CONFIG.write_debug_csv,
+        INITIAL_SCAN_SEGMENT_OVERLAP_FRAMES,
+        INITIAL_SCAN_MIN_SEGMENT_FRAMES,
+        INITIAL_SCAN_WINDOW_STEPS,
+        INITIAL_SCAN_PROGRESS_REPORT_SECONDS,
+    )
+    return context
+
+
+def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
+    cap = cv2.VideoCapture(context["processing_video_path"])
+    if not cap.isOpened():
+        LOGGER.log(
+            f"[Video {context['video_index']}/{context['total_videos']} - Start]",
+            f"Could not open video: {context['processing_video_path']}",
+            color_name="red",
+        )
+        return {"aborted": True, "capture_poisoned": False}
+
+    video_stats = context["video_stats"]
+    fps = context["fps"]
+    total_frames = context["total_frames"]
+    frame_skip = context["frame_skip"]
+    eof_guard_frames = context["eof_guard_frames"]
+    score_candidates = []
+    runtime_state = {
+        "last_track_frame": 0,
+        "last_race_frame": 0,
+        "next_race_number": 1,
+        "capture": cap,
+    }
+    frame_count = 0
+    stage_start = time.perf_counter()
+    scan_progress = ProgressPrinter(
+        f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+        total_frames,
+        percent_step=5,
+        min_interval_s=2.0,
+    )
+    scan_progress.update(0)
+    capture_poisoned = False
+
+    while cap.isOpened() and frame_count < total_frames:
+        remaining_frames = max(0, total_frames - frame_count)
+        if (
+            total_frames > 0
+            and frame_count / total_frames >= INITIAL_SCAN_EOF_GUARD_PROGRESS
+            and remaining_frames <= eof_guard_frames
+        ):
+            LOGGER.log(
+                f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                (
+                    f"Stopping scan near EOF to avoid decoder stalls "
+                    f"({remaining_frames} frames remaining, "
+                    f"{remaining_frames / max(fps, 1):.1f}s tail)"
+                ),
+                color_name="yellow",
+            )
+            frame_count = total_frames
+            break
+        window_interrupted = False
+        for _ in range(INITIAL_SCAN_WINDOW_STEPS):
+            read_timeout_s = (
+                INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS
+                if remaining_frames <= eof_guard_frames
+                else None
+            )
+            if read_timeout_s is None:
+                ret, frame = video_io.read_video_frame(cap, video_stats)
+                timed_out = False
+            else:
+                ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
+            if timed_out:
+                LOGGER.log(
+                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    (
+                        f"Aborting video after frame-read stall near EOF "
+                        f"({remaining_frames} frames remaining, "
+                        f"{remaining_frames / max(fps, 1):.1f}s tail)"
+                    ),
+                    color_name="yellow",
+                )
+                frame_count = total_frames
+                window_interrupted = True
+                capture_poisoned = True
+                break
+            if not ret:
+                window_interrupted = True
+                break
+
+            frames_to_skip = initial_scan.process_frame(
+                frame,
+                frame_count,
+                context["processing_video_path"],
+                context["video_label"],
+                context["source_display_name"],
+                templates,
+                fps,
+                csv_writer,
+                context["median_scale_x"],
+                context["median_scale_y"],
+                context["median_left"],
+                context["median_top"],
+                context["median_crop_width"],
+                context["median_crop_height"],
+                video_stats,
+                runtime_state,
+                score_candidates,
+                metadata_writer,
+            )
+            if frames_to_skip > 0:
+                frame_count += frames_to_skip + frame_skip
+                if frame_count < total_frames:
+                    video_io.seek_to_frame(cap, frame_count, video_stats)
+                window_interrupted = True
+                scan_progress.update(min(frame_count, total_frames), f"Score candidates: {len(score_candidates)}")
+                break
+
+            if not video_io.advance_frames_by_grab(cap, frame_skip - 1, video_stats):
+                window_interrupted = True
+                frame_count = total_frames
+                break
+
+            frame_count += frame_skip
+            if frame_count >= total_frames:
+                window_interrupted = True
+                break
+            scan_progress.update(frame_count, f"Score candidates: {len(score_candidates)}")
+        if window_interrupted and frame_count >= total_frames:
+            break
+
+    if scan_progress.last_percent < 100:
+        scan_progress.update(total_frames, f"Score candidates: {len(score_candidates)}")
+    video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
+    pre_pass2_counts = count_exported_detection_files(context["video_label"])
+    cap.release()
+    return {
+        "aborted": False,
+        "capture_poisoned": capture_poisoned,
+        "cap": None,
+        "score_candidates": score_candidates,
+        "scan_progress": scan_progress,
+        "scan_track_count": pre_pass2_counts["track"],
+        "scan_race_count": pre_pass2_counts["race"],
+        "parallel_scan_diag": None,
+    }
+
+
+def _finalize_parallel_initial_scan(context, segment_results, csv_writer, metadata_writer):
+    video_stats = context["video_stats"]
+    fps = context["fps"]
+    merged_score_detections = []
+    merged_track_detections = []
+    merged_race_detections = []
+    merged_debug_rows = []
+
+    merge_start = time.perf_counter()
+    for result in sorted(segment_results, key=lambda item: item["segment_index"]):
+        for key, value in result["stats"].items():
+            video_stats[key] += value
+        merged_score_detections.extend(result["score_detections"])
+        merged_track_detections.extend(result["track_detections"])
+        merged_race_detections.extend(result["race_detections"])
+        merged_debug_rows.extend(result["debug_rows"])
+    parallel_merge_s = time.perf_counter() - merge_start
+
+    dedupe_start = time.perf_counter()
+    min_gap_frames = int(fps * 20)
+    merged_score_detections = initial_scan.merge_nearby_detections(merged_score_detections, min_gap_frames)
+    merged_track_detections = initial_scan.merge_nearby_detections(merged_track_detections, min_gap_frames)
+    merged_race_detections = initial_scan.merge_nearby_detections(merged_race_detections, min_gap_frames)
+    parallel_dedupe_s = time.perf_counter() - dedupe_start
+
+    score_frame_numbers = [item["frame_number"] for item in merged_score_detections]
+    score_candidates = [
+        {"race_number": index + 1, "frame_number": item["frame_number"]}
+        for index, item in enumerate(merged_score_detections)
+    ]
+
+    if APP_CONFIG.write_debug_csv and merged_debug_rows:
+        csv_writer.writerows(merged_debug_rows)
+
+    auxiliary_detections = [{"kind": "track", **item} for item in merged_track_detections]
+    auxiliary_detections.extend({"kind": "race", **item} for item in merged_race_detections)
+    auxiliary_detections.sort(key=lambda item: item["frame_number"])
+    if auxiliary_detections:
+        LOGGER.log(f"[Video {context['video_index']}/{context['total_videos']} - Scan - Confirmed Results]", "", color_name="cyan")
+
+    cap = cv2.VideoCapture(context["processing_video_path"])
+    auxiliary_save_start = time.perf_counter()
+    initial_scan.save_auxiliary_detection_frames(
+        cap,
+        context["processing_video_path"],
+        context["video_label"],
+        context["source_display_name"],
+        auxiliary_detections,
+        score_frame_numbers,
+        context["median_left"],
+        context["median_top"],
+        context["median_crop_width"],
+        context["median_crop_height"],
+        fps,
+        video_stats,
+        metadata_writer,
+    )
+    auxiliary_save_s = time.perf_counter() - auxiliary_save_start
+    cap.release()
+
+    return {
+        "score_candidates": score_candidates,
+        "scan_track_count": len(merged_track_detections),
+        "scan_race_count": len(merged_race_detections),
+        "parallel_merge_s": parallel_merge_s,
+        "parallel_dedupe_s": parallel_dedupe_s,
+        "auxiliary_save_s": auxiliary_save_s,
+        "merged_score_detections": merged_score_detections,
+        "merged_track_detections": merged_track_detections,
+        "merged_race_detections": merged_race_detections,
+    }
+
+
+def _extract_frames_parallel_video_scan(
+    video_paths,
+    folder_path,
+    include_subfolders,
+    templates,
+    template_load_time_s,
+    csv_writer,
+    metadata_writer,
+    metadata_context,
+    per_video_complete_callback,
+    per_race_complete_callback,
+    total_source_seconds,
+    return_frame_cache,
+    phase_start_time,
+):
+    total_videos = len(video_paths)
+    total_score_screens_found = 0
+    total_track_screens_found = 0
+    total_race_numbers_found = 0
+    per_video_summaries = []
+
+    prepared_contexts = []
+    for video_index, video_path in enumerate(video_paths, start=1):
+        context = _prepare_video_context(
+            video_path,
+            folder_path,
+            include_subfolders,
+            video_index,
+            total_videos,
+            template_load_time_s,
+            templates,
+        )
+        if context is not None:
+            prepared_contexts.append(context)
+
+    parallel_contexts = [context for context in prepared_contexts if context["detection_segment_tasks"]]
+    shared_results_by_video = {}
+    diagnostics_by_video = {} if INITIAL_SCAN_DIAGNOSTICS_ENABLED else None
+    if len(parallel_contexts) > 1:
+        progress_by_video = {}
+        shared_segment_tasks = []
+        for context in parallel_contexts:
+            LOGGER.log(f"[Video {context['video_index']}/{context['total_videos']} - Scan - Phase Start]", "", color_name="cyan")
+            scan_progress = ProgressPrinter(
+                f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                context["total_frames"],
+                percent_step=5,
+                min_interval_s=1.0,
+            )
+            scan_progress.update(0)
+            context["scan_progress"] = scan_progress
+            progress_by_video[context["video_label"]] = scan_progress
+            shared_segment_tasks.extend(context["detection_segment_tasks"])
+        shared_results_by_video = initial_scan.run_parallel_detection_segments_shared(
+            shared_segment_tasks,
+            progress_by_video,
+            diagnostics_by_video=diagnostics_by_video,
+            max_workers=max(1, PARALLEL_VIDEO_SCAN_WORKERS * INITIAL_SCAN_WORKERS),
+        )
+        if diagnostics_by_video is not None:
+            for context in parallel_contexts:
+                context["parallel_scan_diag"] = diagnostics_by_video.get(context["video_label"], {})
+
+    for context in prepared_contexts:
+        video_stats = context["video_stats"]
+        video_index = context["video_index"]
+        video_name = context["video_name"]
+        video_label = context["video_label"]
+        processing_video_path = context["processing_video_path"]
+        fps = context["fps"]
+        total_frames = context["total_frames"]
+        source_display_name = context["source_display_name"]
+        scan_progress = context.get("scan_progress")
+
+        if context["detection_segment_tasks"] and video_label in shared_results_by_video:
+            parallel_scan_diag = context.get("parallel_scan_diag", {})
+            video_stats["main_scan_loop_s"] = float(parallel_scan_diag.get("video_complete_s", 0.0))
+            parallel_result = _finalize_parallel_initial_scan(
+                context,
+                shared_results_by_video[video_label],
+                csv_writer,
+                metadata_writer,
+            )
+            score_candidates = parallel_result["score_candidates"]
+            scan_track_count = int(parallel_result["scan_track_count"])
+            scan_race_count = int(parallel_result["scan_race_count"])
+            if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
+                LOGGER.summary_block(
+                    f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
+                    _format_parallel_scan_diagnostics(
+                        parallel_scan_diag or {},
+                        parallel_result["merged_score_detections"],
+                        parallel_result["merged_track_detections"],
+                        parallel_result["merged_race_detections"],
+                        parallel_result["parallel_merge_s"],
+                        parallel_result["parallel_dedupe_s"],
+                        parallel_result["auxiliary_save_s"],
+                    ),
+                    color_name="dim",
+                )
+        else:
+            LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", "", color_name="cyan")
+            if context["detection_segment_tasks"]:
+                scan_progress = ProgressPrinter(
+                    f"[Video {video_index}/{total_videos} - Scan]",
+                    total_frames,
+                    percent_step=5,
+                    min_interval_s=1.0,
+                )
+                scan_progress.update(0)
+                parallel_scan_diag = {} if INITIAL_SCAN_DIAGNOSTICS_ENABLED else None
+                stage_start = time.perf_counter()
+                segment_results = initial_scan.run_parallel_detection_segments(
+                    context["detection_segment_tasks"],
+                    scan_progress,
+                    diagnostics=parallel_scan_diag,
+                )
+                video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
+                parallel_result = _finalize_parallel_initial_scan(
+                    context,
+                    segment_results,
+                    csv_writer,
+                    metadata_writer,
+                )
+                score_candidates = parallel_result["score_candidates"]
+                scan_track_count = int(parallel_result["scan_track_count"])
+                scan_race_count = int(parallel_result["scan_race_count"])
+                if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
+                    LOGGER.summary_block(
+                        f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
+                        _format_parallel_scan_diagnostics(
+                            parallel_scan_diag or {},
+                            parallel_result["merged_score_detections"],
+                            parallel_result["merged_track_detections"],
+                            parallel_result["merged_race_detections"],
+                            parallel_result["parallel_merge_s"],
+                            parallel_result["parallel_dedupe_s"],
+                            parallel_result["auxiliary_save_s"],
+                        ),
+                        color_name="dim",
+                    )
+            else:
+                scan_result = _run_serial_initial_scan(context, templates, csv_writer, metadata_writer)
+                if scan_result.get("aborted"):
+                    continue
+                score_candidates = scan_result["score_candidates"]
+                scan_track_count = int(scan_result["scan_track_count"])
+                scan_race_count = int(scan_result["scan_race_count"])
+                scan_progress = scan_result["scan_progress"]
+                if scan_result.get("capture_poisoned"):
+                    LOGGER.log(
+                        f"[Video {video_index}/{total_videos} - Complete]",
+                        f"{video_name} | Aborted after timed-out read to avoid reusing a poisoned decoder",
+                        color_name="yellow",
+                    )
+                    video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
+                    continue
+
+        scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
+        scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
+        scan_summary_lines = [
+            f"Duration: {format_duration(scan_duration)}",
+            f"Source length: {format_duration(total_frames / max(fps, 1))}",
+            f"Frames scanned: {total_frames:,}",
+            f"Scan speed: {scan_speed:,.0f} frames/s",
+            f"Track screens found: {scan_track_count}",
+            f"Race numbers found: {scan_race_count}",
+            f"Total score screens queued: {len(score_candidates)}",
+        ]
+        if scan_progress is not None:
+            scan_summary_lines.extend(scan_progress.peak_lines())
+        LOGGER.summary_block(
+            f"[Video {video_index}/{total_videos} - Scan - Phase Complete]",
+            scan_summary_lines,
+            color_name="green",
+        )
+
+        LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
+        total_score_progress = ProgressPrinter(
+            f"[Video {video_index}/{total_videos} - Total Score Screen]",
+            max(1, len(score_candidates)),
+            percent_step=5,
+            min_interval_s=2.0,
+        )
+        total_score_progress.update(0)
+        race_complete_callback = per_race_complete_callback
+        if race_complete_callback is not None and metadata_context is not None:
+            def race_complete_callback(payload, _callback=race_complete_callback):
+                metadata_context.flush()
+                _callback(payload)
+        process_score_candidates(
+            processing_video_path,
+            video_label,
+            source_display_name,
+            score_candidates,
+            templates,
+            fps,
+            csv_writer,
+            context["median_scale_x"],
+            context["median_scale_y"],
+            context["median_left"],
+            context["median_top"],
+            context["median_crop_width"],
+            context["median_crop_height"],
+            video_stats,
+            metadata_writer,
+            video_index=video_index,
+            total_videos=total_videos,
+            progress=total_score_progress,
+            per_race_complete_callback=race_complete_callback,
+        )
+        exported_counts = count_exported_detection_files(video_label)
+        total_score_screens_found += exported_counts["score"]
+        total_track_screens_found += exported_counts["track"]
+        total_race_numbers_found += exported_counts["race"]
+        video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
+        if total_score_progress.last_percent < 100:
+            total_score_progress.update(len(score_candidates))
+        LOGGER.summary_block(
+            f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
+            [
+                f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+                f"Total score screens found: {exported_counts['total']}",
+                *total_score_progress.peak_lines(),
+            ] if total_score_progress.peak_lines() else [
+                f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+                f"Total score screens found: {exported_counts['total']}",
+            ],
+            color_name="green",
+        )
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Complete]",
+            f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
+            f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
+            f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
+            color_name="green",
+        )
+        if video_index < total_videos:
+            LOGGER.blank_lines(2)
+        per_video_summaries.append(
+            {
+                "video_name": video_name,
+                "source_length_s": total_frames / max(fps, 1),
+                "processing_duration_s": float(video_stats["video_total_s"]),
+                "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
+                "total_score_duration_s": float(video_stats.get("score_candidate_pass_s", 0.0)),
+                "corrupt_check_duration_s": float(video_stats.get("corrupt_check_duration_s", 0.0)),
+                "corrupt_check_status": context["corrupt_check_status"],
+                "repair_duration_s": float(video_stats.get("repair_duration_s", 0.0)),
+                "repair_created": bool(video_stats.get("repair_created", 0)),
+                "track_screens": exported_counts["track"],
+                "race_numbers": exported_counts["race"],
+                "total_score_screens": exported_counts["total"],
+            }
+        )
+        if per_video_complete_callback is not None:
+            if metadata_context is not None:
+                metadata_context.flush()
+            per_video_cache = {
+                key: value[:]
+                for key, value in CONSENSUS_FRAME_CACHE.items()
+                if str(key[0]) == str(video_label)
+            }
+            metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
+            per_video_complete_callback(
+                {
+                    "video_name": video_name,
+                    "video_label": video_label,
+                    "summary": per_video_summaries[-1],
+                    "frame_bundle_cache": per_video_cache,
+                    "metadata_index": {
+                        key: value
+                        for key, value in metadata_index.items()
+                        if str(value.get("video_label", "")).strip() == str(video_label)
+                        or Path(str(value.get("video", ""))).stem == str(video_label)
+                    },
+                }
+            )
+
+    elapsed_time = time.time() - phase_start_time
+    extract_summary = {
+        "duration_s": elapsed_time,
+        "total_source_seconds": total_source_seconds,
+        "track_screens": total_track_screens_found,
+        "race_numbers": total_race_numbers_found,
+        "total_score_screens": total_score_screens_found,
+        "corrupt_check_duration_s": sum(float(item.get("corrupt_check_duration_s", 0.0)) for item in per_video_summaries),
+        "repair_duration_s": sum(float(item.get("repair_duration_s", 0.0)) for item in per_video_summaries),
+        "repair_count": sum(1 for item in per_video_summaries if item.get("repair_created")),
+        "per_video_summaries": per_video_summaries,
+    }
+    extract_lines = [
+        f"Duration: {format_duration(elapsed_time)}",
+        f"Source video total: {format_duration(total_source_seconds)}",
+        f"Track screens found: {total_track_screens_found}",
+        f"Race numbers found: {total_race_numbers_found}",
+        f"Total score screens found: {total_score_screens_found}",
+    ]
+    resource_snapshot = LOGGER.resources.sample()
+    extract_lines.extend(LOGGER.peak_lines(resource_snapshot))
+    LOGGER.summary_block("[Extract - Phase Complete]", extract_lines, color_name="green")
+    return {"frame_bundle_cache": CONSENSUS_FRAME_CACHE, "summary": extract_summary} if return_frame_cache else {"summary": extract_summary}
+
 def extract_frames(
     return_frame_cache=False,
     selected_videos=None,
@@ -428,8 +1115,26 @@ def extract_frames(
             total_source_seconds += frames / max(fps, 1)
         probe.release()
     LOGGER.log("[Extract - Settings]", f"GPU acceleration: {GPU_RUNTIME['backend']} | Initial scan workers: {INITIAL_SCAN_WORKERS}", color_name="cyan")
+    if PARALLEL_VIDEO_SCAN_WORKERS > 1 and len(video_paths) > 1:
+        LOGGER.log("[Extract - Settings]", f"Parallel video initial scan workers: {PARALLEL_VIDEO_SCAN_WORKERS}", color_name="cyan")
 
     try:
+        if PARALLEL_VIDEO_SCAN_WORKERS > 1 and len(video_paths) > 1:
+            return _extract_frames_parallel_video_scan(
+                video_paths,
+                folder_path,
+                include_subfolders,
+                templates,
+                template_load_time_s,
+                csv_writer,
+                metadata_writer,
+                metadata_context,
+                per_video_complete_callback,
+                per_race_complete_callback,
+                total_source_seconds,
+                return_frame_cache,
+                phase_start_time,
+            )
         total_videos = len(video_paths)
         total_score_screens_found = 0
         total_track_screens_found = 0

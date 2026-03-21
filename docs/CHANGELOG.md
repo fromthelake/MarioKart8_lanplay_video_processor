@@ -38,6 +38,7 @@ The format is intentionally simple and human-readable.
 ### Changed
 - Runtime GPU settings now default extraction (`execution_mode`) to `cpu` and EasyOCR (`easyocr_gpu_mode`) to `auto`, with `gpu` and `cpu` override modes still available from config, env vars, and the GUI.
 - Overlap OCR now defaults to `auto` mode with `2` consumers. When EasyOCR CUDA is available, full multi-video runs use the streamed per-race overlap path by default; when CUDA is unavailable, the overlap default resolves back to the existing sequential behavior. Explicit `video` / `race` mode overrides and custom consumer counts remain supported for experiments.
+- Initial scan now supports an experimental multi-video shared-process path behind `MK8_PARALLEL_VIDEO_SCAN_WORKERS`. On the current 7-video benchmark set, `2` workers reduced extraction-only runtime from `06:59` to `03:58`, while `3` and `4` workers were slower.
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
 - Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.
@@ -79,6 +80,7 @@ The format is intentionally simple and human-readable.
 - RacePoints runtime seven-segment detection now uses the tuned fixed ROI layout with `white_threshold=180` and `active_ratio_threshold=0.45`.
 - Session rebases remain visible in validation/debug output as an attention point, but no longer count as OCR review failures by themselves.
 - Initial scan phase summaries now report confirmed track/race detection counts consistently during parallel scanning.
+- Parallel initial scan now streams live detection counts during the scan instead of appearing idle until segment workers finish.
 - The GUI now includes a `Clear Output Results` action with an `Are you sure?` confirmation before deleting generated output files.
 
 ### Fixed

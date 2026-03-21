@@ -32,6 +32,13 @@ Current runtime overlap behavior:
 - if CUDA-backed EasyOCR is unavailable, overlap `auto` resolves back to the existing sequential extraction-then-OCR behavior
 - `overlap_ocr_consumers` defaults to `2`, while explicit `video` / `race` mode overrides and higher consumer counts remain available for experiments
 
+Current extraction parallelism notes:
+- a single video initial scan still uses overlapped parallel segments internally
+- an additional experimental multi-video initial-scan path is available through `MK8_PARALLEL_VIDEO_SCAN_WORKERS`
+- when enabled with more than one selected video, the extractor prepares each video, runs the initial scan for multiple videos in one shared process pool, then keeps the later score-window selection and export path serial
+- on the current Windows benchmark laptop, `MK8_PARALLEL_VIDEO_SCAN_WORKERS=2` is the best verified setting so far
+- higher values such as `3` and `4` oversubscribed CPU and memory bandwidth in local testing and were slower than `2`
+
 ## 2. Working Image Size
 
 The extraction and OCR pipeline use a fixed working image size:
@@ -102,6 +109,7 @@ Current score-screen detection behavior:
 - track-name and race-number detection are unchanged
 - ignore-template matching runs on the same normalized `1280x720` post-crop frame, so the ROIs inherit the same black-border correction as the score templates
 - any ignore hit above its threshold is treated as a hard veto and skips ahead before score candidates are queued
+- parallel initial scan now also streams live score/track/race detection counts back to the parent process so long-running segment scans remain visible in the console
 
 ## 4. Corrupt-Video Preflight
 

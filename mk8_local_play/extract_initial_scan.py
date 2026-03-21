@@ -124,7 +124,7 @@ def _match_score_target_layouts(gray_image, templates, stats):
     return best_match["max_val"], bool(best_match["rejected_as_blank"]), str(best_match["layout_id"])
 
 
-def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False):
+def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False, video_label=None):
     """Send best-effort progress from worker segments back to the parent process."""
     if progress_queue is None:
         return
@@ -134,6 +134,7 @@ def update_segment_progress(progress_queue, segment_index, frame_number, emit_st
         {
             "type": "progress",
             "segment_index": segment_index,
+            "video_label": str(video_label or ""),
             "completed_frames": completed,
             "total_frames": total,
             "force": force,
@@ -141,7 +142,7 @@ def update_segment_progress(progress_queue, segment_index, frame_number, emit_st
     )
 
 
-def update_segment_detection(progress_queue, segment_index, kind, frame_number):
+def update_segment_detection(progress_queue, segment_index, kind, frame_number, video_label=None):
     """Stream worker detections back to the parent process for live scan visibility."""
     if progress_queue is None:
         return
@@ -149,6 +150,7 @@ def update_segment_detection(progress_queue, segment_index, kind, frame_number):
         {
             "type": "detection",
             "segment_index": segment_index,
+            "video_label": str(video_label or ""),
             "kind": str(kind),
             "frame_number": int(frame_number),
         }
@@ -347,7 +349,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
 
 def process_segment_frame(frame, frame_number, video_path, video_source_path, templates, fps, scale_x, scale_y, left, top,
                           crop_width, crop_height, stats, state, debug_rows, emit_results, progress_queue=None,
-                          segment_index=None):
+                          segment_index=None, video_label=None):
     """Run the worker-safe initial scan without writing files or mutating shared state."""
     process_frame_start = time.perf_counter()
     upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
@@ -389,7 +391,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                         "score_layout_id": score_layout_id or DEFAULT_SCORE_LAYOUT_ID,
                     }
                 )
-                update_segment_detection(progress_queue, segment_index, "score", frame_number)
+                update_segment_detection(progress_queue, segment_index, "score", frame_number, video_label)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
 
@@ -416,7 +418,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                             "saved_image": saved_image,
                         }
                     )
-                    update_segment_detection(progress_queue, segment_index, "track", frame_number)
+                    update_segment_detection(progress_queue, segment_index, "track", frame_number, video_label)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return 0
 
@@ -432,7 +434,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                             "saved_image": upscaled_image.copy(),
                         }
                     )
-                    update_segment_detection(progress_queue, segment_index, "race", frame_number)
+                    update_segment_detection(progress_queue, segment_index, "race", frame_number, video_label)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
 
@@ -450,6 +452,7 @@ def scan_detection_segment(task):
     emit_end = task["emit_end"]
     include_debug_rows = task["include_debug_rows"]
     progress_queue = task.get("progress_queue")
+    video_label = task.get("video_label")
 
     local_cap = cv2.VideoCapture(video_path)
     frame_skip = int(3 * max(1, int(fps)))
@@ -477,7 +480,7 @@ def scan_detection_segment(task):
     video_io.seek_to_frame(local_cap, scan_start, stats)
     frame_count = scan_start
     last_progress_report = time.perf_counter()
-    update_segment_progress(progress_queue, task["segment_index"], frame_count, emit_start, emit_end, force=True)
+    update_segment_progress(progress_queue, task["segment_index"], frame_count, emit_start, emit_end, force=True, video_label=video_label)
 
     while local_cap.isOpened() and frame_count < scan_end:
         window_interrupted = False
@@ -507,6 +510,7 @@ def scan_detection_segment(task):
                 emit_results and include_debug_rows,
                 progress_queue=progress_queue,
                 segment_index=task["segment_index"],
+                video_label=video_label,
             )
 
             if frames_to_skip > 0:
@@ -528,14 +532,14 @@ def scan_detection_segment(task):
 
             now = time.perf_counter()
             if now - last_progress_report >= task["progress_report_seconds"]:
-                update_segment_progress(progress_queue, task["segment_index"], frame_count, emit_start, emit_end)
+                update_segment_progress(progress_queue, task["segment_index"], frame_count, emit_start, emit_end, video_label=video_label)
                 last_progress_report = now
 
         if window_interrupted and frame_count >= scan_end:
             break
 
     local_cap.release()
-    update_segment_progress(progress_queue, task["segment_index"], emit_end, emit_start, emit_end, force=True)
+    update_segment_progress(progress_queue, task["segment_index"], emit_end, emit_start, emit_end, force=True, video_label=video_label)
     return {
         "segment_index": task["segment_index"],
         "stats": dict(stats),
@@ -761,4 +765,133 @@ def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=No
         progress_queue = Queue()
         if diagnostics is not None:
             diagnostics["fallback"] = "thread"
+        return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")
+
+
+def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, diagnostics_by_video=None, max_workers=None):
+    """Run detection segments from multiple videos in one shared executor."""
+    if not segment_tasks:
+        return {}
+
+    def _drain_progress(progress_queue, segment_state, live_counts, live_state, segment_totals):
+        changed_videos = set()
+        detection_changed_videos = set()
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except Empty:
+                break
+            message_type = str(message.get("type", "progress"))
+            video_label = str(message.get("video_label", ""))
+            segment_key = (video_label, int(message.get("segment_index", -1)))
+            if message_type == "detection":
+                kind = str(message.get("kind", "")).strip().lower()
+                if video_label in live_counts and kind in live_counts[video_label]:
+                    live_counts[video_label][kind] += 1
+                    detection_changed_videos.add(video_label)
+                continue
+            segment_state[segment_key] = (
+                int(message.get("completed_frames", 0)),
+                int(message.get("total_frames", 0)),
+            )
+            changed_videos.add(video_label)
+
+        update_videos = changed_videos | detection_changed_videos
+        for video_label in update_videos:
+            progress = progress_by_video.get(video_label)
+            if progress is None:
+                continue
+            video_segment_keys = segment_totals.get(video_label, [])
+            completed_frames = sum(segment_state.get(key, (0, 0))[0] for key in video_segment_keys)
+            total_frames = sum(segment_state.get(key, (0, 0))[1] for key in video_segment_keys)
+            progress.total_units = max(1, total_frames)
+            counts = live_counts.get(video_label, {"score": 0, "track": 0, "race": 0})
+            detail = (
+                f"Live detections: score {counts['score']} | "
+                f"track {counts['track']} | race {counts['race']}"
+            )
+            force = False
+            if video_label in detection_changed_videos and video_label not in changed_videos:
+                now = time.perf_counter()
+                if now - float(live_state.get(video_label, 0.0)) >= 2.0:
+                    force = True
+                    live_state[video_label] = now
+            progress.update(completed_frames, detail, force=force)
+
+    def _run_with_executor(executor_factory, progress_queue, executor_label):
+        run_start = time.perf_counter()
+        task_payloads = [{**task, "progress_queue": progress_queue} for task in segment_tasks]
+        if max_workers is None:
+            executor_workers = len(task_payloads)
+        else:
+            executor_workers = max(1, min(int(max_workers), len(task_payloads)))
+        segment_state = {
+            (str(task["video_label"]), int(task["segment_index"])): (0, max(1, int(task["emit_end"]) - int(task["emit_start"])))
+            for task in task_payloads
+        }
+        segment_totals = defaultdict(list)
+        live_counts = {}
+        live_state = {}
+        results_by_video = defaultdict(list)
+        first_result_s_by_video = {}
+        pending_segments_by_video = defaultdict(int)
+        completed_s_by_video = {}
+        for task in task_payloads:
+            video_label = str(task["video_label"])
+            segment_totals[video_label].append((video_label, int(task["segment_index"])))
+            live_counts.setdefault(video_label, {"score": 0, "track": 0, "race": 0})
+            live_state.setdefault(video_label, 0.0)
+            pending_segments_by_video[video_label] += 1
+
+        with executor_factory(max_workers=executor_workers) as executor:
+            submit_start = time.perf_counter()
+            pending = {
+                executor.submit(scan_detection_segment, task): task
+                for task in task_payloads
+            }
+            submit_startup_s = time.perf_counter() - submit_start
+            while pending:
+                done, _ = wait(pending.keys(), timeout=0.5, return_when=FIRST_COMPLETED)
+                _drain_progress(progress_queue, segment_state, live_counts, live_state, segment_totals)
+                for future in done:
+                    task = pending.pop(future)
+                    video_label = str(task["video_label"])
+                    if video_label not in first_result_s_by_video:
+                        first_result_s_by_video[video_label] = time.perf_counter() - run_start
+                    results_by_video[video_label].append(future.result())
+                    pending_segments_by_video[video_label] -= 1
+                    if pending_segments_by_video[video_label] <= 0 and video_label not in completed_s_by_video:
+                        completed_s_by_video[video_label] = time.perf_counter() - run_start
+                    _drain_progress(progress_queue, segment_state, live_counts, live_state, segment_totals)
+            _drain_progress(progress_queue, segment_state, live_counts, live_state, segment_totals)
+
+        if diagnostics_by_video is not None:
+            total_elapsed_s = time.perf_counter() - run_start
+            for video_label, counts in live_counts.items():
+                diagnostics_by_video.setdefault(video_label, {})
+                diagnostics_by_video[video_label].update(
+                    {
+                        "executor": executor_label,
+                        "submit_startup_s": float(submit_startup_s),
+                        "first_result_s": float(first_result_s_by_video.get(video_label, 0.0)),
+                        "parallel_wait_s": float(total_elapsed_s),
+                        "video_complete_s": float(completed_s_by_video.get(video_label, total_elapsed_s)),
+                        "live_score_detections": int(counts["score"]),
+                        "live_track_detections": int(counts["track"]),
+                        "live_race_detections": int(counts["race"]),
+                        "segment_count": int(len(segment_totals.get(video_label, []))),
+                    }
+                )
+        return results_by_video
+
+    try:
+        with mp.Manager() as manager:
+            progress_queue = manager.Queue()
+            return _run_with_executor(ProcessPoolExecutor, progress_queue, "process")
+    except (PermissionError, OSError):
+        LOGGER.log("[Extract - Settings]", "Shared process pool unavailable, falling back to threads", color_name="yellow")
+        progress_queue = Queue()
+        if diagnostics_by_video is not None:
+            for diagnostics in diagnostics_by_video.values():
+                diagnostics["fallback"] = "thread"
         return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")
