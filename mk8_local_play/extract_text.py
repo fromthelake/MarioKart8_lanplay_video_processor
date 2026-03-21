@@ -1424,10 +1424,10 @@ def process_images_in_folder(
             f"OCR workers: {ocr_workers} | Consensus frames: {ocr_consensus_frames} | Input race groups: {len(sorted_grouped_images)}",
             color_name="magenta",
         )
-        if selected_classes is not None:
+        if selected_race_classes is not None:
             LOGGER.log(
                 "[OCR - Settings]",
-                f"Selection scope: {len(selected_classes)} video classes",
+                f"Selection scope: {len(selected_race_classes)} video classes",
                 color_name="magenta",
             )
     results = []

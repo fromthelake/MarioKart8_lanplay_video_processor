@@ -1104,11 +1104,11 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
         "MK8_OVERLAP_OCR_BY_VIDEO",
         "1" if runtime_easyocr_gpu_enabled(runtime_config) else "0",
     ).lower() not in {"0", "false", "no"}
-    overlap_active = overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1
 
     mode_label = "Run selection" if selection_mode else "Run all"
     LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
     video_files = selected_input_video_files(selected_video=selected_video, include_subfolders=include_subfolders)
+    overlap_active = overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1
     if not video_files:
         target = selected_video or "Input_Videos"
         raise RuntimeError(
