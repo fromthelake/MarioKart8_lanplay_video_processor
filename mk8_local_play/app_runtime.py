@@ -17,6 +17,8 @@ class AppConfig:
     execution_mode: str
     export_image_format: str
     easyocr_gpu_mode: str
+    overlap_ocr_mode: str
+    overlap_ocr_consumers: int
     ocr_workers: int
     score_analysis_workers: int
     pass1_scan_workers: int
@@ -59,6 +61,13 @@ def _parse_int(value, default: int, minimum: int = 1) -> int:
 def _parse_mode(value, default: str = "auto") -> str:
     candidate = str(value or default).strip().lower()
     if candidate in {"auto", "gpu", "cpu"}:
+        return candidate
+    return default
+
+
+def _parse_overlap_ocr_mode(value, default: str = "auto") -> str:
+    candidate = str(value or default).strip().lower()
+    if candidate in {"auto", "video", "race"}:
         return candidate
     return default
 
@@ -148,6 +157,14 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     if easyocr_gpu_mode_source is None:
         easyocr_gpu_mode_source = json_config.get("easyocr_gpu")
     easyocr_gpu_mode = _parse_mode_with_legacy_bool(easyocr_gpu_mode_source, "auto")
+    overlap_ocr_mode = _parse_overlap_ocr_mode(
+        os.environ.get("MK8_OVERLAP_OCR_MODE", json_config.get("overlap_ocr_mode")),
+        "auto",
+    )
+    overlap_ocr_consumers = _parse_int(
+        os.environ.get("MK8_OVERLAP_OCR_CONSUMERS", json_config.get("overlap_ocr_consumers")),
+        2,
+    )
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
         default_ocr_workers,
@@ -259,6 +276,8 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         execution_mode=execution_mode,
         export_image_format=export_image_format,
         easyocr_gpu_mode=easyocr_gpu_mode,
+        overlap_ocr_mode=overlap_ocr_mode,
+        overlap_ocr_consumers=overlap_ocr_consumers,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
         pass1_scan_workers=pass1_scan_workers,
@@ -362,6 +381,13 @@ def easyocr_gpu_enabled(config: AppConfig) -> bool:
     except Exception:
         cuda_available = False
     return cuda_available
+
+
+def effective_overlap_ocr_mode(config: AppConfig) -> str:
+    mode = _parse_overlap_ocr_mode(config.overlap_ocr_mode, "auto")
+    if mode != "auto":
+        return mode
+    return "race" if easyocr_gpu_enabled(config) else "video"
 
 
 def detect_easyocr_runtime(config: AppConfig) -> dict:

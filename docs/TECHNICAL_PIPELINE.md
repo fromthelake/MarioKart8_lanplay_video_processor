@@ -26,10 +26,11 @@ The processing flow is:
 
 Current runtime overlap behavior:
 - default CPU runs remain sequential: extraction phase then OCR phase
-- when EasyOCR is resolved to GPU and more than one input video is selected, full runs may overlap by video
-- in overlap mode, extraction remains the producer and a single GPU OCR consumer starts after each video's frame bundles are finalized
-- overlap starts only after a video's exported frame bundles and metadata are complete; it does not OCR partially written race bundles
-- GPU overlap intentionally keeps effective OCR workers at `1`
+- `overlap_ocr_mode=auto` is now the default
+- when EasyOCR is resolved to CUDA and more than one input video is selected, full runs default to streamed per-race overlap
+- in streamed race overlap, extraction remains the producer and OCR race jobs are queued as soon as each finalized race bundle is saved
+- if CUDA-backed EasyOCR is unavailable, overlap `auto` resolves back to the existing sequential extraction-then-OCR behavior
+- `overlap_ocr_consumers` defaults to `2`, while explicit `video` / `race` mode overrides and higher consumer counts remain available for experiments
 
 ## 2. Working Image Size
 
@@ -184,7 +185,7 @@ Current OCR runtime notes:
 - `gpu` requests CUDA explicitly and falls back to CPU with a clear runtime message if CUDA is unavailable
 - `cpu` disables GPU OCR even when CUDA is present
 - when GPU OCR is active, the pipeline forces effective OCR workers to `1`
-- this is intentional; local benchmarks showed GPU OCR scales poorly with higher worker counts while overlap-by-video gives the meaningful throughput gain
+- this is intentional; local benchmarks showed per-process EasyOCR worker counts above `1` scale poorly, while the meaningful throughput gain comes from overlap scheduling across multiple OCR consumers
 - extraction `auto` prefers CUDA and otherwise falls back to CPU
 - extraction OpenCL remains available only through explicit `execution_mode=gpu`; it is no longer selected automatically
 
@@ -289,6 +290,8 @@ Loaded by:
 Important settings include:
 - extraction GPU mode
 - EasyOCR GPU mode
+- overlap OCR mode
+- overlap OCR consumers
 - OCR worker count
 - score-analysis worker count
 - pass-1 scan worker count
@@ -307,6 +310,16 @@ Current GPU-related settings:
   - values: `auto`, `gpu`, `cpu`
   - controls EasyOCR name/track OCR GPU use
   - the OCR phase forces effective OCR workers to `1` in GPU mode, because that was the best measured configuration on the current test machine
+- `overlap_ocr_mode`
+  - default: `auto`
+  - values: `auto`, `video`, `race`
+  - `auto` resolves to streamed per-race overlap only when EasyOCR CUDA is available
+  - `video` keeps the older per-video overlap scheduler
+  - `race` forces the experimental per-race overlap scheduler
+- `overlap_ocr_consumers`
+  - default: `2`
+  - controls the number of spawned OCR consumers used by overlap mode
+  - higher values remain experimental and should be benchmarked on representative multi-video inputs
 
 ## 10. Output Maintenance
 
@@ -457,7 +470,8 @@ When changing OCR process flow, preserve these rules unless a benchmark on repre
 - Seven-segment digit parsing is the primary digit reader. Re-enable digit OCR fallback only with measured proof that it improves final business output.
 - `inv_otsu` is the primary batch name OCR path. Additional raw OCR should stay conditional unless profiling proves otherwise.
 - Any change to fallback thresholds or OCR pass counts should be validated on larger extracted race classes, not only on the single-race demo.
-- In GPU OCR mode, keep effective OCR workers at `1` unless a new benchmark proves a better GPU worker count on representative source videos.
+- In GPU OCR mode, keep effective OCR workers at `1` unless a new benchmark proves a better per-process OCR worker count on representative source videos.
+- Overlap defaults now use `overlap_ocr_mode=auto` and `overlap_ocr_consumers=2`; keep higher overlap consumer counts experimental unless a new benchmark shows a stable throughput win.
  
 ## 11. Files To Read First
 

@@ -24,7 +24,7 @@ Runtime baseline:
 ### Entry points
 
 - `mk8_local_play/main.py`
-  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, EasyOCR GPU toggle persistence, overlap-by-video full-run orchestration, and end-to-end orchestration.
+  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, runtime-setting persistence, overlap full-run orchestration, and end-to-end orchestration.
 - `mk8_local_play/console_logging.py`
   Shared console logger and resource monitor for CLI/GUI output. Owns elapsed-time formatting, summary blocks, resource peaks, and the per-run timer reset behavior.
 - `pyproject.toml`
@@ -46,7 +46,7 @@ Runtime baseline:
 ### OCR and identity phase
 
 - `mk8_local_play/extract_text.py`
-  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, export, and overlap-mode in-memory OCR consumption of finalized per-video frame bundles.
+  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, export, and overlap-mode consumption of finalized per-video or per-race OCR jobs.
 - `mk8_local_play/ocr_scoreboard_consensus.py`
   Core score-screen OCR logic: ROIs, row presence detection, position-template matching, score digit reading, character matching, and multi-frame consensus.
 - `mk8_local_play/low_res_identity.py`
@@ -83,7 +83,7 @@ Runtime baseline:
 - `Input_Videos/`
   Source videos. The app can process the root only or recurse with `--subfolders`.
 - `config/app_config.json`
-  Runtime settings for worker counts, export image format, EasyOCR GPU toggle, consensus frames, debug-output toggles, and low-res thresholds.
+  Runtime settings for worker counts, export image format, EasyOCR GPU/overlap modes, consensus frames, debug-output toggles, and low-res thresholds.
 - `reference_data/game_catalog.json`
   Runtime metadata source for tracks, cups, and characters.
 - `assets/templates/`
@@ -139,7 +139,7 @@ Notes:
 - `--selection` is the safer baseline for scoped verification because OCR stays limited to the selected video classes.
 - Child scripts are expected to run through the repo-local `.venv`.
 - The first curated baseline is `benchmarks/baselines/demo_capturecard_race/` and must be validated with both `--prefix Demo_CaptureCard_Race` and `--race-class Demo_CaptureCard_Race`.
-- With EasyOCR GPU enabled and more than one selected input video, full runs can overlap extraction and OCR by video while keeping GPU OCR at a single consumer worker.
+- With EasyOCR CUDA enabled and more than one selected input video, overlap `auto` now defaults to streamed per-race OCR with two consumers. Explicit `video` / `race` mode overrides and higher consumer counts remain available for experiments.
 
 ## Major Dependencies
 

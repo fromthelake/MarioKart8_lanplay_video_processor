@@ -93,3 +93,53 @@ class AppRuntimeConfigTests(unittest.TestCase):
             self.assertEqual(config.easyocr_gpu_mode, "gpu")
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_load_app_config_reads_overlap_ocr_consumers(self):
+        case_dir = _make_case_dir("app_config_overlap_ocr_consumers")
+        try:
+            config_path = case_dir / "config" / "app_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "execution_mode": "cpu",
+                        "overlap_ocr_consumers": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_app_config(case_dir)
+
+            self.assertEqual(config.overlap_ocr_consumers, 2)
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_load_app_config_reads_overlap_ocr_mode(self):
+        case_dir = _make_case_dir("app_config_overlap_ocr_mode")
+        try:
+            config_path = case_dir / "config" / "app_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "execution_mode": "cpu",
+                        "overlap_ocr_mode": "race",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_app_config(case_dir)
+
+            self.assertEqual(config.overlap_ocr_mode, "race")
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_load_app_config_defaults_overlap_ocr_to_auto_with_two_consumers(self):
+        case_dir = _make_case_dir("app_config_overlap_ocr_defaults")
+        try:
+            config = load_app_config(case_dir)
+
+            self.assertEqual(config.overlap_ocr_mode, "auto")
+            self.assertEqual(config.overlap_ocr_consumers, 2)
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)

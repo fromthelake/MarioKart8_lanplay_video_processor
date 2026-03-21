@@ -185,7 +185,8 @@ def collect_consensus_frames(video_path, video_label, center_frame, fps, left, t
 
 
 def process_score_candidates(video_path, video_label, video_source_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
-                             crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None):
+                             crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None,
+                             per_race_complete_callback=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
         return
@@ -217,52 +218,10 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         percent_step=5,
         min_interval_s=2.0,
     )
-    if worker_count == 1:
-        results = []
-        for completed_count, task in enumerate(tasks, start=1):
-            result = score_screen_selection.analyze_score_window_task(
-                task,
-                frame_to_timecode,
-            )
-            results.append(result)
-            if result["total_score_frame"] > 0:
-                LOGGER.log(
-                    "",
-                    f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
-                    color_name="green",
-                )
-            local_progress.update(
-                completed_count,
-                f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
-            )
-    else:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_map = {
-                executor.submit(
-                    score_screen_selection.analyze_score_window_task,
-                    task,
-                    frame_to_timecode,
-                ): task
-                for task in tasks
-            }
-            results = []
-            for completed_count, future in enumerate(as_completed(future_map), start=1):
-                task = future_map[future]
-                result = future.result()
-                results.append(result)
-                if result["total_score_frame"] > 0:
-                    LOGGER.log(
-                        "",
-                        f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
-                        color_name="green",
-                    )
-                local_progress.update(
-                    completed_count,
-                    f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
-                )
-
     previous_total_score_players = None
-    for result in sorted(results, key=lambda item: item["candidate"]["race_number"]):
+
+    def flush_result(result):
+        nonlocal previous_total_score_players
         race_number = int(result["candidate"].get("race_number", 0) or 0)
         expected_players = previous_total_score_players if race_number >= 2 else None
         result = score_screen_selection.refine_race_score_result_for_expected_players(result, expected_players)
@@ -275,8 +234,8 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         for row in result["debug_rows"]:
             csv_writer.writerow(row)
         if result["race_score_frame"] <= 0 or result["total_score_frame"] <= 0:
-            continue
-        score_screen_selection.save_score_frames(
+            return
+        saved = score_screen_selection.save_score_frames(
             video_path,
             video_label,
             result["candidate"]["race_number"],
@@ -295,15 +254,76 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             video_source_path=video_source_path,
             score_layout_id=result["candidate"].get("score_layout_id"),
         )
+        if saved and per_race_complete_callback is not None:
+            per_race_complete_callback(
+                {
+                    "video_label": video_label,
+                    "race_number": int(result["candidate"]["race_number"]),
+                }
+            )
         total_score_image = result.get("total_score_image")
         if total_score_image is not None:
             previous_total_score_players = score_screen_selection.count_visible_position_rows(
                 total_score_image,
                 result["candidate"].get("score_layout_id"),
             )
+
+    if worker_count == 1:
+        for completed_count, task in enumerate(tasks, start=1):
+            result = score_screen_selection.analyze_score_window_task(
+                task,
+                frame_to_timecode,
+            )
+            if result["total_score_frame"] > 0:
+                LOGGER.log(
+                    "",
+                    f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                    color_name="green",
+                )
+            local_progress.update(
+                completed_count,
+                f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
+            )
+            flush_result(result)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map = {
+                executor.submit(
+                    score_screen_selection.analyze_score_window_task,
+                    task,
+                    frame_to_timecode,
+                ): task
+                for task in tasks
+            }
+            ready_results = {}
+            next_race_to_flush = min((int(task["race_number"]) for task in tasks), default=1)
+            for completed_count, future in enumerate(as_completed(future_map), start=1):
+                task = future_map[future]
+                result = future.result()
+                race_number = int(task["race_number"])
+                ready_results[race_number] = result
+                if result["total_score_frame"] > 0:
+                    LOGGER.log(
+                        "",
+                        f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                        color_name="green",
+                    )
+                local_progress.update(
+                    completed_count,
+                    f"Completed windows: {completed_count}/{len(tasks)} | Last completed: race {task['race_number']:03}/{len(tasks):03}",
+                )
+                while next_race_to_flush in ready_results:
+                    flush_result(ready_results.pop(next_race_to_flush))
+                    next_race_to_flush += 1
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
-def extract_frames(return_frame_cache=False, selected_videos=None, include_subfolders=False, per_video_complete_callback=None):
+def extract_frames(
+    return_frame_cache=False,
+    selected_videos=None,
+    include_subfolders=False,
+    per_video_complete_callback=None,
+    per_race_complete_callback=None,
+):
     """Main function to process videos and apply template matching."""
     phase_start_time = time.time()
     CONSENSUS_FRAME_CACHE.clear()
@@ -768,6 +788,11 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 min_interval_s=2.0,
             )
             total_score_progress.update(0)
+            race_complete_callback = per_race_complete_callback
+            if race_complete_callback is not None and metadata_context is not None:
+                def race_complete_callback(payload, _callback=race_complete_callback):
+                    metadata_context.flush()
+                    _callback(payload)
             process_score_candidates(
                 processing_video_path,
                 video_label,
@@ -787,6 +812,7 @@ def extract_frames(return_frame_cache=False, selected_videos=None, include_subfo
                 video_index=video_index,
                 total_videos=total_videos,
                 progress=total_score_progress,
+                per_race_complete_callback=race_complete_callback,
             )
             exported_counts = count_exported_detection_files(processing_video_path if not include_subfolders else video_label)
             total_score_screens_found += exported_counts["score"]

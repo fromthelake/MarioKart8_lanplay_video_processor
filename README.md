@@ -185,7 +185,10 @@ Runtime GPU mode defaults:
 - in `auto`, extraction uses CUDA when available and otherwise falls back to CPU
 - OpenCL extraction remains available through explicit `GPU` mode, but is not chosen automatically
 - when EasyOCR is using GPU, effective OCR workers stay at `1`
-- on multi-video full runs, GPU OCR overlaps by video: each video's extraction finishes first, then that video's OCR job starts on the single GPU OCR worker
+- `overlap_ocr_mode` now defaults to `auto`
+- `overlap_ocr_consumers` now defaults to `2`
+- in overlap `auto`, multi-video full runs use the streamed per-race overlap path only when EasyOCR CUDA is available; otherwise runs stay on the existing sequential path
+- you can still override overlap mode to `video` or `race`, and raise `overlap_ocr_consumers` later for experiments
 
 ## Step 7. Add your videos
 

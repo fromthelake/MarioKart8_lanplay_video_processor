@@ -9,9 +9,11 @@ import subprocess
 import sys
 import cv2
 import colorsys
+import multiprocessing as mp
 import threading
 import queue
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -31,6 +33,7 @@ from .app_runtime import (
     detect_easyocr_runtime,
     detect_gpu_runtime,
     easyocr_gpu_enabled as runtime_easyocr_gpu_enabled,
+    effective_overlap_ocr_mode as runtime_effective_overlap_ocr_mode,
     load_app_config,
     open_path,
     update_app_config_values,
@@ -386,75 +389,530 @@ def run_ocr(
     run_python_module(OCR_MODULE, extra_args=extra_args)
 
 
+def _format_overlap_ocr_detail(event: dict, format_duration) -> str:
+    completed = int(event.get("completed", 0))
+    total = max(1, int(event.get("total", 1)))
+    percent = min(100, int((completed / total) * 100))
+    elapsed_text = format_duration(float(event.get("elapsed_s", 0.0)))
+    if event.get("event") == "progress":
+        race_id = event.get("race_id")
+        track_name = str(event.get("track_name") or "UNKNOWN")
+        race_players = event.get("race_score_players")
+        total_players = event.get("total_score_players")
+        players_text = ""
+        if race_players is not None or total_players is not None:
+            players_text = f" | Players: race {race_players} | total {total_players}"
+        race_text = f" | Race {int(race_id):03}" if race_id is not None else ""
+        return f"{completed}/{total} ({percent}%) | {track_name}{race_text}{players_text} | Elapsed: {elapsed_text}"
+    detail = str(event.get("detail") or "").strip()
+    pending = event.get("pending")
+    pending_text = f" | Pending races: {int(pending)}" if pending is not None else ""
+    detail_text = f" | {detail}" if detail else ""
+    return f"{completed}/{total} ({percent}%) | Elapsed: {elapsed_text}{pending_text}{detail_text}"
+
+
+def _make_overlap_ocr_progress_callback(video_label: str, format_duration):
+    def _callback(event: dict) -> None:
+        LOGGER.log(
+            "[Run - Overlap OCR]",
+            f"{video_label} | {_format_overlap_ocr_detail(event, format_duration)}",
+            color_name="cyan",
+        )
+
+    return _callback
+
+
+def _overlap_ocr_process_worker(job_queue, result_queue, progress_queue) -> None:
+    from . import extract_text
+
+    while True:
+        job = job_queue.get()
+        if job is None:
+            result_queue.put({"event": "worker_exit"})
+            progress_queue.put({"event": "worker_exit"})
+            return
+        video_label = str(job["video_label"])
+        video_name = str(job["video_name"])
+
+        def _progress_callback(event: dict) -> None:
+            payload = dict(event)
+            payload["video_label"] = video_label
+            progress_queue.put(payload)
+
+        try:
+            progress_queue.put({"event": "worker_start", "video_label": video_label})
+            result = extract_text.process_images_in_folder(
+                str(FRAMES_DIR),
+                selected_race_classes=[video_label],
+                write_outputs=False,
+                emit_logs=False,
+                progress_callback=_progress_callback,
+            )
+            result_queue.put(
+                {
+                    "event": "result",
+                    "video_label": video_label,
+                    "video_name": video_name,
+                    "result": result,
+                }
+            )
+        except BaseException as exc:
+            result_queue.put(
+                {
+                    "event": "error",
+                    "video_label": video_label,
+                    "video_name": video_name,
+                    "error": repr(exc),
+                }
+            )
+
+
+def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) -> None:
+    from . import extract_text
+
+    base_dir = Path(PROJECT_ROOT)
+    metadata_index = extract_text.load_exported_frame_metadata(base_dir)
+    input_videos_folder = base_dir / "Input_Videos"
+    text_detected_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'Score_Frames')
+    if extract_text.APP_CONFIG.write_debug_score_images and not os.path.exists(text_detected_folder):
+        os.makedirs(text_detected_folder, exist_ok=True)
+
+    while True:
+        job = job_queue.get()
+        if job is None:
+            result_queue.put({"event": "worker_exit"})
+            progress_queue.put({"event": "worker_exit"})
+            return
+        video_label = str(job["video_label"])
+        race_id = int(job["race_id"])
+        grouped_item = job["grouped_item"]
+        try:
+            progress_queue.put({"event": "race_start", "video_label": video_label, "race_id": race_id})
+            race_result = extract_text.process_race_group(
+                grouped_item,
+                text_detected_folder,
+                metadata_index,
+                input_videos_folder,
+                None,
+            )
+            result_queue.put(
+                {
+                    "event": "race_result",
+                    "video_label": video_label,
+                    "race_id": race_id,
+                    "race_result": race_result,
+                }
+            )
+        except BaseException as exc:
+            result_queue.put(
+                {
+                    "event": "error",
+                    "video_label": video_label,
+                    "race_id": race_id,
+                    "error": repr(exc),
+                }
+            )
+
+
 def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool, include_subfolders: bool = False) -> None:
     from . import extract_frames, extract_text
+    runtime_config = load_app_config()
+    overlap_ocr_consumers = max(1, int(runtime_config.overlap_ocr_consumers))
+    overlap_ocr_mode = runtime_effective_overlap_ocr_mode(runtime_config)
+    diagnostics_enabled = os.environ.get("MK8_OVERLAP_OCR_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
     selected_video_names = [
         str(path.relative_to(INPUT_DIR)).replace("\\", "/") if include_subfolders else path.name
         for path in video_files
     ]
-    selected_race_classes = (
-        selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
-        if selection_mode else None
-    )
-
-    ocr_jobs: "queue.Queue[dict | None]" = queue.Queue()
     ocr_results: list[dict] = []
     ocr_errors: list[BaseException] = []
     ocr_lock = threading.Lock()
     ocr_start_time_holder = {"value": None}
+    use_multi_process_ocr = overlap_ocr_consumers > 1
+    use_race_overlap = use_multi_process_ocr and overlap_ocr_mode == "race"
+    overlap_diag = {
+        "queued_at": {},
+        "started_at": {},
+        "first_progress_at": {},
+        "completed_at": {},
+        "last_completed": {},
+        "active_videos": set(),
+        "max_active": 0,
+        "samples": [],
+    }
+    overlap_diag_lock = threading.Lock()
 
-    def ocr_worker():
-        while True:
-            job = ocr_jobs.get()
-            if job is None:
-                ocr_jobs.task_done()
-                return
-            try:
-                with ocr_lock:
-                    if ocr_start_time_holder["value"] is None:
-                        ocr_start_time_holder["value"] = time.time()
-                LOGGER.log("[Run - Overlap]", f"Starting OCR for {job['video_label']}", color_name="cyan")
-                result = extract_text.process_images_in_folder(
-                    str(FRAMES_DIR),
-                    in_memory_frame_bundles=job["frame_bundle_cache"],
-                    selected_race_classes=[job["video_label"]],
-                    metadata_index_override=job["metadata_index"],
+    def record_ocr_queued(video_label: str) -> None:
+        if not diagnostics_enabled:
+            return
+        with overlap_diag_lock:
+            overlap_diag["queued_at"].setdefault(video_label, time.time())
+
+    def record_ocr_started(video_label: str) -> None:
+        if not diagnostics_enabled:
+            return
+        now = time.time()
+        with overlap_diag_lock:
+            overlap_diag["started_at"].setdefault(video_label, now)
+            overlap_diag["active_videos"].add(video_label)
+            overlap_diag["max_active"] = max(overlap_diag["max_active"], len(overlap_diag["active_videos"]))
+
+    def record_ocr_progress(video_label: str, event: dict) -> None:
+        if not diagnostics_enabled:
+            return
+        if event.get("event") not in {"heartbeat", "progress"}:
+            return
+        with overlap_diag_lock:
+            overlap_diag["first_progress_at"].setdefault(video_label, time.time())
+            overlap_diag["last_completed"][video_label] = int(event.get("completed", 0))
+
+    def record_ocr_completed(video_label: str) -> None:
+        if not diagnostics_enabled:
+            return
+        with overlap_diag_lock:
+            overlap_diag["completed_at"][video_label] = time.time()
+            overlap_diag["active_videos"].discard(video_label)
+
+    sampler_stop = threading.Event()
+
+    def diagnostic_sampler():
+        while not sampler_stop.wait(2.0):
+            snapshot = LOGGER.resources.sample()
+            with overlap_diag_lock:
+                overlap_diag["samples"].append(
+                    {
+                        "time_s": LOGGER.elapsed_seconds(),
+                        "active_ocr": len(overlap_diag["active_videos"]),
+                        "cpu_percent": snapshot.cpu_percent,
+                        "ram_used_gb": snapshot.ram_used_gb,
+                    }
+                )
+
+    sampler_thread = None
+    if diagnostics_enabled:
+        sampler_thread = threading.Thread(target=diagnostic_sampler, name="mk8-overlap-diag", daemon=True)
+        sampler_thread.start()
+
+    if use_race_overlap:
+        ctx = mp.get_context("spawn")
+        ocr_jobs = ctx.Queue()
+        ocr_result_queue = ctx.Queue()
+        ocr_progress_queue = ctx.Queue()
+        worker_processes = [
+            ctx.Process(
+                target=_overlap_ocr_race_process_worker,
+                args=(ocr_jobs, ocr_result_queue, ocr_progress_queue),
+                name=f"mk8-ocr-race-overlap-{index + 1}",
+                daemon=True,
+            )
+            for index in range(overlap_ocr_consumers)
+        ]
+        for process in worker_processes:
+            process.start()
+
+        video_expected_races = {}
+        video_extraction_complete = set()
+        video_race_results = defaultdict(list)
+        video_race_durations = defaultdict(float)
+        finalized_videos = set()
+
+        def progress_collector():
+            worker_exits = 0
+            while worker_exits < overlap_ocr_consumers:
+                event = ocr_progress_queue.get()
+                event_type = event.get("event")
+                if event_type == "worker_exit":
+                    worker_exits += 1
+                    continue
+                video_label = str(event.get("video_label", "unknown"))
+                if event_type == "race_start":
+                    record_ocr_started(video_label)
+                    continue
+
+        progress_thread = threading.Thread(target=progress_collector, name="mk8-ocr-progress", daemon=True)
+        progress_thread.start()
+
+        def result_collector():
+            worker_exits = 0
+            while worker_exits < overlap_ocr_consumers:
+                message = ocr_result_queue.get()
+                event_type = message.get("event")
+                if event_type == "worker_exit":
+                    worker_exits += 1
+                    continue
+                if event_type == "error":
+                    ocr_errors.append(RuntimeError(f"{message.get('video_label')} race {message.get('race_id')}: {message.get('error')}"))
+                    continue
+                if event_type != "race_result":
+                    continue
+
+                video_label = str(message["video_label"])
+                race_result = dict(message["race_result"])
+                video_race_results[video_label].append(race_result)
+                video_race_durations[video_label] += float(race_result.get("duration_s", 0.0))
+                completed = len(video_race_results[video_label])
+                total = max(1, int(video_expected_races.get(video_label, completed)))
+                race_summary = race_result.get("summary") or {}
+                progress_event = {
+                    "event": "progress",
+                    "completed": completed,
+                    "total": total,
+                    "elapsed_s": sum(float(item.get("duration_s", 0.0)) for item in video_race_results[video_label]),
+                    "video_label": video_label,
+                    "race_id": int(message.get("race_id") or 0),
+                    "track_name": race_summary.get("track_name"),
+                    "race_score_players": race_summary.get("race_score_players"),
+                    "total_score_players": race_summary.get("total_score_players"),
+                }
+                record_ocr_progress(video_label, progress_event)
+                LOGGER.log(
+                    "[Run - Overlap OCR]",
+                    f"{video_label} | {_format_overlap_ocr_detail(progress_event, extract_frames.format_duration)}",
+                    color_name="cyan",
+                )
+
+                if video_label in finalized_videos:
+                    continue
+                if video_label not in video_extraction_complete or completed < total:
+                    continue
+
+                finalized_videos.add(video_label)
+                finalize_start = time.time()
+                finalized = extract_text.finalize_ocr_results(
+                    [row for item in sorted(video_race_results[video_label], key=lambda value: int((value.get('summary') or {}).get('race_id_number', 0) or 0)) for row in item.get("rows", [])],
+                    folder_path=str(FRAMES_DIR),
+                    phase_start_time=finalize_start,
+                    per_video_ocr_durations={video_label: float(video_race_durations[video_label])},
+                    progress_peak_lines=[],
+                    ocr_profiler_lines=[
+                        "Overlapped per-race OCR mode",
+                        f"OCR consumers: {overlap_ocr_consumers}",
+                        "Detailed OCR call profiling is omitted from the combined summary in overlap mode.",
+                    ],
                     write_outputs=False,
                     emit_logs=False,
                 )
-                result["video_label"] = job["video_label"]
-                result["video_name"] = job["video_name"]
-                ocr_results.append(result)
+                finalize_duration_s = float(time.time() - finalize_start)
+                finalized["duration_s"] = float(video_race_durations[video_label]) + finalize_duration_s
+                finalized["video_label"] = video_label
+                finalized["video_name"] = next(
+                    (
+                        str(path.relative_to(INPUT_DIR)).replace("\\", "/") if include_subfolders else path.name
+                        for path in video_files
+                        if build_video_identity(path, include_subfolders=include_subfolders) == video_label
+                    ),
+                    video_label,
+                )
+                finalized["per_video_durations"] = {video_label: finalized["duration_s"]}
+                ocr_results.append(finalized)
+                record_ocr_completed(video_label)
                 LOGGER.log(
                     "[Run - Overlap]",
-                    f"Completed OCR for {job['video_label']} | Races: {result.get('race_count', 0)} | Duration: {extract_frames.format_duration(result.get('duration_s', 0.0))}",
+                    f"Completed OCR for {video_label} | Races: {finalized.get('race_count', 0)} | Duration: {extract_frames.format_duration(finalized.get('duration_s', 0.0))}",
                     color_name="green",
                 )
-            except BaseException as exc:
-                ocr_errors.append(exc)
-            finally:
-                ocr_jobs.task_done()
 
-    worker_thread = threading.Thread(target=ocr_worker, name="mk8-ocr-overlap", daemon=True)
-    worker_thread.start()
+        result_thread = threading.Thread(target=result_collector, name="mk8-ocr-results", daemon=True)
+        result_thread.start()
 
-    def enqueue_completed_video(video_payload: dict) -> None:
-        LOGGER.log("[Run - Overlap]", f"Queued OCR for {video_payload['video_label']}", color_name="cyan")
-        ocr_jobs.put(video_payload)
+        def enqueue_completed_race(race_payload: dict) -> None:
+            with ocr_lock:
+                if ocr_start_time_holder["value"] is None:
+                    ocr_start_time_holder["value"] = time.time()
+            video_label = str(race_payload["video_label"])
+            race_number = int(race_payload["race_number"])
+            grouped_item = extract_text.build_grouped_race_item(
+                str(FRAMES_DIR),
+                video_label,
+                race_number,
+            )
+            LOGGER.log(
+                "[Run - Overlap]",
+                f"Queued OCR race {race_number:03} for {video_label}",
+                color_name="cyan",
+            )
+            record_ocr_queued(video_label)
+            ocr_jobs.put(
+                {
+                    "video_label": video_label,
+                    "race_id": race_number,
+                    "grouped_item": grouped_item,
+                }
+            )
+
+        def enqueue_completed_video(video_payload: dict) -> None:
+            video_label = str(video_payload["video_label"])
+            grouped_items = extract_text.build_grouped_race_images(
+                str(FRAMES_DIR),
+                selected_race_classes=[video_label],
+            )
+            video_extraction_complete.add(video_label)
+            video_expected_races[video_label] = len(grouped_items)
+            video_expected_races[str(video_payload["video_label"])] = len(grouped_items)
+            LOGGER.log(
+                "[Run - Overlap]",
+                f"Extraction complete for {video_label} | Races ready: {len(grouped_items)}",
+                color_name="cyan",
+            )
+
+    elif use_multi_process_ocr:
+        ctx = mp.get_context("spawn")
+        ocr_jobs = ctx.Queue()
+        ocr_result_queue = ctx.Queue()
+        ocr_progress_queue = ctx.Queue()
+        worker_processes = [
+            ctx.Process(
+                target=_overlap_ocr_process_worker,
+                args=(ocr_jobs, ocr_result_queue, ocr_progress_queue),
+                name=f"mk8-ocr-overlap-{index + 1}",
+                daemon=True,
+            )
+            for index in range(overlap_ocr_consumers)
+        ]
+        for process in worker_processes:
+            process.start()
+
+        def progress_collector():
+            worker_exits = 0
+            while worker_exits < overlap_ocr_consumers:
+                event = ocr_progress_queue.get()
+                if event.get("event") == "worker_exit":
+                    worker_exits += 1
+                    continue
+                video_label = str(event.get("video_label", "unknown"))
+                if event.get("event") == "worker_start":
+                    record_ocr_started(video_label)
+                    continue
+                record_ocr_progress(video_label, event)
+                LOGGER.log(
+                    "[Run - Overlap OCR]",
+                    f"{video_label} | {_format_overlap_ocr_detail(event, extract_frames.format_duration)}",
+                    color_name="cyan",
+                )
+
+        progress_thread = threading.Thread(target=progress_collector, name="mk8-ocr-progress", daemon=True)
+        progress_thread.start()
+
+        def result_collector():
+            worker_exits = 0
+            while worker_exits < overlap_ocr_consumers:
+                message = ocr_result_queue.get()
+                event_type = message.get("event")
+                if event_type == "worker_exit":
+                    worker_exits += 1
+                    continue
+                if event_type == "error":
+                    ocr_errors.append(RuntimeError(f"{message.get('video_label')}: {message.get('error')}"))
+                    continue
+                if event_type != "result":
+                    continue
+                result = dict(message["result"])
+                result["video_label"] = message["video_label"]
+                result["video_name"] = message["video_name"]
+                ocr_results.append(result)
+                record_ocr_completed(str(message["video_label"]))
+                LOGGER.log(
+                    "[Run - Overlap]",
+                    f"Completed OCR for {message['video_label']} | Races: {result.get('race_count', 0)} | Duration: {extract_frames.format_duration(result.get('duration_s', 0.0))}",
+                    color_name="green",
+                )
+
+        result_thread = threading.Thread(target=result_collector, name="mk8-ocr-results", daemon=True)
+        result_thread.start()
+
+        def enqueue_completed_video(video_payload: dict) -> None:
+            with ocr_lock:
+                if ocr_start_time_holder["value"] is None:
+                    ocr_start_time_holder["value"] = time.time()
+            LOGGER.log("[Run - Overlap]", f"Queued OCR for {video_payload['video_label']}", color_name="cyan")
+            record_ocr_queued(str(video_payload["video_label"]))
+            ocr_jobs.put(
+                {
+                    "video_label": video_payload["video_label"],
+                    "video_name": video_payload["video_name"],
+                }
+            )
+
+    else:
+        ocr_jobs = queue.Queue()
+        overlap_progress_log = {}
+
+        def progress_callback(event: dict, *, video_label: str) -> None:
+            record_ocr_progress(video_label, event)
+            callback = overlap_progress_log.get(video_label)
+            if callback is None:
+                callback = _make_overlap_ocr_progress_callback(video_label, extract_frames.format_duration)
+                overlap_progress_log[video_label] = callback
+            callback(event)
+
+        def ocr_worker():
+            while True:
+                job = ocr_jobs.get()
+                if job is None:
+                    ocr_jobs.task_done()
+                    return
+                try:
+                    with ocr_lock:
+                        if ocr_start_time_holder["value"] is None:
+                            ocr_start_time_holder["value"] = time.time()
+                    LOGGER.log("[Run - Overlap]", f"Starting OCR for {job['video_label']}", color_name="cyan")
+                    record_ocr_started(str(job["video_label"]))
+                    result = extract_text.process_images_in_folder(
+                        str(FRAMES_DIR),
+                        in_memory_frame_bundles=job["frame_bundle_cache"],
+                        selected_race_classes=[job["video_label"]],
+                        metadata_index_override=job["metadata_index"],
+                        write_outputs=False,
+                        emit_logs=False,
+                        progress_callback=lambda event, video_label=str(job["video_label"]): progress_callback(event, video_label=video_label),
+                    )
+                    result["video_label"] = job["video_label"]
+                    result["video_name"] = job["video_name"]
+                    ocr_results.append(result)
+                    record_ocr_completed(str(job["video_label"]))
+                    LOGGER.log(
+                        "[Run - Overlap]",
+                        f"Completed OCR for {job['video_label']} | Races: {result.get('race_count', 0)} | Duration: {extract_frames.format_duration(result.get('duration_s', 0.0))}",
+                        color_name="green",
+                    )
+                except BaseException as exc:
+                    ocr_errors.append(exc)
+                finally:
+                    ocr_jobs.task_done()
+
+        worker_thread = threading.Thread(target=ocr_worker, name="mk8-ocr-overlap", daemon=True)
+        worker_thread.start()
+
+        def enqueue_completed_video(video_payload: dict) -> None:
+            LOGGER.log("[Run - Overlap]", f"Queued OCR for {video_payload['video_label']}", color_name="cyan")
+            record_ocr_queued(str(video_payload["video_label"]))
+            ocr_jobs.put(video_payload)
 
     extract_phase_start = time.time()
     extract_result = extract_frames.extract_frames(
-        return_frame_cache=True,
+        return_frame_cache=not use_multi_process_ocr,
         selected_videos=selected_video_names or None,
         include_subfolders=include_subfolders,
         per_video_complete_callback=enqueue_completed_video,
+        per_race_complete_callback=enqueue_completed_race if use_race_overlap else None,
     )
     extract_summary = extract_result.get("summary", {})
     extract_summary["duration_s"] = time.time() - extract_phase_start
 
-    ocr_jobs.put(None)
-    worker_thread.join()
+    if use_multi_process_ocr:
+        for _ in range(overlap_ocr_consumers):
+            ocr_jobs.put(None)
+        for process in worker_processes:
+            process.join()
+        result_thread.join()
+        progress_thread.join()
+    else:
+        ocr_jobs.put(None)
+        worker_thread.join()
+    sampler_stop.set()
+    if sampler_thread is not None:
+        sampler_thread.join(timeout=5.0)
     if ocr_errors:
         raise RuntimeError(f"Overlapped OCR failed: {ocr_errors[0]}")
 
@@ -470,7 +928,11 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     per_video_durations = {}
     per_video_summary = {}
     progress_peak_lines = []
-    ocr_profiler_lines = ["Overlapped per-video OCR mode", "Detailed OCR call profiling is omitted from the combined summary in overlap mode."]
+    ocr_profiler_lines = [
+        "Overlapped per-video OCR mode",
+        f"OCR consumers: {overlap_ocr_consumers}",
+        "Detailed OCR call profiling is omitted from the combined summary in overlap mode.",
+    ]
     for result in ocr_results:
         per_video_durations.update(result.get("per_video_durations", {}))
         per_video_summary.update(result.get("per_video_summary", {}))
@@ -529,8 +991,52 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         f"- OCR and workbook export: {extract_frames.format_duration(total_ocr_duration_s)}",
         f"- Corrupt preflight checks: {extract_frames.format_duration(total_corrupt_check_s)}",
         f"- Repair file creation: {extract_frames.format_duration(total_repair_s)} ({total_repairs} {('video' if total_repairs == 1 else 'videos')})",
-        "- Mode: overlapped by video (single GPU OCR consumer)",
+        f"- Mode: overlapped by {overlap_ocr_mode} ({overlap_ocr_consumers} GPU OCR consumer{'s' if overlap_ocr_consumers != 1 else ''})",
     ]
+    if diagnostics_enabled:
+        queued_at = overlap_diag["queued_at"]
+        started_at = overlap_diag["started_at"]
+        first_progress_at = overlap_diag["first_progress_at"]
+        completed_at = overlap_diag["completed_at"]
+        queue_waits = []
+        first_progress_waits = []
+        wall_durations = []
+        for video_label, queued_time in queued_at.items():
+            started_time = started_at.get(video_label)
+            first_progress_time = first_progress_at.get(video_label)
+            completed_time = completed_at.get(video_label)
+            if started_time is not None:
+                queue_waits.append(float(started_time - queued_time))
+            if started_time is not None and first_progress_time is not None:
+                first_progress_waits.append(float(first_progress_time - started_time))
+            if started_time is not None and completed_time is not None:
+                wall_durations.append(float(completed_time - started_time))
+        extract_duration_s = float(extract_summary.get("duration_s", 0.0))
+        extract_samples = [item for item in overlap_diag["samples"] if float(item["time_s"]) <= extract_duration_s + 0.001]
+        active_extract_samples = [item for item in extract_samples if int(item.get("active_ocr", 0)) > 0]
+        performance_lines.extend(["", "Overlap diagnostics"])
+        performance_lines.append(f"- Diagnostics enabled: yes")
+        performance_lines.append(f"- Max simultaneously active OCR videos: {int(overlap_diag['max_active'])}")
+        if queue_waits:
+            performance_lines.append(
+                f"- Avg queue wait before OCR start: {extract_frames.format_duration(sum(queue_waits) / len(queue_waits))}"
+            )
+        if first_progress_waits:
+            performance_lines.append(
+                f"- Avg OCR start to first progress: {extract_frames.format_duration(sum(first_progress_waits) / len(first_progress_waits))}"
+            )
+        if wall_durations:
+            performance_lines.append(
+                f"- Avg OCR wall time per video: {extract_frames.format_duration(sum(wall_durations) / len(wall_durations))}"
+            )
+        if extract_samples:
+            avg_active_extract = sum(int(item.get("active_ocr", 0)) for item in extract_samples) / len(extract_samples)
+            performance_lines.append(f"- Avg active OCR consumers during extract: {avg_active_extract:.2f}")
+        if active_extract_samples:
+            avg_cpu_extract = sum(float(item.get("cpu_percent") or 0.0) for item in active_extract_samples) / len(active_extract_samples)
+            avg_ram_extract = sum(float(item.get("ram_used_gb") or 0.0) for item in active_extract_samples) / len(active_extract_samples)
+            performance_lines.append(f"- Avg CPU during extract while OCR active: {avg_cpu_extract:.0f}%")
+            performance_lines.append(f"- Avg RAM during extract while OCR active: {avg_ram_extract:.1f} GB")
     if extract_summary.get("per_video_summaries"):
         performance_lines.extend(["", "Per-video durations"])
         per_video_rows = []
@@ -823,6 +1329,12 @@ def print_runtime_status() -> int:
     print(f"EasyOCR detail: {easyocr_runtime['reason']}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
     print(f"Effective OCR workers: {1 if easyocr_runtime['enabled'] else APP_CONFIG.ocr_workers}")
+    overlap_mode_effective = runtime_effective_overlap_ocr_mode(APP_CONFIG)
+    if overlap_mode_effective == APP_CONFIG.overlap_ocr_mode:
+        print(f"Overlap OCR mode: {APP_CONFIG.overlap_ocr_mode}")
+    else:
+        print(f"Overlap OCR mode: {APP_CONFIG.overlap_ocr_mode} -> {overlap_mode_effective}")
+    print(f"Overlap OCR consumers: {APP_CONFIG.overlap_ocr_consumers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
     print(f"Initial scan workers: {APP_CONFIG.pass1_scan_workers}")
     print(f"OCR consensus frames: {APP_CONFIG.ocr_consensus_frames}")

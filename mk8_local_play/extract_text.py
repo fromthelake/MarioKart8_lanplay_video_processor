@@ -1223,6 +1223,154 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
     return {"rows": results, "summary": summary, "duration_s": time.perf_counter() - race_start_time}
 
 
+def build_grouped_race_images(
+    folder_path: str,
+    *,
+    selected_race_classes=None,
+) -> list[tuple[tuple[str, int], list[tuple[str, str]]]]:
+    grouped_images = {}
+    selected_classes = {str(item) for item in selected_race_classes} if selected_race_classes else None
+    for race_class, race_id_number, _race_dir in iter_video_race_dirs(folder_path):
+        if selected_classes is not None and race_class not in selected_classes:
+            continue
+        key = (race_class, race_id_number)
+        grouped_images[key] = []
+        track_name_path = find_anchor_frame_path(race_class, race_id_number, "0TrackName")
+        if track_name_path is not None:
+            grouped_images[key].append(("0TrackName", str(track_name_path)))
+        race_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "2RaceScore")
+        if race_score_path is not None:
+            grouped_images[key].append(("2RaceScore", str(race_score_path)))
+        total_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "3TotalScore")
+        if total_score_path is not None:
+            grouped_images[key].append(("3TotalScore", str(total_score_path)))
+    return sorted(grouped_images.items(), key=lambda item: item[0])
+
+
+def build_grouped_race_item(
+    folder_path: str,
+    race_class: str,
+    race_id_number: int,
+) -> tuple[tuple[str, int], list[tuple[str, str]]]:
+    key = (str(race_class), int(race_id_number))
+    images: list[tuple[str, str]] = []
+    track_name_path = find_anchor_frame_path(race_class, race_id_number, "0TrackName")
+    if track_name_path is not None:
+        images.append(("0TrackName", str(track_name_path)))
+    race_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "2RaceScore")
+    if race_score_path is not None:
+        images.append(("2RaceScore", str(race_score_path)))
+    total_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "3TotalScore")
+    if total_score_path is not None:
+        images.append(("3TotalScore", str(total_score_path)))
+    return key, images
+
+
+def finalize_ocr_results(
+    results: list[list],
+    *,
+    folder_path: str,
+    phase_start_time: float,
+    per_video_ocr_durations: dict[str, float],
+    progress_peak_lines: list[str],
+    ocr_profiler_lines: list[str],
+    write_outputs: bool = True,
+    emit_logs: bool = True,
+):
+    df = pd.DataFrame(results, columns=[
+        "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
+        "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
+        "RacePoints", "DetectedRacePoints", "DetectedRacePointsSource", "DetectedOldTotalScore", "DetectedOldTotalScoreSource", "DetectedTotalScore", "DetectedTotalScoreSource", "DetectedNewTotalScore", "DetectedNewTotalScoreSource", "PositionAfterRace",
+        *POSITION_TEMPLATE_COEFF_COLUMNS,
+        "NameConfidence", "NameAllowedCharRatio", "NameUnknownChars", "NameValidationFlags",
+        "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
+        "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
+        "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
+        "RaceScoreRowSignals", "TotalScoreRowSignals",
+        "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
+        "RacePointsAnchorFrame",
+        "TotalScoreMappingMethod", "TotalScoreMappingScore", "TotalScoreMappingMargin", "TotalScoreNameSimilarity",
+        "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
+    ])
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    if df.empty:
+        if emit_logs:
+            LOGGER.log("[OCR - Phase Complete]", "No races were extracted", color_name="yellow")
+        return {"duration_s": 0.0, "output_excel_path": None, "per_video_durations": {}, "df": df, "per_video_summary": {}}
+
+    df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
+    df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
+
+    low_res_mask = df["IsLowRes"].fillna(False).astype(bool)
+    standardized_frames = []
+    high_res_df = df.loc[~low_res_mask].copy()
+    if not high_res_df.empty:
+        standardized_frames.append(standardize_player_names(high_res_df, os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug'), APP_CONFIG.write_debug_linking_excel))
+    low_res_df = df.loc[low_res_mask].copy()
+    if not low_res_df.empty:
+        frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
+        for race_class, low_res_group in low_res_df.groupby('RaceClass', sort=False):
+            standardized_frames.append(
+                apply_low_res_identity_pipeline(
+                    low_res_group,
+                    frames_folder,
+                    race_class,
+                    write_debug_outputs=APP_CONFIG.write_debug_csv,
+                    debug_dir=os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug'),
+                )
+            )
+    df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
+    df = annotate_raw_character_match_metrics(df, frames_folder)
+    df = apply_mii_character_fallback(df)
+
+    df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
+    df = reconcile_connection_reset_identities(df)
+    df = compact_identity_labels(df)
+    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
+    df = append_identity_relink_review_notes(df)
+
+    if write_outputs:
+        completion_payload = build_completion_payload(
+            df,
+            folder_path,
+            phase_start_time,
+            progress_peak_lines,
+            ocr_profiler_lines,
+            per_video_ocr_durations,
+            build_race_warning_messages,
+            pluralize,
+            format_duration,
+        )
+        if emit_logs:
+            LOGGER.summary_block("[OCR - Phase Complete]", completion_payload["lines"], color_name="green")
+        return {
+            "duration_s": completion_payload["duration_s"],
+            "output_excel_path": completion_payload["output_excel_path"],
+            "race_count": completion_payload["race_count"],
+            "per_video_durations": completion_payload["per_video_durations"],
+            "per_video_summary": completion_payload["per_video_summary"],
+            "df": df,
+            "progress_peak_lines": progress_peak_lines,
+            "ocr_profiler_lines": ocr_profiler_lines,
+        }
+
+    summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
+    return {
+        "duration_s": time.time() - phase_start_time,
+        "output_excel_path": None,
+        "race_count": int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0]),
+        "per_video_durations": dict(per_video_ocr_durations),
+        "per_video_summary": per_video_summary,
+        "df": df,
+        "progress_peak_lines": progress_peak_lines,
+        "ocr_profiler_lines": ocr_profiler_lines,
+        "summary_lines": summary_lines,
+    }
+
+
 def process_images_in_folder(
     folder_path: str,
     in_memory_frame_bundles=None,
@@ -1231,6 +1379,7 @@ def process_images_in_folder(
     *,
     write_outputs: bool = True,
     emit_logs: bool = True,
+    progress_callback=None,
 ):
     phase_start_time = time.time()
     ocr_workers = current_ocr_workers()
@@ -1258,26 +1407,16 @@ def process_images_in_folder(
     metadata_index = metadata_index_override if metadata_index_override is not None else load_exported_frame_metadata(base_dir)
     input_videos_folder = base_dir / "Input_Videos"
 
-    grouped_images = {}
-    selected_classes = {str(item) for item in selected_race_classes} if selected_race_classes else None
-    # OCR runs per race bundle, not per image. Grouping the exported frames up front
-    # lets the later stages reason about track name, race score, and total score together.
-    for race_class, race_id_number, _race_dir in race_dirs:
-        if selected_classes is not None and race_class not in selected_classes:
-            continue
-        key = (race_class, race_id_number)
-        grouped_images[key] = []
-        track_name_path = find_anchor_frame_path(race_class, race_id_number, "0TrackName")
-        if track_name_path is not None:
-            grouped_images[key].append(("0TrackName", str(track_name_path)))
-        race_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "2RaceScore")
-        if race_score_path is not None:
-            grouped_images[key].append(("2RaceScore", str(race_score_path)))
-        total_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "3TotalScore")
-        if total_score_path is not None:
-            grouped_images[key].append(("3TotalScore", str(total_score_path)))
-
-    sorted_grouped_images = sorted(grouped_images.items(), key=lambda item: item[0])
+    sorted_grouped_images = build_grouped_race_images(folder_path, selected_race_classes=selected_race_classes)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "event": "start",
+                "completed": 0,
+                "total": len(sorted_grouped_images),
+                "elapsed_s": time.time() - phase_start_time,
+            }
+        )
     if emit_logs:
         LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")
         LOGGER.log(
@@ -1320,6 +1459,17 @@ def process_images_in_folder(
             if not done:
                 if emit_logs:
                     progress.heartbeat(completed_count, f"In flight: {len(pending)} | Still processing OCR races")
+                elif progress_callback is not None:
+                    progress_callback(
+                        {
+                            "event": "heartbeat",
+                            "completed": completed_count,
+                            "total": len(sorted_grouped_images),
+                            "pending": len(pending),
+                            "elapsed_s": time.time() - phase_start_time,
+                            "detail": "Still processing OCR races",
+                        }
+                    )
                 continue
             for future in done:
                 completed_count += 1
@@ -1332,6 +1482,21 @@ def process_images_in_folder(
                     race_summaries.append(race_result["summary"])
                 if emit_logs:
                     progress.update(completed_count, f"In flight: {len(pending)}")
+                elif progress_callback is not None:
+                    progress_callback(
+                        {
+                            "event": "progress",
+                            "completed": completed_count,
+                            "total": len(sorted_grouped_images),
+                            "pending": len(pending),
+                            "elapsed_s": time.time() - phase_start_time,
+                            "video_label": race_class,
+                            "race_id": int(race_id_number),
+                            "track_name": None if matching_summary is None else matching_summary["track_name"],
+                            "race_score_players": None if matching_summary is None else matching_summary["race_score_players"],
+                            "total_score_players": None if matching_summary is None else matching_summary["total_score_players"],
+                        }
+                    )
                 if matching_summary is not None:
                     if emit_logs:
                         LOGGER.log(
@@ -1360,64 +1525,6 @@ def process_images_in_folder(
                                 color_name="yellow",
                             )
 
-    df = pd.DataFrame(results, columns=[
-        "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
-        "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
-        "RacePoints", "DetectedRacePoints", "DetectedRacePointsSource", "DetectedOldTotalScore", "DetectedOldTotalScoreSource", "DetectedTotalScore", "DetectedTotalScoreSource", "DetectedNewTotalScore", "DetectedNewTotalScoreSource", "PositionAfterRace",
-        *POSITION_TEMPLATE_COEFF_COLUMNS,
-        "NameConfidence", "NameAllowedCharRatio", "NameUnknownChars", "NameValidationFlags",
-        "DigitConsensus", "RowCountConfidence", "RaceScorePlayerCount", "TotalScorePlayerCount",
-        "LegacyRaceScorePlayerCount", "LegacyTotalScorePlayerCount", "LegacyRowCountConfidence",
-        "RaceScoreCountVotes", "TotalScoreCountVotes", "LegacyRaceScoreCountVotes", "LegacyTotalScoreCountVotes",
-        "RaceScoreRowSignals", "TotalScoreRowSignals",
-        "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
-        "RacePointsAnchorFrame",
-        "TotalScoreMappingMethod", "TotalScoreMappingScore", "TotalScoreMappingMargin", "TotalScoreNameSimilarity",
-        "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
-    ])
-    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
-    if df.empty:
-        if emit_logs:
-            LOGGER.log("[OCR - Phase Complete]", "No races were extracted", color_name="yellow")
-        return {"duration_s": 0.0, "output_excel_path": None, "per_video_durations": {}, "df": df, "per_video_summary": {}}
-
-    # Add the CupName column
-    df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
-
-    # Add the TrackID column
-    df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
-
-    low_res_mask = df["IsLowRes"].fillna(False).astype(bool)
-    standardized_frames = []
-    high_res_df = df.loc[~low_res_mask].copy()
-    if not high_res_df.empty:
-        standardized_frames.append(standardize_player_names(high_res_df, linking_data_folder, APP_CONFIG.write_debug_linking_excel))
-    low_res_df = df.loc[low_res_mask].copy()
-    if not low_res_df.empty:
-        frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
-        for race_class, low_res_group in low_res_df.groupby('RaceClass', sort=False):
-            standardized_frames.append(
-                apply_low_res_identity_pipeline(
-                    low_res_group,
-                    frames_folder,
-                    race_class,
-                    write_debug_outputs=APP_CONFIG.write_debug_csv,
-                    debug_dir=linking_data_folder,
-                )
-            )
-    df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
-    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
-    frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
-    df = annotate_raw_character_match_metrics(df, frames_folder)
-    df = apply_mii_character_fallback(df)
-
-    df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
-    df = reconcile_connection_reset_identities(df)
-    df = compact_identity_labels(df)
-    df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
-    df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
-    df = append_identity_relink_review_notes(df)
-
     ocr_profiler_lines = (
         call_matrix_summary_lines(colorize=LOGGER.color)
         + OCR_PROFILER.summary_lines()
@@ -1425,43 +1532,16 @@ def process_images_in_folder(
         + character_shortlist_summary_lines()
         + player_name_fallback_summary_lines()
     )
-    if write_outputs:
-        completion_payload = build_completion_payload(
-            df,
-            folder_path,
-            phase_start_time,
-            progress.peak_lines(),
-            ocr_profiler_lines,
-            per_video_ocr_durations,
-            build_race_warning_messages,
-            pluralize,
-            format_duration,
-        )
-        if emit_logs:
-            LOGGER.summary_block("[OCR - Phase Complete]", completion_payload["lines"], color_name="green")
-        return {
-            "duration_s": completion_payload["duration_s"],
-            "output_excel_path": completion_payload["output_excel_path"],
-            "race_count": completion_payload["race_count"],
-            "per_video_durations": completion_payload["per_video_durations"],
-            "per_video_summary": completion_payload["per_video_summary"],
-            "df": df,
-            "progress_peak_lines": progress.peak_lines(),
-            "ocr_profiler_lines": ocr_profiler_lines,
-        }
-
-    summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
-    return {
-        "duration_s": time.time() - phase_start_time,
-        "output_excel_path": None,
-        "race_count": int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0]),
-        "per_video_durations": dict(per_video_ocr_durations),
-        "per_video_summary": per_video_summary,
-        "df": df,
-        "progress_peak_lines": progress.peak_lines(),
-        "ocr_profiler_lines": ocr_profiler_lines,
-        "summary_lines": summary_lines,
-    }
+    return finalize_ocr_results(
+        results,
+        folder_path=folder_path,
+        phase_start_time=phase_start_time,
+        per_video_ocr_durations=dict(per_video_ocr_durations),
+        progress_peak_lines=progress.peak_lines(),
+        ocr_profiler_lines=ocr_profiler_lines,
+        write_outputs=write_outputs,
+        emit_logs=emit_logs,
+    )
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="OCR Mario Kart 8 extracted frames")
