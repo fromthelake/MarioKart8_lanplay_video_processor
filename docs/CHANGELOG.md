@@ -36,6 +36,7 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Runtime GPU settings now default to `auto` for both extraction (`execution_mode`) and EasyOCR (`easyocr_gpu_mode`), with `gpu` and `cpu` override modes still available from config, env vars, and the GUI.
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
 - Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.

@@ -22,7 +22,7 @@ try:
 except Exception:
     torch = None
 
-from .app_runtime import load_app_config
+from .app_runtime import easyocr_gpu_enabled as runtime_easyocr_gpu_enabled, load_app_config
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT
 from .game_catalog import load_game_catalog
@@ -87,11 +87,7 @@ DIGIT_OCR_FALLBACK_ENABLED = os.environ.get("MK8_DIGIT_OCR_FALLBACK_ENABLED", "0
 
 def easyocr_gpu_enabled() -> bool:
     runtime_config = load_app_config()
-    return (
-        os.environ.get("MK8_EASYOCR_GPU", "1" if runtime_config.easyocr_gpu else "0").lower() not in {"0", "false", "no"}
-        and torch is not None
-        and bool(torch.cuda.is_available())
-    )
+    return runtime_easyocr_gpu_enabled(runtime_config)
 
 
 def record_observation_stage(label: str, duration_s: float) -> None:

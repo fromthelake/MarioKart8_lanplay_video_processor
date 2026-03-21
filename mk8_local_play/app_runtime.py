@@ -16,7 +16,7 @@ from .project_paths import PROJECT_ROOT
 class AppConfig:
     execution_mode: str
     export_image_format: str
-    easyocr_gpu: bool
+    easyocr_gpu_mode: str
     ocr_workers: int
     score_analysis_workers: int
     pass1_scan_workers: int
@@ -56,11 +56,28 @@ def _parse_int(value, default: int, minimum: int = 1) -> int:
         return default
 
 
-def _parse_execution_mode(value, default: str = "cpu") -> str:
+def _parse_mode(value, default: str = "auto") -> str:
     candidate = str(value or default).strip().lower()
     if candidate in {"auto", "gpu", "cpu"}:
         return candidate
     return default
+
+
+def _legacy_bool_to_mode(value, default: str = "auto") -> str:
+    if value is None:
+        return default
+    return "gpu" if _parse_bool(value, False) else "cpu"
+
+
+def _parse_mode_with_legacy_bool(value, default: str = "auto") -> str:
+    if isinstance(value, bool):
+        return _legacy_bool_to_mode(value, default)
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+        return _legacy_bool_to_mode(text, default)
+    return _parse_mode(text, default)
 
 
 def _parse_export_image_format(value, default: str = "png") -> str:
@@ -115,18 +132,22 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     else:
         default_pass1_workers = 1
 
-    execution_mode = _parse_execution_mode(
+    execution_mode = _parse_mode(
         os.environ.get("MK8_EXECUTION_MODE", json_config.get("execution_mode")),
-        "cpu",
+        "auto",
     )
     export_image_format = _parse_export_image_format(
         os.environ.get("MK8_EXPORT_IMAGE_FORMAT", json_config.get("export_image_format")),
         "png",
     )
-    easyocr_gpu = _parse_bool(
-        os.environ.get("MK8_EASYOCR_GPU", json_config.get("easyocr_gpu")),
-        False,
-    )
+    easyocr_gpu_mode_source = os.environ.get("MK8_EASYOCR_GPU_MODE")
+    if easyocr_gpu_mode_source is None:
+        easyocr_gpu_mode_source = json_config.get("easyocr_gpu_mode")
+    if easyocr_gpu_mode_source is None:
+        easyocr_gpu_mode_source = os.environ.get("MK8_EASYOCR_GPU")
+    if easyocr_gpu_mode_source is None:
+        easyocr_gpu_mode_source = json_config.get("easyocr_gpu")
+    easyocr_gpu_mode = _parse_mode_with_legacy_bool(easyocr_gpu_mode_source, "auto")
     ocr_workers = _parse_int(
         os.environ.get("MK8_OCR_WORKERS", json_config.get("ocr_workers")),
         default_ocr_workers,
@@ -237,7 +258,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     return AppConfig(
         execution_mode=execution_mode,
         export_image_format=export_image_format,
-        easyocr_gpu=easyocr_gpu,
+        easyocr_gpu_mode=easyocr_gpu_mode,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
         pass1_scan_workers=pass1_scan_workers,
@@ -292,7 +313,7 @@ def detect_gpu_runtime(config: AppConfig) -> dict:
     except Exception:
         opencl_available = False
         opencl_in_use = False
-    mode = config.execution_mode
+    mode = _parse_mode(config.execution_mode, "auto")
     backend = "cpu"
     reason = "CPU mode selected" if mode == "cpu" else "No GPU backend available"
     if mode == "cpu":
@@ -301,14 +322,17 @@ def detect_gpu_runtime(config: AppConfig) -> dict:
         enabled = True
         backend = "cuda"
         reason = f"CUDA device(s) available: {cuda_devices}"
-    elif opencl_in_use:
-        enabled = True
-        backend = "opencl"
-        reason = "OpenCL available through OpenCV"
     else:
         enabled = False
         if mode == "gpu":
-            reason = "Requested GPU mode, but neither CUDA nor OpenCL was available"
+            if opencl_in_use:
+                enabled = True
+                backend = "opencl"
+                reason = "CUDA unavailable; using OpenCL because GPU mode was requested explicitly"
+            else:
+                reason = "Requested GPU mode, but neither CUDA nor OpenCL was available"
+        elif opencl_in_use:
+            reason = "Auto mode selected; CUDA unavailable, and OpenCL auto-selection is disabled on this machine profile"
         elif opencl_available:
             reason = "OpenCL detected but not enabled by OpenCV"
     return {
@@ -319,6 +343,57 @@ def detect_gpu_runtime(config: AppConfig) -> dict:
         "backend": backend,
         "opencl_available": opencl_available,
         "opencl_in_use": opencl_in_use,
+        "reason": reason,
+    }
+
+
+def easyocr_gpu_enabled(config: AppConfig) -> bool:
+    try:
+        import torch
+    except Exception:
+        torch = None
+    mode = _parse_mode(config.easyocr_gpu_mode, "auto")
+    if mode == "cpu":
+        return False
+    if torch is None:
+        return False
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_available = False
+    return cuda_available
+
+
+def detect_easyocr_runtime(config: AppConfig) -> dict:
+    mode = _parse_mode(config.easyocr_gpu_mode, "auto")
+    try:
+        import torch
+    except Exception:
+        torch = None
+    cuda_available = False
+    cuda_devices = 0
+    if torch is not None:
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+            cuda_devices = int(torch.cuda.device_count()) if cuda_available else 0
+        except Exception:
+            cuda_available = False
+            cuda_devices = 0
+    enabled = mode != "cpu" and cuda_available
+    if mode == "cpu":
+        reason = "CPU mode selected"
+    elif cuda_available:
+        reason = f"CUDA device(s) available: {cuda_devices}"
+    elif mode == "gpu":
+        reason = "Requested GPU mode, but CUDA was not available to EasyOCR"
+    else:
+        reason = "Auto mode selected, but CUDA was not available to EasyOCR"
+    return {
+        "available": cuda_available,
+        "enabled": enabled,
+        "device_count": cuda_devices,
+        "mode": mode,
+        "backend": "cuda" if enabled else "cpu",
         "reason": reason,
     }
 

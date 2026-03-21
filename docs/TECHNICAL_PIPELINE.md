@@ -26,7 +26,7 @@ The processing flow is:
 
 Current runtime overlap behavior:
 - default CPU runs remain sequential: extraction phase then OCR phase
-- when EasyOCR GPU mode is enabled and more than one input video is selected, full runs may overlap by video
+- when EasyOCR is resolved to GPU and more than one input video is selected, full runs may overlap by video
 - in overlap mode, extraction remains the producer and a single GPU OCR consumer starts after each video's frame bundles are finalized
 - overlap starts only after a video's exported frame bundles and metadata are complete; it does not OCR partially written race bundles
 - GPU overlap intentionally keeps effective OCR workers at `1`
@@ -179,10 +179,14 @@ Main OCR logic lives in:
 - [ocr_scoreboard_consensus.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/ocr_scoreboard_consensus.py)
 
 Current OCR runtime notes:
-- CPU remains the default OCR mode
-- EasyOCR GPU mode is opt-in through `config/app_config.json:easyocr_gpu` or the GUI
+- EasyOCR now defaults to `auto` mode through `config/app_config.json:easyocr_gpu_mode` or the GUI
+- `auto` uses CUDA when PyTorch can see it and otherwise falls back to CPU
+- `gpu` requests CUDA explicitly and falls back to CPU with a clear runtime message if CUDA is unavailable
+- `cpu` disables GPU OCR even when CUDA is present
 - when GPU OCR is active, the pipeline forces effective OCR workers to `1`
 - this is intentional; local benchmarks showed GPU OCR scales poorly with higher worker counts while overlap-by-video gives the meaningful throughput gain
+- extraction `auto` prefers CUDA and otherwise falls back to CPU
+- extraction OpenCL remains available only through explicit `execution_mode=gpu`; it is no longer selected automatically
 
 Important OCR geometry on the normalized `1280x720` frame:
 
@@ -283,16 +287,24 @@ Loaded by:
 - [app_runtime.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/app_runtime.py)
 
 Important settings include:
-- EasyOCR GPU toggle
+- extraction GPU mode
+- EasyOCR GPU mode
 - OCR worker count
 - score-analysis worker count
 - pass-1 scan worker count
 - RaceScore consensus frame count
 
-Current GPU OCR setting:
-- `easyocr_gpu`
-  - default: `false`
-  - when enabled and CUDA is available, EasyOCR uses GPU for name/track OCR
+Current GPU-related settings:
+- `execution_mode`
+  - default: `auto`
+  - values: `auto`, `gpu`, `cpu`
+  - controls the OpenCV extraction/runtime GPU path
+  - `auto` prefers CUDA and otherwise uses CPU
+  - `gpu` allows OpenCL fallback when CUDA is unavailable
+- `easyocr_gpu_mode`
+  - default: `auto`
+  - values: `auto`, `gpu`, `cpu`
+  - controls EasyOCR name/track OCR GPU use
   - the OCR phase forces effective OCR workers to `1` in GPU mode, because that was the best measured configuration on the current test machine
 
 ## 10. Output Maintenance
@@ -431,7 +443,7 @@ Current intended defaults:
 - `MK8_TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED=0`
 - `MK8_TOTAL_SCORE_RACE_POINTS_ENABLED=0`
 - `MK8_DIGIT_OCR_FALLBACK_ENABLED=0`
-- `easyocr_gpu=false`
+- `easyocr_gpu_mode=auto`
 
 These defaults were chosen after profiling showed that the old path spent most of its time on work that did not improve final exported results:
 - reading `RacePoints` on `3TotalScore` frames

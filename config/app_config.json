@@ -1,7 +1,7 @@
 {
-  "execution_mode": "cpu",
+  "execution_mode": "auto",
   "export_image_format": "jpg",
-  "easyocr_gpu": false,
+  "easyocr_gpu_mode": "auto",
   "ocr_workers": 16,
   "score_analysis_workers": 11,
   "pass1_scan_workers": 4,

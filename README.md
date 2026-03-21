@@ -177,6 +177,15 @@ Screenshot export format:
 - use `png` if you want lossless frame exports for troubleshooting or comparison work
 - `MK8_EXPORT_IMAGE_FORMAT` can still override the config for a single run
 
+Runtime GPU mode defaults:
+- `config/app_config.json` now defaults both `execution_mode` and `easyocr_gpu_mode` to `auto`
+- `execution_mode` controls OpenCV extraction acceleration and accepts `auto`, `gpu`, or `cpu`
+- `easyocr_gpu_mode` controls EasyOCR and accepts `auto`, `gpu`, or `cpu`
+- in `auto`, extraction uses CUDA when available and otherwise falls back to CPU
+- OpenCL extraction remains available through explicit `GPU` mode, but is not chosen automatically
+- when EasyOCR is using GPU, effective OCR workers stay at `1`
+- on multi-video full runs, GPU OCR overlaps by video: each video's extraction finishes first, then that video's OCR job starts on the single GPU OCR worker
+
 ## Step 7. Add your videos
 
 Put your video files in folder:

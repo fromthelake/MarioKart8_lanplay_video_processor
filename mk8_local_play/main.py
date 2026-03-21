@@ -26,7 +26,15 @@ except Exception:
 
 from PIL import Image
 
-from .app_runtime import check_runtime, detect_gpu_runtime, load_app_config, open_path, update_app_config_values
+from .app_runtime import (
+    check_runtime,
+    detect_easyocr_runtime,
+    detect_gpu_runtime,
+    easyocr_gpu_enabled as runtime_easyocr_gpu_enabled,
+    load_app_config,
+    open_path,
+    update_app_config_values,
+)
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
@@ -588,7 +596,7 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     runtime_config = load_app_config()
     overlap_enabled = os.environ.get(
         "MK8_OVERLAP_OCR_BY_VIDEO",
-        "1" if runtime_config.easyocr_gpu else "0",
+        "1" if runtime_easyocr_gpu_enabled(runtime_config) else "0",
     ).lower() not in {"0", "false", "no"}
 
     mode_label = "Run selection" if selection_mode else "Run all"
@@ -620,7 +628,7 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, summary in enumerate(source_summaries, start=1):
         LOGGER.log("[Run - Input Summary]", f"{index}. {summary}")
-    if overlap_enabled and runtime_config.easyocr_gpu and len(video_files) > 1:
+    if overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1:
         _run_all_with_video_overlap(video_files, selection_mode=selection_mode, include_subfolders=include_subfolders)
         return
     selected_video_names = [
@@ -788,6 +796,7 @@ def gui_runtime_available() -> tuple[bool, str]:
 def print_runtime_status() -> int:
     ffmpeg_issues = check_runtime(APP_CONFIG, require_ffmpeg=True)
     gpu_runtime = detect_gpu_runtime(APP_CONFIG)
+    easyocr_runtime = detect_easyocr_runtime(APP_CONFIG)
     gui_available, gui_reason = gui_runtime_available()
     easyocr_available = importlib.util.find_spec("easyocr") is not None
 
@@ -806,9 +815,14 @@ def print_runtime_status() -> int:
         f"cuda_devices={gpu_runtime['device_count']}, opencl={gpu_runtime['opencl_in_use']})"
     )
     print(f"GPU detail: {gpu_runtime['reason']}")
-    print(f"EasyOCR GPU: {'ON' if APP_CONFIG.easyocr_gpu else 'OFF'}")
+    print(
+        f"EasyOCR mode: {easyocr_runtime['mode']} "
+        f"({'ENABLED' if easyocr_runtime['enabled'] else 'DISABLED'}, backend={easyocr_runtime['backend']}, "
+        f"cuda_devices={easyocr_runtime['device_count']})"
+    )
+    print(f"EasyOCR detail: {easyocr_runtime['reason']}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
-    print(f"Effective OCR workers: {1 if APP_CONFIG.easyocr_gpu else APP_CONFIG.ocr_workers}")
+    print(f"Effective OCR workers: {1 if easyocr_runtime['enabled'] else APP_CONFIG.ocr_workers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
     print(f"Initial scan workers: {APP_CONFIG.pass1_scan_workers}")
     print(f"OCR consensus frames: {APP_CONFIG.ocr_consensus_frames}")
@@ -1035,13 +1049,19 @@ def launch_gui() -> int:
     root.grid_rowconfigure(0, weight=1)
 
     include_subfolders_var = tk.BooleanVar(value=False)
-    easyocr_gpu_var = tk.BooleanVar(value=APP_CONFIG.easyocr_gpu)
+    execution_mode_var = tk.StringVar(value=APP_CONFIG.execution_mode.upper())
+    easyocr_mode_var = tk.StringVar(value=APP_CONFIG.easyocr_gpu_mode.upper())
 
-    def persist_easyocr_gpu_setting():
+    def persist_runtime_mode_settings(*_args):
         global APP_CONFIG
-        enabled = bool(easyocr_gpu_var.get())
-        os.environ["MK8_EASYOCR_GPU"] = "1" if enabled else "0"
-        update_app_config_values({"easyocr_gpu": enabled})
+        execution_mode = execution_mode_var.get().strip().lower()
+        easyocr_mode = easyocr_mode_var.get().strip().lower()
+        os.environ["MK8_EXECUTION_MODE"] = execution_mode
+        os.environ["MK8_EASYOCR_GPU_MODE"] = easyocr_mode
+        update_app_config_values({
+            "execution_mode": execution_mode,
+            "easyocr_gpu_mode": easyocr_mode,
+        })
         APP_CONFIG = load_app_config()
 
     def gui_run_extract():
@@ -1270,6 +1290,38 @@ def launch_gui() -> int:
     )
     step2_note.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 2))
 
+    extract_options = tk.Frame(step2_body, bg=GUI_THEME["panel_bg"])
+    extract_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    extract_options.grid_columnconfigure(1, weight=1)
+
+    extract_mode_label = tk.Label(
+        extract_options,
+        text="Extraction GPU Mode",
+        bg=GUI_THEME["panel_bg"],
+        fg="#cbe4ff",
+        anchor="w",
+        justify="left",
+        font=("TkDefaultFont", 13, "bold"),
+    )
+    extract_mode_label.grid(row=0, column=0, sticky="w")
+
+    extract_mode_menu = tk.OptionMenu(extract_options, execution_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
+    extract_mode_menu.config(bg="#132845", fg="#cbe4ff", activebackground="#18559f", activeforeground="#ffffff", highlightthickness=0, bd=0)
+    extract_mode_menu["menu"].config(bg="#132845", fg="#cbe4ff", activebackground="#2166bc", activeforeground="#ffffff")
+    extract_mode_menu.grid(row=0, column=1, sticky="w", padx=(12, 0))
+
+    extract_mode_note = tk.Label(
+        extract_options,
+        text="Default is Auto: use CUDA/OpenCL when OpenCV can access it, otherwise stay on CPU.",
+        bg=GUI_THEME["panel_bg"],
+        fg=GUI_THEME["muted_fg"],
+        anchor="w",
+        justify="left",
+        wraplength=520,
+        font=("TkDefaultFont", 13),
+    )
+    extract_mode_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
     step3_card, step3_body = _create_step_card(
         steps_frame,
         step_number="STEP 3",
@@ -1303,29 +1355,33 @@ def launch_gui() -> int:
     ocr_options.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
     ocr_options.grid_columnconfigure(1, weight=1)
 
-    easyocr_gpu_toggle = _create_gui_toggle(
+    easyocr_mode_label = tk.Label(
         ocr_options,
-        text="Use GPU For EasyOCR",
-        variable=easyocr_gpu_var,
-        command=persist_easyocr_gpu_setting,
+        text="EasyOCR Mode",
         bg=GUI_THEME["panel_bg"],
         fg="#d8f7df",
-        selectcolor="#17331f",
-        active_bg=GUI_THEME["panel_bg"],
+        anchor="w",
+        justify="left",
+        font=("TkDefaultFont", 13, "bold"),
     )
-    easyocr_gpu_toggle.grid(row=0, column=0, sticky="w")
+    easyocr_mode_label.grid(row=0, column=0, sticky="w")
+
+    easyocr_mode_menu = tk.OptionMenu(ocr_options, easyocr_mode_var, "AUTO", "GPU", "CPU", command=persist_runtime_mode_settings)
+    easyocr_mode_menu.config(bg="#17331f", fg="#d8f7df", activebackground="#27763a", activeforeground="#ffffff", highlightthickness=0, bd=0)
+    easyocr_mode_menu["menu"].config(bg="#17331f", fg="#d8f7df", activebackground="#2e8a46", activeforeground="#ffffff")
+    easyocr_mode_menu.grid(row=0, column=1, sticky="w", padx=(12, 0))
 
     easyocr_gpu_note = tk.Label(
         ocr_options,
-        text="Optional. Keeps CPU as the default path and forces OCR workers to 1 when enabled.",
+        text="Default is Auto: use CUDA for EasyOCR when PyTorch can see it, otherwise stay on CPU. GPU OCR still forces effective OCR workers to 1.",
         bg=GUI_THEME["panel_bg"],
         fg=GUI_THEME["muted_fg"],
         anchor="w",
         justify="left",
-        wraplength=520,
+        wraplength=640,
         font=("TkDefaultFont", 13),
     )
-    easyocr_gpu_note.grid(row=0, column=1, sticky="w", padx=(12, 0))
+    easyocr_gpu_note.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     selection_card, selection_body = _create_step_card(
         steps_frame,

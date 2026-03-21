@@ -32,7 +32,7 @@ warnings.filterwarnings(
     message=r"'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used\.",
     category=UserWarning,
 )
-from .app_runtime import load_app_config
+from .app_runtime import easyocr_gpu_enabled as runtime_easyocr_gpu_enabled, load_app_config
 from .extract_common import (
     build_video_identity,
     debug_score_frame_path,
@@ -128,11 +128,7 @@ TRACK_EASYOCR_LANGS = [
 
 def easyocr_gpu_enabled() -> bool:
     runtime_config = load_app_config()
-    return (
-        os.environ.get("MK8_EASYOCR_GPU", "1" if runtime_config.easyocr_gpu else "0").lower() not in {"0", "false", "no"}
-        and torch is not None
-        and bool(torch.cuda.is_available())
-    )
+    return runtime_easyocr_gpu_enabled(runtime_config)
 
 
 def current_ocr_workers() -> int:

@@ -66,7 +66,7 @@ class AppRuntimeConfigTests(unittest.TestCase):
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
 
-    def test_load_app_config_reads_easyocr_gpu_and_env_override(self):
+    def test_load_app_config_reads_easyocr_gpu_mode_and_legacy_env_override(self):
         case_dir = _make_case_dir("app_config_easyocr_gpu")
         try:
             config_path = case_dir / "config" / "app_config.json"
@@ -90,6 +90,6 @@ class AppRuntimeConfigTests(unittest.TestCase):
                 else:
                     os.environ["MK8_EASYOCR_GPU"] = previous
 
-            self.assertTrue(config.easyocr_gpu)
+            self.assertEqual(config.easyocr_gpu_mode, "gpu")
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
