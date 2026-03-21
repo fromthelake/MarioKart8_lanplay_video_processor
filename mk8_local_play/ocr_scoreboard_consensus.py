@@ -2156,6 +2156,52 @@ def map_total_rows_to_race_rows(
     return mapped_rows
 
 
+def reconcile_race_points_with_total_delta(
+    rows: List[Dict[str, object]],
+    score_observations: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    """Prefer the old->new total delta when it is at least as well-supported as the selected point vote."""
+    if not rows or not score_observations:
+        return rows
+
+    reconciled_rows = []
+    for row_index, row in enumerate(rows):
+        updated_row = dict(row)
+        detected_race_points = parse_detected_int(updated_row.get("DetectedRacePoints"))
+        detected_old_total = parse_detected_int(updated_row.get("DetectedOldTotalScore"))
+        detected_new_total = parse_detected_int(updated_row.get("DetectedTotalScore"))
+        if detected_old_total is None or detected_new_total is None:
+            reconciled_rows.append(updated_row)
+            continue
+
+        implied_race_points = int(detected_new_total) - int(detected_old_total)
+        if implied_race_points < 1 or implied_race_points > 15:
+            reconciled_rows.append(updated_row)
+            continue
+        if detected_race_points == implied_race_points:
+            reconciled_rows.append(updated_row)
+            continue
+
+        vote_counter = Counter()
+        for observation in score_observations:
+            observation_race_points = observation.get("race_points", [])
+            if row_index >= len(observation_race_points):
+                continue
+            voted_value = parse_detected_int(observation_race_points[row_index])
+            if voted_value is None or not (1 <= int(voted_value) <= 15):
+                continue
+            vote_counter[int(voted_value)] += 1
+
+        implied_support = int(vote_counter.get(int(implied_race_points), 0))
+        current_support = int(vote_counter.get(int(detected_race_points), 0)) if detected_race_points is not None else 0
+        if implied_support >= max(1, current_support):
+            updated_row["DetectedRacePoints"] = int(implied_race_points)
+            updated_row["DetectedRacePointsSource"] = "total_delta_consensus"
+        reconciled_rows.append(updated_row)
+
+    return reconciled_rows
+
+
 def select_race_score_recovery(
     score_observations: List[Dict[str, object]],
     *,
@@ -2383,6 +2429,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         weighted_similarity,
         representative_total_observation.get("row_metrics", []),
     )
+    rows = reconcile_race_points_with_total_delta(rows, score_observations)
     name_confidences = [float(row["NameConfidence"]) / 100.0 for row in rows if row.get("NameConfidence") is not None]
     digit_confidences = [float(row["DigitConsensus"]) / 100.0 for row in rows if row.get("DigitConsensus") is not None]
 

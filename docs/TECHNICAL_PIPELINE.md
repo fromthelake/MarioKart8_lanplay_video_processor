@@ -55,6 +55,9 @@ Initial detection templates live in:
 - `assets/templates/Trackname_template.png`
 - `assets/templates/Race_template.png`
 - `assets/templates/12th_pos_template.png`
+- `assets/templates/ignore.png`
+- `assets/templates/albumgallery_ignore.png`
+- `assets/templates/ignore_2.png`
 
 They are loaded in:
 - [extract_frames.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_frames.py)
@@ -77,6 +80,18 @@ Current initial-scan ROIs on the normalized `1280x720` image:
   - ROI: `(640, 590, 144, 48)`
   - threshold: `0.6`
   - skip after hit: `60s`
+- ignore review bar:
+  - ROI: `(413, 667, 808, 36)`
+  - threshold: `0.75`
+  - skip after hit: `5s`
+- ignore album gallery:
+  - ROI: `(660, 667, 561, 33)`
+  - threshold: `0.62`
+  - skip after hit: `5s`
+- ignore album gallery alt:
+  - ROI: `(556, 667, 664, 34)`
+  - threshold: `0.62`
+  - skip after hit: `5s`
 
 The matcher expands each ROI slightly before template matching to tolerate small capture shifts.
 
@@ -84,6 +99,8 @@ Current score-screen detection behavior:
 - the initial scan checks both supported score layouts on each score-target frame
 - the stronger passing match becomes the score candidate layout tag
 - track-name and race-number detection are unchanged
+- ignore-template matching runs on the same normalized `1280x720` post-crop frame, so the ROIs inherit the same black-border correction as the score templates
+- any ignore hit above its threshold is treated as a hard veto and skips ahead before score candidates are queued
 
 ## 4. Corrupt-Video Preflight
 

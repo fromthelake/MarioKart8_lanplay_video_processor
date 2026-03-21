@@ -5,17 +5,26 @@ import unicodedata
 from functools import lru_cache
 from pathlib import Path
 
+OCR_EDGE_PUNCTUATION = " `'\"`´:;.,*"
+
 
 def collapse_name_whitespace(text: str | None) -> str:
     value = "" if text is None else str(text)
     return " ".join(value.split())
 
 
-def normalize_name_key(text: str | None) -> str:
+def strip_ocr_edge_punctuation(text: str | None) -> str:
     collapsed = collapse_name_whitespace(text)
     if not collapsed:
         return ""
-    return unicodedata.normalize("NFKC", collapsed).casefold()
+    return collapsed.strip(OCR_EDGE_PUNCTUATION)
+
+
+def normalize_name_key(text: str | None) -> str:
+    cleaned = strip_ocr_edge_punctuation(text)
+    if not cleaned:
+        return ""
+    return unicodedata.normalize("NFKC", cleaned).casefold()
 
 
 def visible_name_characters(text: str | None) -> list[str]:
@@ -75,4 +84,3 @@ def unknown_name_chars(text: str | None) -> str:
         seen.add(char)
         unknown_chars.append(char)
     return "".join(unknown_chars)
-

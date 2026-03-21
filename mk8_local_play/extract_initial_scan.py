@@ -51,14 +51,34 @@ INITIAL_SCAN_TARGETS = (
     },
 )
 
-IGNORE_FRAME_TARGET = {
-    "kind": "ignore",
-    "label": "Ignore",
-    "match_threshold": 0.75,
-    "skip_seconds": 5,
-    # User-provided ROI (415, 669, 804, 32), expanded by 2 pixels on all sides.
-    "roi": (413, 667, 808, 36),
-}
+IGNORE_FRAME_TARGETS = (
+    {
+        "kind": "ignore",
+        "label": "Ignore",
+        "match_threshold": 0.75,
+        "skip_seconds": 5,
+        "roi": (413, 667, 808, 36),
+        "template_index": 4,
+    },
+    {
+        "kind": "ignore",
+        "label": "IgnoreAlbumGallery",
+        "match_threshold": 0.62,
+        "skip_seconds": 5,
+        # User-provided ROI (662, 669, 557, 29), expanded by 2 pixels on all sides.
+        "roi": (660, 667, 561, 33),
+        "template_index": 5,
+    },
+    {
+        "kind": "ignore",
+        "label": "IgnoreAlbumGalleryAlt",
+        "match_threshold": 0.62,
+        "skip_seconds": 5,
+        # User-provided ROI (558, 669, 660, 30), expanded by 2 pixels on all sides.
+        "roi": (556, 667, 664, 34),
+        "template_index": 6,
+    },
+)
 
 
 def _match_score_target_layouts(gray_image, templates, stats):
@@ -140,24 +160,40 @@ def _bounded_roi(gray_image, roi_definition):
 
 def _match_ignore_frame_target(gray_image, templates, stats):
     """Detect gallery/review UI frames that should never become race detections."""
-    if len(templates) < 5:
-        return 0.0, True
+    best_match = {
+        "label": "",
+        "max_val": 0.0,
+        "match_threshold": 1.0,
+        "skip_seconds": 0,
+        "rejected_as_blank": True,
+    }
+    for target in IGNORE_FRAME_TARGETS:
+        template_index = int(target["template_index"])
+        if len(templates) <= template_index:
+            continue
+        roi_x, roi_y, roi_width, roi_height = _bounded_roi(gray_image, target["roi"])
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
 
-    roi_x, roi_y, roi_width, roi_height = _bounded_roi(gray_image, IGNORE_FRAME_TARGET["roi"])
-    roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        template_binary, alpha_mask = templates[template_index]
+        if roi.shape[0] < template_binary.shape[0] or roi.shape[1] < template_binary.shape[1]:
+            roi = cv2.resize(
+                roi,
+                (max(template_binary.shape[1], roi.shape[1]), max(template_binary.shape[0], roi.shape[0])),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
-    template_binary, alpha_mask = templates[4]
-    if roi.shape[0] < template_binary.shape[0] or roi.shape[1] < template_binary.shape[1]:
-        roi = cv2.resize(
-            roi,
-            (max(template_binary.shape[1], roi.shape[1]), max(template_binary.shape[0], roi.shape[0])),
-            interpolation=cv2.INTER_LINEAR,
-        )
-
-    stage_start = time.perf_counter()
-    max_val = match_template(roi, template_binary, alpha_mask)
-    video_io.add_timing(stats, "initial_match_s", stage_start)
-    return float(max_val), False
+        stage_start = time.perf_counter()
+        max_val = match_template(roi, template_binary, alpha_mask)
+        video_io.add_timing(stats, "initial_match_s", stage_start)
+        if max_val > best_match["max_val"]:
+            best_match = {
+                "label": str(target["label"]),
+                "max_val": float(max_val),
+                "match_threshold": float(target["match_threshold"]),
+                "skip_seconds": int(target["skip_seconds"]),
+                "rejected_as_blank": False,
+            }
+    return best_match
 
 
 def _match_initial_scan_target(gray_image, target, templates, stats):
@@ -196,13 +232,13 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
     gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
     video_io.add_timing(stats, "initial_frame_prepare_s", stage_start)
 
-    ignore_max_val, ignore_rejected_as_blank = _match_ignore_frame_target(gray_image, templates, stats)
+    ignore_match = _match_ignore_frame_target(gray_image, templates, stats)
     ignore_timecode = frame_to_timecode(frame_number, fps)
-    if not ignore_rejected_as_blank:
-        csv_writer.writerow([video_source_path or os.path.basename(video_path), IGNORE_FRAME_TARGET["label"], frame_number, ignore_max_val, ignore_timecode])
-        if ignore_max_val > IGNORE_FRAME_TARGET["match_threshold"] and not np.isinf(ignore_max_val):
+    if not ignore_match["rejected_as_blank"]:
+        csv_writer.writerow([video_source_path or os.path.basename(video_path), ignore_match["label"], frame_number, ignore_match["max_val"], ignore_timecode])
+        if ignore_match["max_val"] > ignore_match["match_threshold"] and not np.isinf(ignore_match["max_val"]):
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
-            return int(fps * IGNORE_FRAME_TARGET["skip_seconds"])
+            return int(fps * ignore_match["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":
@@ -300,13 +336,13 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
     gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
     stats["initial_frame_prepare_s"] += time.perf_counter() - process_frame_start
 
-    ignore_max_val, ignore_rejected_as_blank = _match_ignore_frame_target(gray_image, templates, stats)
-    if emit_results and not ignore_rejected_as_blank:
+    ignore_match = _match_ignore_frame_target(gray_image, templates, stats)
+    if emit_results and not ignore_match["rejected_as_blank"]:
         timecode = frame_to_timecode(frame_number, fps)
-        debug_rows.append([video_source_path or os.path.basename(video_path), IGNORE_FRAME_TARGET["label"], frame_number, ignore_max_val, timecode])
-    if not ignore_rejected_as_blank and ignore_max_val > IGNORE_FRAME_TARGET["match_threshold"] and not np.isinf(ignore_max_val):
+        debug_rows.append([video_source_path or os.path.basename(video_path), ignore_match["label"], frame_number, ignore_match["max_val"], timecode])
+    if not ignore_match["rejected_as_blank"] and ignore_match["max_val"] > ignore_match["match_threshold"] and not np.isinf(ignore_match["max_val"]):
         video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
-        return int(fps * IGNORE_FRAME_TARGET["skip_seconds"])
+        return int(fps * ignore_match["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":

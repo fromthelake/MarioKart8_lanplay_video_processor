@@ -38,6 +38,7 @@ The format is intentionally simple and human-readable.
 ### Changed
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
+- Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.
 - Exported `2RaceScore` / `3TotalScore` frame filenames and metadata now carry the detected score layout id so OCR can select the correct ROI set without guessing.
 - Score-frame debug output now also writes annotated ROI demo images under `Output_Results/Debug/Score_Layout_Demos/` for both `2RaceScore` and `3TotalScore`.
 - Low-resolution and ultra-low-resolution score-row geometry now follows the detected LAN 1 vs LAN 2 score layout instead of assuming one fixed scoreboard placement.
@@ -107,6 +108,8 @@ The format is intentionally simple and human-readable.
 - Post-reset local `TotalScore` values are now validated against the reset-local session totals instead of continuing to trigger false tournament-total mismatches in later races.
 - Score-frame debug annotations now save both `2RaceScore` and `3TotalScore` center frames, render the 5x OCR image directly, color segment ROIs green/red for on/off, and label each digit box with the detected 7-segment digit.
 - The seven-segment reader now uses one canonical explicit segment layout for RacePoints / OldTotalScore and scales that same layout into the larger TotalScore digit boxes.
+- OCR junk punctuation on the edges of player names no longer creates false new identities when the underlying name, character, and totals clearly match an existing player.
+- RacePoints can now reconcile to the `OldTotalScore -> TotalScore` delta when the bundle evidence supports the implied score better than the initially selected point read.
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.
