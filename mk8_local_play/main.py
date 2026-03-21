@@ -1104,6 +1104,7 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
         "MK8_OVERLAP_OCR_BY_VIDEO",
         "1" if runtime_easyocr_gpu_enabled(runtime_config) else "0",
     ).lower() not in {"0", "false", "no"}
+    overlap_active = overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1
 
     mode_label = "Run selection" if selection_mode else "Run all"
     LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
@@ -1134,7 +1135,7 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, summary in enumerate(source_summaries, start=1):
         LOGGER.log("[Run - Input Summary]", f"{index}. {summary}")
-    if overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1:
+    if overlap_active:
         _run_all_with_video_overlap(video_files, selection_mode=selection_mode, include_subfolders=include_subfolders)
         return
     selected_video_names = [
@@ -1330,10 +1331,12 @@ def print_runtime_status() -> int:
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
     print(f"Effective OCR workers: {1 if easyocr_runtime['enabled'] else APP_CONFIG.ocr_workers}")
     overlap_mode_effective = runtime_effective_overlap_ocr_mode(APP_CONFIG)
+    overlap_default_enabled = runtime_easyocr_gpu_enabled(APP_CONFIG)
     if overlap_mode_effective == APP_CONFIG.overlap_ocr_mode:
         print(f"Overlap OCR mode: {APP_CONFIG.overlap_ocr_mode}")
     else:
         print(f"Overlap OCR mode: {APP_CONFIG.overlap_ocr_mode} -> {overlap_mode_effective}")
+    print(f"Overlap OCR active by default: {'yes' if overlap_default_enabled else 'no'}")
     print(f"Overlap OCR consumers: {APP_CONFIG.overlap_ocr_consumers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
     print(f"Initial scan workers: {APP_CONFIG.pass1_scan_workers}")
