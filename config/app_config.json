@@ -1,5 +1,5 @@
 {
-  "execution_mode": "auto",
+  "execution_mode": "cpu",
   "export_image_format": "jpg",
   "easyocr_gpu_mode": "auto",
   "ocr_workers": 16,
@@ -23,5 +23,5 @@
   "ultra_low_res_row_min_stddev": 18.0,
   "ultra_low_res_row_min_edge_density": 0.035,
   "ultra_low_res_blob_match_min_score": 0.58,
-  "ultra_low_res_blob_match_min_margin": 0.10
+  "ultra_low_res_blob_match_min_margin": 0.1
 }
