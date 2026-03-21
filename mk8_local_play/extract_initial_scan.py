@@ -26,6 +26,8 @@ from .project_paths import PROJECT_ROOT
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, all_score_layouts
 from . import extract_video_io as video_io
 
+INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 INITIAL_SCAN_TARGETS = (
     {
@@ -130,10 +132,25 @@ def update_segment_progress(progress_queue, segment_index, frame_number, emit_st
     total = max(1, emit_end - emit_start)
     progress_queue.put(
         {
+            "type": "progress",
             "segment_index": segment_index,
             "completed_frames": completed,
             "total_frames": total,
             "force": force,
+        }
+    )
+
+
+def update_segment_detection(progress_queue, segment_index, kind, frame_number):
+    """Stream worker detections back to the parent process for live scan visibility."""
+    if progress_queue is None:
+        return
+    progress_queue.put(
+        {
+            "type": "detection",
+            "segment_index": segment_index,
+            "kind": str(kind),
+            "frame_number": int(frame_number),
         }
     )
 
@@ -329,7 +346,8 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
 
 
 def process_segment_frame(frame, frame_number, video_path, video_source_path, templates, fps, scale_x, scale_y, left, top,
-                          crop_width, crop_height, stats, state, debug_rows, emit_results):
+                          crop_width, crop_height, stats, state, debug_rows, emit_results, progress_queue=None,
+                          segment_index=None):
     """Run the worker-safe initial scan without writing files or mutating shared state."""
     process_frame_start = time.perf_counter()
     upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
@@ -371,6 +389,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                         "score_layout_id": score_layout_id or DEFAULT_SCORE_LAYOUT_ID,
                     }
                 )
+                update_segment_detection(progress_queue, segment_index, "score", frame_number)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
 
@@ -397,6 +416,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                             "saved_image": saved_image,
                         }
                     )
+                    update_segment_detection(progress_queue, segment_index, "track", frame_number)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return 0
 
@@ -412,6 +432,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                             "saved_image": upscaled_image.copy(),
                         }
                     )
+                    update_segment_detection(progress_queue, segment_index, "race", frame_number)
             video_io.add_timing(stats, "process_frame_total_s", process_frame_start)
             return int(fps * target["skip_seconds"])
 
@@ -484,6 +505,8 @@ def scan_detection_segment(task):
                 state,
                 debug_rows,
                 emit_results and include_debug_rows,
+                progress_queue=progress_queue,
+                segment_index=task["segment_index"],
             )
 
             if frames_to_skip > 0:
@@ -643,15 +666,23 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
         video_io.add_timing(stats, "output_frame_capture_s", stage_start)
 
 
-def run_parallel_detection_segments(segment_tasks, progress=None):
+def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=None):
     """Prefer processes for the CPU-bound initial scan, then fall back to threads if needed."""
-    def _drain_progress(progress_queue, segment_state):
+    def _drain_progress(progress_queue, segment_state, live_counts, live_state):
         changed = False
+        detection_changed = False
         while True:
             try:
                 message = progress_queue.get_nowait()
             except Empty:
                 break
+            message_type = str(message.get("type", "progress"))
+            if message_type == "detection":
+                kind = str(message.get("kind", "")).strip().lower()
+                if kind in live_counts:
+                    live_counts[kind] += 1
+                    detection_changed = True
+                continue
             segment_state[message["segment_index"]] = (
                 message["completed_frames"],
                 message["total_frames"],
@@ -661,33 +692,73 @@ def run_parallel_detection_segments(segment_tasks, progress=None):
             completed_frames = sum(item[0] for item in segment_state.values())
             total_frames = sum(item[1] for item in segment_state.values())
             progress.total_units = max(1, total_frames)
-            progress.update(completed_frames)
+            detail = (
+                f"Live detections: score {live_counts['score']} | "
+                f"track {live_counts['track']} | race {live_counts['race']}"
+            )
+            progress.update(completed_frames, detail)
+        elif detection_changed and progress is not None:
+            now = time.perf_counter()
+            if now - float(live_state["last_detection_log_time"]) >= 2.0:
+                completed_frames = sum(item[0] for item in segment_state.values())
+                total_frames = sum(item[1] for item in segment_state.values())
+                progress.total_units = max(1, total_frames)
+                detail = (
+                    f"Live detections: score {live_counts['score']} | "
+                    f"track {live_counts['track']} | race {live_counts['race']}"
+                )
+                progress.update(completed_frames, detail, force=True)
+                live_state["last_detection_log_time"] = now
 
-    def _run_with_executor(executor_factory, progress_queue):
+    def _run_with_executor(executor_factory, progress_queue, executor_label):
+        run_start = time.perf_counter()
         segment_state = {task["segment_index"]: (0, max(1, task["emit_end"] - task["emit_start"])) for task in segment_tasks}
+        live_counts = {"score": 0, "track": 0, "race": 0}
+        live_state = {"last_detection_log_time": 0.0}
         task_payloads = [{**task, "progress_queue": progress_queue} for task in segment_tasks]
+        first_result_elapsed_s = None
+        startup_elapsed_s = None
         with executor_factory(max_workers=len(segment_tasks)) as executor:
+            submit_start = time.perf_counter()
             pending = {
                 executor.submit(scan_detection_segment, task): task
                 for task in task_payloads
             }
+            startup_elapsed_s = time.perf_counter() - submit_start
             results = []
             while pending:
                 done, _ = wait(pending.keys(), timeout=0.5, return_when=FIRST_COMPLETED)
-                _drain_progress(progress_queue, segment_state)
+                _drain_progress(progress_queue, segment_state, live_counts, live_state)
                 for future in done:
                     pending.pop(future)
+                    if first_result_elapsed_s is None:
+                        first_result_elapsed_s = time.perf_counter() - run_start
                     results.append(future.result())
                     if progress is not None:
-                        _drain_progress(progress_queue, segment_state)
-            _drain_progress(progress_queue, segment_state)
+                        _drain_progress(progress_queue, segment_state, live_counts, live_state)
+            _drain_progress(progress_queue, segment_state, live_counts, live_state)
+            if diagnostics is not None:
+                diagnostics.update(
+                    {
+                        "executor": executor_label,
+                        "segment_count": len(segment_tasks),
+                        "submit_startup_s": float(startup_elapsed_s or 0.0),
+                        "first_result_s": float(first_result_elapsed_s or 0.0),
+                        "parallel_wait_s": float(time.perf_counter() - run_start),
+                        "live_score_detections": int(live_counts["score"]),
+                        "live_track_detections": int(live_counts["track"]),
+                        "live_race_detections": int(live_counts["race"]),
+                    }
+                )
             return results
 
     try:
         with mp.Manager() as manager:
             progress_queue = manager.Queue()
-            return _run_with_executor(ProcessPoolExecutor, progress_queue)
+            return _run_with_executor(ProcessPoolExecutor, progress_queue, "process")
     except (PermissionError, OSError):
         LOGGER.log("[Extract - Settings]", "Process pool unavailable, falling back to threads", color_name="yellow")
         progress_queue = Queue()
-        return _run_with_executor(ThreadPoolExecutor, progress_queue)
+        if diagnostics is not None:
+            diagnostics["fallback"] = "thread"
+        return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")

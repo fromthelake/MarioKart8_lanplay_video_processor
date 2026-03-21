@@ -31,6 +31,7 @@ from .ocr_common import load_exported_frame_metadata
 # Record the start time
 start_run_time = time.time()
 APP_CONFIG = load_app_config()
+INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 SCORE_ANALYSIS_WORKERS = APP_CONFIG.score_analysis_workers
 INITIAL_SCAN_WORKERS = APP_CONFIG.pass1_scan_workers
@@ -83,10 +84,10 @@ class ProgressPrinter:
             "vram_total_gb": None,
         }
 
-    def update(self, completed_units, detail=""):
+    def update(self, completed_units, detail="", force=False):
         percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
         now = time.perf_counter()
-        should_print = percent >= 100 or self.last_percent < 0
+        should_print = force or percent >= 100 or self.last_percent < 0
         if not should_print and percent >= self.last_percent + self.percent_step:
             should_print = True
         if not should_print and now - self.last_print_time >= self.min_interval_s:
@@ -699,7 +700,12 @@ def extract_frames(
                     min_interval_s=1.0,
                 )
                 scan_progress.update(0)
-                segment_results = initial_scan.run_parallel_detection_segments(detection_segment_tasks, scan_progress)
+                parallel_scan_diag = {} if INITIAL_SCAN_DIAGNOSTICS_ENABLED else None
+                segment_results = initial_scan.run_parallel_detection_segments(
+                    detection_segment_tasks,
+                    scan_progress,
+                    diagnostics=parallel_scan_diag,
+                )
                 video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
 
                 merged_score_detections = []
@@ -707,6 +713,7 @@ def extract_frames(
                 merged_race_detections = []
                 merged_debug_rows = []
 
+                merge_start = time.perf_counter()
                 for result in sorted(segment_results, key=lambda item: item["segment_index"]):
                     for key, value in result["stats"].items():
                         video_stats[key] += value
@@ -714,11 +721,14 @@ def extract_frames(
                     merged_track_detections.extend(result["track_detections"])
                     merged_race_detections.extend(result["race_detections"])
                     merged_debug_rows.extend(result["debug_rows"])
+                parallel_merge_s = time.perf_counter() - merge_start
 
+                dedupe_start = time.perf_counter()
                 min_gap_frames = int(fps * 20)
                 merged_score_detections = initial_scan.merge_nearby_detections(merged_score_detections, min_gap_frames)
                 merged_track_detections = initial_scan.merge_nearby_detections(merged_track_detections, min_gap_frames)
                 merged_race_detections = initial_scan.merge_nearby_detections(merged_race_detections, min_gap_frames)
+                parallel_dedupe_s = time.perf_counter() - dedupe_start
 
                 score_frame_numbers = [item["frame_number"] for item in merged_score_detections]
                 score_candidates = [
@@ -739,6 +749,7 @@ def extract_frames(
                     LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", "", color_name="cyan")
                 scan_track_count = len(merged_track_detections)
                 scan_race_count = len(merged_race_detections)
+                auxiliary_save_start = time.perf_counter()
                 initial_scan.save_auxiliary_detection_frames(
                     cap,
                     processing_video_path,
@@ -754,6 +765,26 @@ def extract_frames(
                     video_stats,
                     metadata_writer,
                 )
+                auxiliary_save_s = time.perf_counter() - auxiliary_save_start
+                if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
+                    def _format_seconds_precise(value):
+                        return f"{float(value):.2f}s"
+
+                    diag_lines = [
+                        f"Mode: parallel {parallel_scan_diag.get('executor', 'unknown')} x {parallel_scan_diag.get('segment_count', len(detection_segment_tasks))}",
+                        f"Task submit/startup: {_format_seconds_precise(parallel_scan_diag.get('submit_startup_s', 0.0))}",
+                        f"First segment result: {_format_seconds_precise(parallel_scan_diag.get('first_result_s', 0.0))}",
+                        f"Parallel wait/collect: {_format_seconds_precise(parallel_scan_diag.get('parallel_wait_s', 0.0))}",
+                        f"Merge worker results: {_format_seconds_precise(parallel_merge_s)}",
+                        f"Deduplicate detections: {_format_seconds_precise(parallel_dedupe_s)}",
+                        f"Save auxiliary frames: {_format_seconds_precise(auxiliary_save_s)}",
+                        f"Raw merged detections: score {len(merged_score_detections)} | track {len(merged_track_detections)} | race {len(merged_race_detections)}",
+                    ]
+                    LOGGER.summary_block(
+                        f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
+                        diag_lines,
+                        color_name="dim",
+                    )
             if capture_poisoned:
                 LOGGER.log(
                     f"[Video {video_index}/{total_videos} - Complete]",
