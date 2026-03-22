@@ -46,6 +46,7 @@ from .ocr_export import build_completion_payload, build_player_count_summary_lin
 from .ocr_name_matching import (
     append_identity_relink_review_notes,
     compact_identity_labels,
+    merge_fragmented_identity_aliases,
     preprocess_name,
     reconcile_connection_reset_identities,
     standardize_player_names,
@@ -1345,6 +1346,7 @@ def finalize_ocr_results(
             )
     df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    df = merge_fragmented_identity_aliases(df)
     frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     df = annotate_raw_character_match_metrics(df, frames_folder)
     df = apply_mii_character_fallback(df)

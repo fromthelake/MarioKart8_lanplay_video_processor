@@ -104,6 +104,33 @@ def _detected_total_similarity(identity_last_total, row_detected_total):
     return -0.2
 
 
+def _row_name_is_unreliable(row) -> bool:
+    validation_flags = {
+        flag.strip().lower()
+        for flag in str(row.get("NameValidationFlags") or "").split("|")
+        if flag.strip()
+    }
+    if {"low_name_confidence", "unknown_chars"} & validation_flags:
+        return True
+
+    try:
+        name_confidence = float(row.get("NameConfidence", 100.0) or 100.0)
+    except (TypeError, ValueError):
+        name_confidence = 100.0
+    if name_confidence < 90.0:
+        return True
+
+    try:
+        allowed_ratio = float(row.get("NameAllowedCharRatio", 100.0) or 100.0)
+    except (TypeError, ValueError):
+        allowed_ratio = 100.0
+    if allowed_ratio < 90.0:
+        return True
+
+    visible_name = normalize_name_for_vote(str(row.get("PlayerName") or ""))
+    return distinct_visible_name_count(visible_name) < 4
+
+
 def _build_match_candidates(identity_state, race_rows):
     candidates = []
     for row_position, (row_index, row) in enumerate(race_rows, start=1):
@@ -115,7 +142,13 @@ def _build_match_candidates(identity_state, race_rows):
             character_similarity = _character_similarity(identity["character_index"], row_character_index)
             total_similarity = _detected_total_similarity(identity["last_detected_total"], row_detected_total)
             combined_score = (name_similarity * 0.55) + (character_similarity * 0.30) + (total_similarity * 0.15)
-            if name_similarity >= 0.72 or preprocess_name(identity["canonical_name"]) == preprocess_name(row_name):
+            exact_name_match = preprocess_name(identity["canonical_name"]) == preprocess_name(row_name)
+            fallback_match = _row_name_is_unreliable(row) and (
+                (character_similarity >= 1.0 and name_similarity >= 0.60)
+                or (total_similarity >= 0.7 and name_similarity >= 0.45)
+                or (character_similarity >= 1.0 and total_similarity >= 0.7)
+            )
+            if name_similarity >= 0.72 or exact_name_match or fallback_match:
                 candidates.append((combined_score, name_similarity, identity_id, row_position, row_index))
     return sorted(candidates, reverse=True)
 
@@ -249,6 +282,118 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
             _write_identity_debug_excel(output_folder, race_class, identity_debug_rows)
 
     return pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
+
+
+def merge_fragmented_identity_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse OCR-only alias splits when a video links to more identities than players.
+
+    This is intentionally narrow: only merge identities that never appear in the same
+    race, share the same dominant character, and have highly similar low-quality names.
+    """
+    if df.empty or "FixPlayerName" not in df.columns:
+        return df.copy()
+
+    result = df.copy()
+    for race_class, race_group in result.groupby("RaceClass", sort=False):
+        expected_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
+        unique_labels = [str(value) for value in race_group["FixPlayerName"].dropna().unique()]
+        if len(unique_labels) <= expected_players:
+            continue
+
+        identity_stats = {}
+        for label, identity_rows in race_group.groupby("FixPlayerName", sort=False):
+            identity_rows = identity_rows.sort_values(["RaceIDNumber", "RacePosition"], kind="stable")
+            race_ids = {int(value) for value in identity_rows["RaceIDNumber"].dropna().tolist()}
+            character_counts = Counter(
+                int(value) for value in identity_rows["CharacterIndex"].dropna().tolist() if pd.notna(value)
+            )
+            dominant_character = character_counts.most_common(1)[0][0] if character_counts else None
+            canonical_raw_name = choose_canonical_name(identity_rows["PlayerName"].tolist()) or str(label)
+            unreliable_votes = 0
+            for _, row in identity_rows.iterrows():
+                if _row_name_is_unreliable(row):
+                    unreliable_votes += 1
+            row_count = max(1, len(identity_rows))
+            identity_stats[str(label)] = {
+                "race_ids": race_ids,
+                "dominant_character": dominant_character,
+                "canonical_raw_name": canonical_raw_name,
+                "unreliable_ratio": unreliable_votes / row_count,
+                "row_count": row_count,
+                "first_race": int(identity_rows["RaceIDNumber"].min()),
+            }
+
+        merge_pairs = []
+        labels = list(identity_stats.keys())
+        for index, left_label in enumerate(labels):
+            left_stats = identity_stats[left_label]
+            for right_label in labels[index + 1:]:
+                right_stats = identity_stats[right_label]
+                if left_stats["race_ids"] & right_stats["race_ids"]:
+                    continue
+                if (
+                    left_stats["dominant_character"] is not None
+                    and right_stats["dominant_character"] is not None
+                    and left_stats["dominant_character"] != right_stats["dominant_character"]
+                ):
+                    continue
+                name_similarity = weighted_similarity(
+                    left_stats["canonical_raw_name"], right_stats["canonical_raw_name"]
+                )
+                if name_similarity < 0.68:
+                    continue
+                if max(left_stats["unreliable_ratio"], right_stats["unreliable_ratio"]) < 0.5:
+                    continue
+                score = name_similarity
+                if (
+                    left_stats["dominant_character"] is not None
+                    and left_stats["dominant_character"] == right_stats["dominant_character"]
+                ):
+                    score += 0.15
+                merge_pairs.append((score, left_label, right_label))
+
+        if not merge_pairs:
+            continue
+
+        rename_map: dict[str, str] = {}
+        for _score, left_label, right_label in sorted(merge_pairs, reverse=True):
+            left_root = rename_map.get(left_label, left_label)
+            right_root = rename_map.get(right_label, right_label)
+            if left_root == right_root:
+                continue
+            ordered_labels = sorted(
+                [left_root, right_root],
+                key=lambda label: (
+                    identity_stats[label]["first_race"],
+                    -identity_stats[label]["row_count"],
+                    label,
+                ),
+            )
+            keep_label, drop_label = ordered_labels[0], ordered_labels[1]
+            rename_map[drop_label] = keep_label
+
+        if not rename_map:
+            continue
+
+        race_mask = result["RaceClass"] == race_class
+        merged_source_mask = race_mask & result["FixPlayerName"].isin(rename_map.keys())
+        result.loc[race_mask, "FixPlayerName"] = result.loc[race_mask, "FixPlayerName"].map(
+            lambda value: rename_map.get(str(value), value)
+        )
+        if "IdentityLabel" in result.columns:
+            result.loc[race_mask, "IdentityLabel"] = result.loc[race_mask, "IdentityLabel"].map(
+                lambda value: rename_map.get(str(value), value)
+            )
+        if "IdentityResolutionMethod" in result.columns:
+            result.loc[merged_source_mask, "IdentityResolutionMethod"] = result.loc[
+                merged_source_mask, "IdentityResolutionMethod"
+            ].map(
+                lambda value: (
+                    f"{str(value).strip()}+alias_merge" if str(value).strip() else "alias_merge"
+                )
+            )
+
+    return result
 
 
 def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:

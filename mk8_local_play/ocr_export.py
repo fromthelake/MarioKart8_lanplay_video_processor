@@ -287,8 +287,8 @@ def write_results_workbooks(df, folder_path):
     with pd.ExcelWriter(debug_output_excel_path) as writer:
         debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
         autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
-    user_df.to_csv(output_csv_path, index=False)
-    debug_df.to_csv(debug_output_csv_path, index=False)
+    user_df.to_csv(output_csv_path, index=False, encoding="utf-8-sig")
+    debug_df.to_csv(debug_output_csv_path, index=False, encoding="utf-8-sig")
     return {
         "user_df": user_df,
         "debug_df": debug_df,
