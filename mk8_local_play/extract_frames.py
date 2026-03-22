@@ -56,6 +56,10 @@ PARALLEL_VIDEO_SCAN_WORKERS = max(
 CONSENSUS_FRAME_CACHE = {}
 
 
+def color_video_scope(scope: str, video_identity: object) -> str:
+    return LOGGER.color_video_identity(scope, video_identity)
+
+
 class NullCsvWriter:
     """Drop debug CSV rows when debug output is disabled."""
 
@@ -223,7 +227,8 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
 
     worker_count = min(max(1, int(analysis_workers_override or SCORE_ANALYSIS_WORKERS)), len(tasks))
     local_progress = progress or ProgressPrinter(
-        f"[Video {video_index}/{total_videos} - Total Score Screen]" if video_index is not None else "[Total Score Screen]",
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen]", video_label)
+        if video_index is not None else "[Total Score Screen]",
         len(tasks),
         percent_step=5,
         min_interval_s=2.0,
@@ -316,8 +321,10 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             if result["total_score_frame"] > 0:
                 LOGGER.log(
                     "",
-                    f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
-                    color_name="green",
+                    LOGGER.color_video_identity(
+                        f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                        video_label,
+                    ),
                 )
             local_progress.update(
                 completed_count,
@@ -344,8 +351,10 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 if result["total_score_frame"] > 0:
                     LOGGER.log(
                         "",
-                        f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
-                        color_name="green",
+                        LOGGER.color_video_identity(
+                            f"Race {task['race_number']:03} | total score screen found at source {frame_to_timecode(result['total_score_frame'], fps)}",
+                            video_label,
+                        ),
                     )
                 local_progress.update(
                     completed_count,
@@ -381,9 +390,9 @@ def _run_total_score_phase_for_context(
     fps = context["fps"]
     total_frames = context["total_frames"]
 
-    LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
+    LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", video_label), "")
     total_score_progress = ProgressPrinter(
-        f"[Video {video_index}/{total_videos} - Total Score Screen]",
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen]", video_label),
         max(1, len(score_candidates)),
         percent_step=5,
         min_interval_s=2.0,
@@ -429,7 +438,7 @@ def _run_total_score_phase_for_context(
     if total_score_progress.last_percent < 100:
         total_score_progress.update(len(score_candidates))
     LOGGER.summary_block(
-        f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]", video_label),
         [
             f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
             f"Total score screens found: {exported_counts['total']}",
@@ -441,8 +450,8 @@ def _run_total_score_phase_for_context(
         color_name="green",
     )
     LOGGER.log(
-        f"[Video {video_index}/{total_videos} - Complete]",
-        f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
+        color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_label),
+        f"{video_name} | Elapsed until complete: {format_duration(video_stats['video_total_s'])} | "
         f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
         f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
         color_name="green",
@@ -580,9 +589,8 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
     source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
     LOGGER.log(
-        f"[Video {video_index}/{total_videos} - Start]",
+        color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
         f"{source_display_name if include_subfolders else video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
-        color_name="cyan",
     )
     stage_start = time.perf_counter()
     eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
@@ -600,7 +608,7 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
             ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
         if timed_out:
             LOGGER.log(
-                f"[Video {video_index}/{total_videos} - Start]",
+                color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
                 (
                     f"Aborting video after frame-read stall during scaling scan "
                     f"(requested frame {int(frame_num)}/{total_frames})"
@@ -702,7 +710,10 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
     frame_count = 0
     stage_start = time.perf_counter()
     scan_progress = ProgressPrinter(
-        f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+        color_video_scope(
+            f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+            context["video_label"],
+        ),
         total_frames,
         percent_step=5,
         min_interval_s=2.0,
@@ -718,7 +729,10 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
             and remaining_frames <= eof_guard_frames
         ):
             LOGGER.log(
-                f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                color_video_scope(
+                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    context["video_label"],
+                ),
                 (
                     f"Stopping scan near EOF to avoid decoder stalls "
                     f"({remaining_frames} frames remaining, "
@@ -742,7 +756,10 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
                 ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
             if timed_out:
                 LOGGER.log(
-                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    color_video_scope(
+                        f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                        context["video_index"],
+                    ),
                     (
                         f"Aborting video after frame-read stall near EOF "
                         f"({remaining_frames} frames remaining, "
@@ -854,7 +871,13 @@ def _finalize_parallel_initial_scan(context, segment_results, csv_writer, metada
     auxiliary_detections.extend({"kind": "race", **item} for item in merged_race_detections)
     auxiliary_detections.sort(key=lambda item: item["frame_number"])
     if auxiliary_detections:
-        LOGGER.log(f"[Video {context['video_index']}/{context['total_videos']} - Scan - Confirmed Results]", "", color_name="cyan")
+        LOGGER.log(
+                color_video_scope(
+                    f"[Video {context['video_index']}/{context['total_videos']} - Scan - Confirmed Results]",
+                    context["video_label"],
+                ),
+            "",
+        )
 
     cap = cv2.VideoCapture(context["processing_video_path"])
     auxiliary_save_start = time.perf_counter()
@@ -927,14 +950,23 @@ def _extract_frames_parallel_video_scan(
 
     parallel_contexts = [context for context in prepared_contexts if context["detection_segment_tasks"]]
     shared_results_by_video = {}
-    diagnostics_by_video = {} if INITIAL_SCAN_DIAGNOSTICS_ENABLED else None
+    diagnostics_by_video = {}
     if len(parallel_contexts) > 1:
         progress_by_video = {}
         shared_segment_tasks = []
         for context in parallel_contexts:
-            LOGGER.log(f"[Video {context['video_index']}/{context['total_videos']} - Scan - Phase Start]", "", color_name="cyan")
+            LOGGER.log(
+                color_video_scope(
+                    f"[Video {context['video_index']}/{context['total_videos']} - Scan - Phase Start]",
+                    context["video_label"],
+                ),
+                "",
+            )
             scan_progress = ProgressPrinter(
-                f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                color_video_scope(
+                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    context["video_label"],
+                ),
                 context["total_frames"],
                 percent_step=5,
                 min_interval_s=1.0,
@@ -949,7 +981,7 @@ def _extract_frames_parallel_video_scan(
             diagnostics_by_video=diagnostics_by_video,
             max_workers=max(1, PARALLEL_VIDEO_SCAN_WORKERS * INITIAL_SCAN_WORKERS),
         )
-        if diagnostics_by_video is not None:
+        if diagnostics_by_video:
             for context in parallel_contexts:
                 context["parallel_scan_diag"] = diagnostics_by_video.get(context["video_label"], {})
 
@@ -991,16 +1023,16 @@ def _extract_frames_parallel_video_scan(
                     color_name="dim",
                 )
         else:
-            LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", "", color_name="cyan")
+            LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
             if context["detection_segment_tasks"]:
                 scan_progress = ProgressPrinter(
-                    f"[Video {video_index}/{total_videos} - Scan]",
+                    color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
                     total_frames,
                     percent_step=5,
                     min_interval_s=1.0,
                 )
                 scan_progress.update(0)
-                parallel_scan_diag = {} if INITIAL_SCAN_DIAGNOSTICS_ENABLED else None
+                parallel_scan_diag = {}
                 stage_start = time.perf_counter()
                 segment_results = initial_scan.run_parallel_detection_segments(
                     context["detection_segment_tasks"],
@@ -1367,9 +1399,8 @@ def extract_frames(
             video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
             source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
             LOGGER.log(
-                f"[Video {video_index}/{total_videos} - Start]",
+                color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_index),
                 f"{source_display_name if include_subfolders else video_name} | Source length: {format_duration(total_frames / max(fps, 1))}",
-                color_name="cyan",
             )
             stage_start = time.perf_counter()
             eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
@@ -1387,7 +1418,7 @@ def extract_frames(
                     ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
                 if timed_out:
                     LOGGER.log(
-                        f"[Video {video_index}/{total_videos} - Start]",
+                        color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_index),
                         (
                             f"Aborting video after frame-read stall during scaling scan "
                             f"(requested frame {int(frame_num)}/{total_frames})"
@@ -1447,7 +1478,7 @@ def extract_frames(
                 INITIAL_SCAN_PROGRESS_REPORT_SECONDS,
             )
 
-            LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", "", color_name="cyan")
+            LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_index), "")
             scan_progress = None
             scan_track_count = 0
             scan_race_count = 0
@@ -1455,7 +1486,7 @@ def extract_frames(
                 frame_count = 0
                 stage_start = time.perf_counter()
                 scan_progress = ProgressPrinter(
-                    f"[Video {video_index}/{total_videos} - Scan]",
+                    color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_index),
                     total_frames,
                     percent_step=5,
                     min_interval_s=2.0,
@@ -1469,7 +1500,7 @@ def extract_frames(
                         and remaining_frames <= eof_guard_frames
                     ):
                         LOGGER.log(
-                            f"[Video {video_index}/{total_videos} - Scan]",
+                            color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_index),
                             (
                                 f"Stopping scan near EOF to avoid decoder stalls "
                                 f"({remaining_frames} frames remaining, "
@@ -1494,7 +1525,7 @@ def extract_frames(
                             ret, frame, timed_out = video_io.read_video_frame_with_timeout(cap, video_stats, read_timeout_s)
                         if timed_out:
                             LOGGER.log(
-                                f"[Video {video_index}/{total_videos} - Scan]",
+                                color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_index),
                                 (
                                     f"Aborting video after frame-read stall near EOF "
                                     f"({remaining_frames} frames remaining, "
@@ -1561,7 +1592,7 @@ def extract_frames(
             else:
                 stage_start = time.perf_counter()
                 scan_progress = ProgressPrinter(
-                    f"[Video {video_index}/{total_videos} - Scan]",
+                    color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_index),
                     total_frames,
                     percent_step=5,
                     min_interval_s=1.0,
@@ -1613,7 +1644,7 @@ def extract_frames(
                 auxiliary_detections.extend({"kind": "race", **item} for item in merged_race_detections)
                 auxiliary_detections.sort(key=lambda item: item["frame_number"])
                 if auxiliary_detections:
-                    LOGGER.log(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", "", color_name="cyan")
+                    LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Confirmed Results]", video_label), "")
                 scan_track_count = len(merged_track_detections)
                 scan_race_count = len(merged_race_detections)
                 auxiliary_save_start = time.perf_counter()
@@ -1654,7 +1685,7 @@ def extract_frames(
                     )
             if capture_poisoned:
                 LOGGER.log(
-                    f"[Video {video_index}/{total_videos} - Complete]",
+                    color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_index),
                     f"{video_name} | Aborted after timed-out read to avoid reusing a poisoned decoder",
                     color_name="yellow",
                 )
@@ -1674,13 +1705,13 @@ def extract_frames(
             if scan_progress is not None:
                 scan_summary_lines.extend(scan_progress.peak_lines())
             LOGGER.summary_block(
-                f"[Video {video_index}/{total_videos} - Scan - Phase Complete]",
+                color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Complete]", video_index),
                 scan_summary_lines,
                 color_name="green",
             )
-            LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
+            LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", video_index), "")
             total_score_progress = ProgressPrinter(
-                f"[Video {video_index}/{total_videos} - Total Score Screen]",
+                color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen]", video_index),
                 max(1, len(score_candidates)),
                 percent_step=5,
                 min_interval_s=2.0,
@@ -1722,7 +1753,7 @@ def extract_frames(
             if total_score_progress.last_percent < 100:
                 total_score_progress.update(len(score_candidates))
             LOGGER.summary_block(
-                f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
+                color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]", video_index),
                 [
                     f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
                     f"Total score screens found: {exported_counts['total']}",
@@ -1734,8 +1765,8 @@ def extract_frames(
                 color_name="green",
             )
             LOGGER.log(
-                f"[Video {video_index}/{total_videos} - Complete]",
-                f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
+                color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_label),
+                f"{video_name} | Elapsed until complete: {format_duration(video_stats['video_total_s'])} | "
                 f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
                 f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
                 color_name="green",

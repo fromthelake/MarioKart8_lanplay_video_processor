@@ -300,7 +300,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 saved_image = crop_and_upscale_image(save_frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
                 runtime_state["last_track_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", f"Race {race_number:03} | track screen found at source {timecode}", color_name="green")
+                LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | track screen found at source {timecode}", video_label))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "0TrackName")
                 write_export_image(frame_filename, saved_image)
                 video_io.log_exported_frame(
@@ -326,7 +326,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
             if runtime_state["last_race_frame"] < max(1, frame_number - int(fps * 20)):
                 runtime_state["last_race_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", f"Race {race_number:03} | race number found at source {timecode}", color_name="green")
+                LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | race number found at source {timecode}", video_label))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "1RaceNumber")
                 write_export_image(frame_filename, upscaled_image)
                 video_io.log_exported_frame(
@@ -645,12 +645,12 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
 
         if detection["kind"] == "track":
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", f"Race {race_number:03} | track screen found at source {timecode}", color_name="green")
+            LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | track screen found at source {timecode}", video_label))
             suffix = "0TrackName"
             kind = "TrackName"
         else:
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", f"Race {race_number:03} | race number found at source {timecode}", color_name="green")
+            LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | race number found at source {timecode}", video_label))
             suffix = "1RaceNumber"
             kind = "RaceNumber"
 

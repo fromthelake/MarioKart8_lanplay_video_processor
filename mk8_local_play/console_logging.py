@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import colorsys
 from dataclasses import dataclass
 
 try:
@@ -61,6 +62,13 @@ class ConsoleLogger:
         "green": "\033[1;92m",
         "yellow": "\033[1;93m",
         "red": "\033[1;91m",
+        "neon_blue": "\033[1;38;5;51m",
+        "neon_pink": "\033[1;38;5;213m",
+        "neon_lime": "\033[1;38;5;118m",
+        "neon_orange": "\033[1;38;5;208m",
+        "neon_purple": "\033[1;38;5;141m",
+        "neon_teal": "\033[1;38;5;87m",
+        "neon_yellow": "\033[1;38;5;226m",
         "dim": "\033[2m",
         "reset": "\033[0m",
     }
@@ -96,6 +104,36 @@ class ConsoleLogger:
         prefix = self.COLORS.get(color_name, "")
         reset = self.COLORS["reset"] if prefix else ""
         return f"{prefix}{text}{reset}"
+
+    def bold(self, text: str) -> str:
+        if not self.use_color:
+            return text
+        return f"\033[1m{text}{self.COLORS['reset']}"
+
+    def color_rgb(self, text: str, red: int, green: int, blue: int) -> str:
+        if not self.use_color:
+            return text
+        red = max(0, min(255, int(red)))
+        green = max(0, min(255, int(green)))
+        blue = max(0, min(255, int(blue)))
+        return f"\033[1;38;2;{red};{green};{blue}m{text}{self.COLORS['reset']}"
+
+    def _video_hue_from_token(self, token: object) -> float:
+        token_text = str(token or "")
+        accumulator = 0
+        for index, char in enumerate(token_text):
+            accumulator += (index + 1) * ord(char)
+        return ((accumulator * 0.00137) + 0.03) % 1.0
+
+    def color_video_identity(self, text: str, video_identity: object) -> str:
+        # Cycle bright neon hues deterministically from a stable token so the same
+        # video stays the same color across all lines in the run.
+        hue = self._video_hue_from_token(video_identity)
+        red, green, blue = colorsys.hsv_to_rgb(hue, 0.78, 1.0)
+        return self.color_rgb(text, int(red * 255), int(green * 255), int(blue * 255))
+
+    def color_video_text(self, text: str, video_index: int) -> str:
+        return self.color_video_identity(text, video_index)
 
     def log(self, scope: str, message: str, color_name: str | None = None) -> None:
         if scope:

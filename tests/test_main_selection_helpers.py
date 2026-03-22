@@ -178,6 +178,70 @@ class MainSelectionHelpersTests(unittest.TestCase):
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
 
+    def test_clear_output_results_for_videos_only_removes_selected_video_artifacts(self):
+        case_dir = _make_case_dir("clear_output_results_for_videos")
+        try:
+            input_dir = case_dir / "Input_Videos"
+            output_dir = case_dir / "Output_Results"
+            frames_dir = output_dir / "Frames"
+            debug_dir = output_dir / "Debug"
+            score_frames_dir = debug_dir / "Score_Frames"
+            selected_video = _touch(input_dir / "Demo_CaptureCard_Race.mp4")
+            other_video = _touch(input_dir / "OtherRace.mp4")
+
+            selected_label = "Demo_CaptureCard_Race"
+            other_label = "OtherRace"
+            (frames_dir / selected_label / "Race_001" / "0TrackName.jpg").parent.mkdir(parents=True, exist_ok=True)
+            (frames_dir / selected_label / "Race_001" / "0TrackName.jpg").write_text("x")
+            (frames_dir / other_label / "Race_001" / "0TrackName.jpg").parent.mkdir(parents=True, exist_ok=True)
+            (frames_dir / other_label / "Race_001" / "0TrackName.jpg").write_text("x")
+            (score_frames_dir / selected_label / "Race_001" / "annotated_2RaceScore.jpg").parent.mkdir(parents=True, exist_ok=True)
+            (score_frames_dir / selected_label / "Race_001" / "annotated_2RaceScore.jpg").write_text("x")
+            (debug_dir / "Identity_Linking" / selected_label / "identity_linking.xlsx").parent.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "Identity_Linking" / selected_label / "identity_linking.xlsx").write_text("x")
+            (debug_dir / "Low_Res" / selected_label / "identity_assignment.csv").parent.mkdir(parents=True, exist_ok=True)
+            (debug_dir / "Low_Res" / selected_label / "identity_assignment.csv").write_text("x")
+
+            with (
+                mock.patch.object(main, "INPUT_DIR", input_dir),
+                mock.patch.object(main, "OUTPUT_DIR", output_dir),
+                mock.patch.object(main, "FRAMES_DIR", frames_dir),
+                mock.patch.object(main, "DEBUG_DIR", debug_dir),
+                mock.patch.object(main, "DEBUG_SCORE_FRAMES_DIR", score_frames_dir),
+            ):
+                self.assertTrue(
+                    main.clear_output_results_for_videos([selected_video], include_subfolders=False)
+                )
+
+            self.assertFalse((frames_dir / selected_label).exists())
+            self.assertFalse((score_frames_dir / selected_label).exists())
+            self.assertFalse((debug_dir / "Identity_Linking" / selected_label).exists())
+            self.assertFalse((debug_dir / "Low_Res" / selected_label).exists())
+            self.assertTrue((frames_dir / other_label).exists())
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_run_extract_selected_video_clears_scoped_outputs_before_launch(self):
+        case_dir = _make_case_dir("run_extract_scoped_cleanup")
+        try:
+            input_dir = case_dir / "Input_Videos"
+            video_path = _touch(input_dir / "Demo_CaptureCard_Race.mp4")
+            with (
+                mock.patch.object(main, "INPUT_DIR", input_dir),
+                mock.patch.object(main, "ensure_runtime_or_raise"),
+                mock.patch.object(main, "clear_output_results_for_videos") as cleanup_mock,
+                mock.patch.object(main, "run_python_module") as run_module_mock,
+            ):
+                main.run_extract(selected_video=video_path.name)
+
+            cleanup_mock.assert_called_once()
+            cleanup_args, cleanup_kwargs = cleanup_mock.call_args
+            self.assertEqual(cleanup_args[0], [video_path])
+            self.assertFalse(cleanup_kwargs.get("include_subfolders", False))
+            run_module_mock.assert_called_once_with(main.EXTRACT_MODULE, extra_args=["--video", video_path.name])
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
     def test_run_all_resets_logger_elapsed_time_before_start(self):
         original_start = main.LOGGER.start_time
         try:
