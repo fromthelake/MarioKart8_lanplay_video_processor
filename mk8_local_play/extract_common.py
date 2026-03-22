@@ -235,8 +235,25 @@ def debug_score_race_dir(video_label: str, race_number: int) -> Path:
     return debug_score_frames_root() / str(video_label) / f"Race_{int(race_number):03d}"
 
 
+def debug_score_bundle_dir(video_label: str, race_number: int, frame_content: str) -> Path:
+    return debug_score_race_dir(video_label, race_number) / str(frame_content)
+
+
 def debug_score_frame_path(video_label: str, race_number: int, frame_content: str) -> Path:
-    return debug_score_race_dir(video_label, race_number) / f"annotated_{frame_content}{EXPORT_IMAGE_SUFFIX}"
+    return debug_score_bundle_dir(video_label, race_number, frame_content) / f"annotated_{frame_content}{EXPORT_IMAGE_SUFFIX}"
+
+
+def debug_score_frame_variant_path(
+    video_label: str,
+    race_number: int,
+    frame_content: str,
+    frame_number: int | None,
+) -> Path:
+    if frame_number is None:
+        return debug_score_frame_path(video_label, race_number, frame_content)
+    return debug_score_bundle_dir(video_label, race_number, frame_content) / (
+        f"annotated_{frame_content}_frame_{int(frame_number)}{EXPORT_IMAGE_SUFFIX}"
+    )
 
 
 def debug_identity_video_dir(video_label: str) -> Path:

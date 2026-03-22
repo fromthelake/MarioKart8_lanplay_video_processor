@@ -427,8 +427,10 @@ Annotated score-layout demo images are also written under:
 These show the active score ROIs on exported `2RaceScore` and `3TotalScore` frames for human review.
 
 Other debug artifacts are grouped by video so the debug tree sorts like `Output_Results/Frames/`:
-- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/annotated_2RaceScore.<ext>`
-- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/annotated_3TotalScore.<ext>`
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/2RaceScore/annotated_2RaceScore.<ext>`
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/2RaceScore/annotated_2RaceScore_frame_<frame>.<ext>`
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/3TotalScore/annotated_3TotalScore.<ext>`
+- `Output_Results/Debug/Score_Frames/<VideoLabel>/Race_001/3TotalScore/annotated_3TotalScore_frame_<frame>.<ext>`
 - `Output_Results/Debug/Identity_Linking/<VideoLabel>/identity_linking.xlsx`
 - `Output_Results/Debug/Low_Res/<VideoLabel>/identity_assignment.csv`
 - `Output_Results/Debug/Low_Res/<VideoLabel>/identity_resolution.csv`

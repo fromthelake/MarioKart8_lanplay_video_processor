@@ -1400,25 +1400,42 @@ def _row_bounds(
     return (x1, y1, x2, y2)
 
 
+def _rescale_bounds(
+    bounds: Tuple[int, int, int, int],
+    draw_scale_divisor: int,
+) -> Tuple[int, int, int, int]:
+    if int(draw_scale_divisor) <= 1:
+        return bounds
+    x1, y1, x2, y2 = bounds
+    return (
+        int(round(float(x1) / float(draw_scale_divisor))),
+        int(round(float(y1) / float(draw_scale_divisor))),
+        int(round(float(x2) / float(draw_scale_divisor))),
+        int(round(float(y2) / float(draw_scale_divisor))),
+    )
+
+
 def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int]], row_offset: int,
                            box_dims: Tuple[int, int], red_pixels: Dict[str, Tuple[int, int]],
                            num_rows: int, boxes_per_row: int, *, valid_min: int, valid_max: int,
-                           annotation_prefix: str = "", bundle_kind: str = "", field_name: str = "") -> Tuple[List[str], List[str]]:
+                           annotation_prefix: str = "", bundle_kind: str = "", field_name: str = "",
+                           draw_image: Image.Image | None = None, draw_scale_divisor: int = 1) -> Tuple[List[str], List[str]]:
     coordinate_set = []
     coordinate_sources = []
-    draw = ImageDraw.Draw(image)
+    draw = ImageDraw.Draw(draw_image if draw_image is not None else image)
     for row_index in range(num_rows):
         row_stage_start = time.perf_counter()
         y_offset = row_index * row_offset
         row_bounds = _row_bounds(start_coords, row_offset, box_dims, row_index, boxes_per_row)
-        draw.rectangle(row_bounds, outline="cyan", width=2)
+        draw.rectangle(_rescale_bounds(row_bounds, draw_scale_divisor), outline="cyan", width=1)
         row_digits = []
         has_unknown_digit = False
         for box_index in range(boxes_per_row):
             start_x, start_y = start_coords[box_index]
             top_left = (start_x, start_y + y_offset)
             digit_bounds = _digit_box_bounds(top_left, box_dims)
-            draw.rectangle(digit_bounds, outline="yellow", width=2)
+            scaled_digit_bounds = _rescale_bounds(digit_bounds, draw_scale_divisor)
+            draw.rectangle(scaled_digit_bounds, outline="yellow", width=1)
             digit, segment_stats, strong_active_labels = analyze_digit_segments(image, top_left, red_pixels)
             if digit != -1:
                 row_digits.append(str(digit))
@@ -1426,12 +1443,12 @@ def detect_digits_in_image(image: Image.Image, start_coords: List[Tuple[int, int
                 row_digits.append('')
                 has_unknown_digit = True
             digit_label = str(digit) if digit != -1 else "?"
-            draw.text((digit_bounds[0] + 2, digit_bounds[1] + 2), digit_label, fill="cyan")
+            draw.text((scaled_digit_bounds[0] + 2, scaled_digit_bounds[1] + 2), digit_label, fill="cyan")
             for label, offset in red_pixels.items():
                 roi_bounds = segment_roi_bounds(top_left, offset, label)
                 segment_is_on = label in strong_active_labels
                 outline_color = "lime" if segment_is_on else "red"
-                draw.rectangle(roi_bounds, outline=outline_color, width=2)
+                draw.rectangle(_rescale_bounds(roi_bounds, draw_scale_divisor), outline=outline_color, width=1)
         row_number = ''.join(row_digits)
         numeric_value = parse_detected_int(row_number)
         recognized_indices = [index for index, digit_text in enumerate(row_digits) if digit_text]
@@ -1594,6 +1611,7 @@ def extract_scoreboard_observation(
     processed_img[position_y1:position_y2, position_x1:position_x2] = cv2.cvtColor(normalized_position_strip, cv2.COLOR_GRAY2BGR)
 
     processed_img_pil = Image.fromarray(processed_img).convert("RGB")
+    annotation_image = processed_img_pil.copy()
     scale_factor = 5
     stage_start = time.perf_counter()
     scaled_image = processed_img_pil.resize(
@@ -1617,6 +1635,8 @@ def extract_scoreboard_observation(
             annotation_prefix=f"{annotation_prefix}RP",
             bundle_kind=bundle_kind,
             field_name=race_points_field_name,
+            draw_image=annotation_image,
+            draw_scale_divisor=scale_factor,
         )
         record_observation_stage("detect_race_points", time.perf_counter() - stage_start)
 
@@ -1629,17 +1649,18 @@ def extract_scoreboard_observation(
         annotation_prefix=f"{annotation_prefix}TP",
         bundle_kind=bundle_kind,
         field_name=total_points_field_name,
+        draw_image=annotation_image,
+        draw_scale_divisor=scale_factor,
     )
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
-    scaled_image_resized = scaled_image.resize((processed_img_pil.width, processed_img_pil.height), Image.NEAREST)
-    annotated_image = cv2.cvtColor(np.array(scaled_image_resized), cv2.COLOR_RGB2BGR)
+    annotated_image = cv2.cvtColor(np.array(annotation_image), cv2.COLOR_RGB2BGR)
     record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
         Path(annotate_path).parent.mkdir(parents=True, exist_ok=True)
         save_kwargs = {"format": "JPEG", "quality": 95} if EXPORT_IMAGE_FORMAT == "jpg" else {"format": "PNG"}
-        scaled_image_resized.save(annotate_path, **save_kwargs)
+        annotation_image.save(annotate_path, **save_kwargs)
 
     stage_start = time.perf_counter()
     names, confidence_scores = extract_player_names_batched(
@@ -2248,6 +2269,8 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
                                 frame_numbers: List[int] | None = None,
                                 total_annotate_path: str | None = None,
+                                annotate_paths: List[str | None] | None = None,
+                                total_annotate_paths: List[str | None] | None = None,
                                 video_context: str | None = None, is_low_res: bool = False,
                                 score_layout_id: str | None = None) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
@@ -2257,11 +2280,16 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     score_observations = []
     total_observations = []
     for index, frame in enumerate(frames):
+        current_annotate_path = None
+        if annotate_paths and index < len(annotate_paths):
+            current_annotate_path = annotate_paths[index]
+        elif index == len(frames) // 2:
+            current_annotate_path = annotate_path
         score_observations.append(
             extract_scoreboard_observation(
                 frame,
                 extract_player_names_batched,
-                annotate_path if index == len(frames) // 2 else None,
+                current_annotate_path,
                 annotation_prefix="RS-",
                 video_context=video_context,
                 score_layout_id=score_layout_id,
@@ -2278,11 +2306,17 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         size=TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
     )
     for frame in total_frames_for_observation:
+        total_index = len(total_observations)
+        current_total_annotate_path = None
+        if total_annotate_paths and total_index < len(total_annotate_paths):
+            current_total_annotate_path = total_annotate_paths[total_index]
+        elif total_index == len(total_frames_for_observation) // 2:
+            current_total_annotate_path = total_annotate_path
         total_observations.append(
             extract_scoreboard_observation(
                 frame,
                 extract_player_names_batched,
-                total_annotate_path if len(total_observations) == len(total_frames_for_observation) // 2 else None,
+                current_total_annotate_path,
                 annotation_prefix="TS-",
                 video_context=video_context,
                 score_layout_id=score_layout_id,

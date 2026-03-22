@@ -582,7 +582,6 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
     from . import extract_text
 
     base_dir = Path(PROJECT_ROOT)
-    metadata_index = extract_text.load_exported_frame_metadata(base_dir)
     input_videos_folder = base_dir / "Input_Videos"
     text_detected_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'Score_Frames')
     if extract_text.APP_CONFIG.write_debug_score_images and not os.path.exists(text_detected_folder):
@@ -599,6 +598,7 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
         grouped_item = job["grouped_item"]
         try:
             progress_queue.put({"event": "race_start", "video_label": video_label, "race_id": race_id})
+            metadata_index = extract_text.load_exported_frame_metadata(base_dir)
             race_result = extract_text.process_race_group(
                 grouped_item,
                 text_detected_folder,

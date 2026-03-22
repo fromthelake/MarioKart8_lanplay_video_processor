@@ -124,6 +124,7 @@ def load_consensus_frame_entries(image_path: str, metadata_entry, input_videos_f
             (start_frame + index, frame)
             for index, frame in enumerate(in_memory_frames)
         ]
+    anchor_path = Path(image_path) if image_path else None
     if metadata_entry is not None:
         bundle_dir = Path(str(metadata_entry.get("bundle_path", "") or ""))
         if bundle_dir.exists():
@@ -141,6 +142,20 @@ def load_consensus_frame_entries(image_path: str, metadata_entry, input_videos_f
                     entries.append((_extract_numeric_suffix(path.stem), frame))
                 if entries:
                     return entries
+    if metadata_entry is None and anchor_path is not None and anchor_path.exists():
+        sibling_consensus_paths = sorted(
+            anchor_path.parent.glob("frame_*"),
+            key=lambda path: (_extract_numeric_suffix(path.stem), path.name),
+        )
+        if sibling_consensus_paths:
+            entries = []
+            for path in sibling_consensus_paths:
+                frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+                if frame is None:
+                    continue
+                entries.append((_extract_numeric_suffix(path.stem), frame))
+            if entries:
+                return entries
     fallback_image = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if fallback_image is None:
         return []

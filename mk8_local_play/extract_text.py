@@ -36,6 +36,7 @@ from .app_runtime import easyocr_gpu_enabled as runtime_easyocr_gpu_enabled, loa
 from .extract_common import (
     build_video_identity,
     debug_score_frame_path,
+    debug_score_frame_variant_path,
     find_anchor_frame_path,
     find_score_bundle_anchor_path,
     iter_video_race_dirs,
@@ -50,7 +51,7 @@ from .ocr_name_matching import (
     standardize_player_names,
     weighted_similarity,
 )
-from .ocr_common import find_metadata_entry, load_consensus_frame_entries, load_consensus_frames, load_exported_frame_metadata
+from .ocr_common import find_metadata_entry, load_consensus_frame_entries, load_exported_frame_metadata
 from .extract_common import score_bundle_points_anchor_path, write_export_image
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .name_unicode import (
@@ -1089,6 +1090,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
 
     annotate_path = None
     total_annotate_path = None
+    annotate_paths = None
+    total_annotate_paths = None
     if APP_CONFIG.write_debug_score_images:
         annotate_path = str(debug_score_frame_path(race_class, race_id_number, "2RaceScore"))
         if total_score_image:
@@ -1104,13 +1107,32 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         in_memory_frames=(in_memory_frame_bundles or {}).get(race_bundle_key),
     )
     race_frames = [frame for _frame_number, frame in race_frame_entries]
-    total_frames = load_consensus_frames(
+    total_frame_entries = load_consensus_frame_entries(
         total_score_image or race_score_image,
         total_metadata,
         input_videos_folder,
         TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
         in_memory_frames=(in_memory_frame_bundles or {}).get(total_bundle_key),
     )
+    total_frames = [frame for _frame_number, frame in total_frame_entries]
+    if APP_CONFIG.write_debug_score_images:
+        race_mid_index = len(race_frame_entries) // 2 if race_frame_entries else -1
+        annotate_paths = []
+        for index, (frame_number, _frame) in enumerate(race_frame_entries):
+            annotate_paths.append(
+                annotate_path
+                if index == race_mid_index
+                else str(debug_score_frame_variant_path(race_class, race_id_number, "2RaceScore", frame_number))
+            )
+        if total_frame_entries:
+            total_mid_index = len(total_frame_entries) // 2
+            total_annotate_paths = []
+            for index, (frame_number, _frame) in enumerate(total_frame_entries):
+                total_annotate_paths.append(
+                    total_annotate_path
+                    if index == total_mid_index
+                    else str(debug_score_frame_variant_path(race_class, race_id_number, "3TotalScore", frame_number))
+                )
     consensus = build_consensus_observation(
         race_frames,
         total_frames,
@@ -1120,6 +1142,8 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         frame_numbers=[frame_number for frame_number, _frame in race_frame_entries],
         annotate_path=annotate_path,
         total_annotate_path=total_annotate_path,
+        annotate_paths=annotate_paths,
+        total_annotate_paths=total_annotate_paths,
         video_context=race_class,
         is_low_res=is_low_res,
         score_layout_id=score_layout_id,

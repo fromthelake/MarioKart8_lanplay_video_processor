@@ -114,7 +114,7 @@ The format is intentionally simple and human-readable.
 - Review reasons are now shorter, deduplicated, capped for export, and no longer repeat connection-reset messages across later races after a detected reset.
 - Session validation now preserves the original OCR total-score row position, preventing false `Scoreboard total order is not descending.` warnings after tournament-only `Position After Race` recomputation.
 - Post-reset local `TotalScore` values are now validated against the reset-local session totals instead of continuing to trigger false tournament-total mismatches in later races.
-- Score-frame debug annotations now save both `2RaceScore` and `3TotalScore` center frames, render the 5x OCR image directly, color segment ROIs green/red for on/off, and label each digit box with the detected 7-segment digit.
+- Score-frame debug annotations now save per-frame OCR bundle diagnostics under `Debug/Score_Frames/<Video>/Race_###/<2RaceScore|3TotalScore>/`, with native-resolution overlays, 1px segment boxes, and the legacy center-frame file preserved alongside the per-frame images.
 - The seven-segment reader now uses one canonical explicit segment layout for RacePoints / OldTotalScore and scales that same layout into the larger TotalScore digit boxes.
 - OCR junk punctuation on the edges of player names no longer creates false new identities when the underlying name, character, and totals clearly match an existing player.
 - RacePoints can now reconcile to the `OldTotalScore -> TotalScore` delta when the bundle evidence supports the implied score better than the initially selected point read.
