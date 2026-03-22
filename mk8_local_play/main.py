@@ -190,6 +190,22 @@ def _format_metric_table(rows: list[tuple[str, str]]) -> list[str]:
     return lines
 
 
+def _format_simple_table_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, value in enumerate(row):
+            widths[index] = max(widths[index], len(str(value)))
+    return widths
+
+
+def _format_colored_table_row(values: list[str], widths: list[int], video_identity: object) -> str:
+    padded_values = [
+        LOGGER.video_value(str(values[index]).ljust(widths[index]), video_identity)
+        for index in range(len(values))
+    ]
+    return "  " + "  ".join(padded_values)
+
+
 def _review_summary_text(video_ocr_summary: dict) -> str:
     if not video_ocr_summary:
         return "n/a"
@@ -197,7 +213,42 @@ def _review_summary_text(video_ocr_summary: dict) -> str:
     review_row_count = int(video_ocr_summary.get("review_row_count", 0))
     if review_race_count <= 0 and review_row_count <= 0:
         return "none"
-    return f"{review_race_count}r/{review_row_count} rows"
+    return f"{review_race_count} races / {review_row_count} rows"
+
+
+def _video_labeled_value(prefix: str, value: object, video_identity: object, suffix: str = "") -> str:
+    return prefix + LOGGER.video_value(value, video_identity) + suffix
+
+
+def _format_overlap_queue_race(video_label: str, race_number: int) -> str:
+    return "Queued OCR race " + LOGGER.video_value(f"{race_number:03}", video_label) + " for " + LOGGER.video_value(video_label, video_label)
+
+
+def _format_overlap_extraction_complete(video_label: str, race_count: int) -> str:
+    return LOGGER.video_value(video_label, video_label) + " | Races ready: " + LOGGER.video_value(race_count, video_label)
+
+
+def _format_overlap_queue_video(video_label: str) -> str:
+    return "Queued OCR for " + LOGGER.video_value(video_label, video_label)
+
+
+def _format_overlap_start_video(video_label: str) -> str:
+    return "Starting OCR for " + LOGGER.video_value(video_label, video_label)
+
+
+def _format_overlap_complete(video_label: str, race_count: int, duration_text: str) -> str:
+    return (
+        "Completed OCR for "
+        + LOGGER.video_value(video_label, video_label)
+        + " | Races: "
+        + LOGGER.video_value(race_count, video_label)
+        + " | Duration: "
+        + LOGGER.video_value(duration_text, video_label)
+    )
+
+
+def _format_overlap_progress_line(video_label: str, detail_text: str) -> str:
+    return LOGGER.video_value(video_label, video_label) + " | " + LOGGER.video_value(detail_text, video_label)
 
 
 def confirm_yes_no(title: str, message: str) -> bool:
@@ -473,9 +524,9 @@ def _make_overlap_ocr_progress_callback(video_label: str, format_duration, displ
     def _callback(event: dict) -> None:
         LOGGER.log(
             "[Run - Overlap OCR]",
-            LOGGER.color_video_identity(
-                f"{video_label} | {_format_overlap_ocr_detail(event, format_duration)}",
+            _format_overlap_progress_line(
                 video_label,
+                _format_overlap_ocr_detail(event, format_duration),
             ),
         )
 
@@ -734,9 +785,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             record_ocr_completed(video_label)
             LOGGER.log(
                 "[Run - Overlap]",
-                LOGGER.color_video_identity(
-                    f"Completed OCR for {video_label} | Races: {finalized.get('race_count', 0)} | Duration: {extract_frames.format_duration(finalized.get('duration_s', 0.0))}",
+                _format_overlap_complete(
                     video_label,
+                    int(finalized.get("race_count", 0)),
+                    extract_frames.format_duration(finalized.get("duration_s", 0.0)),
                 ),
                 color_name="green",
             )
@@ -792,9 +844,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 record_ocr_progress(video_label, progress_event)
                 LOGGER.log(
                     "[Run - Overlap OCR]",
-                    LOGGER.color_video_identity(
-                        f"{video_label} | {_format_overlap_ocr_detail(progress_event, extract_frames.format_duration)}",
+                    _format_overlap_progress_line(
                         video_label,
+                        _format_overlap_ocr_detail(progress_event, extract_frames.format_duration),
                     ),
                 )
 
@@ -816,7 +868,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             )
             LOGGER.log(
                 "[Run - Overlap]",
-                LOGGER.color_video_identity(f"Queued OCR race {race_number:03} for {video_label}", video_label),
+                _format_overlap_queue_race(video_label, race_number),
                 color_name="cyan",
             )
             record_ocr_queued(video_label)
@@ -839,7 +891,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             video_expected_races[str(video_payload["video_label"])] = len(grouped_items)
             LOGGER.log(
                 "[Run - Overlap]",
-                LOGGER.color_video_identity(f"Extraction complete for {video_label} | Races ready: {len(grouped_items)}", video_label),
+                _format_overlap_extraction_complete(video_label, len(grouped_items)),
                 color_name="cyan",
             )
             try_finalize_video(video_label)
@@ -875,9 +927,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 record_ocr_progress(video_label, event)
                 LOGGER.log(
                     "[Run - Overlap OCR]",
-                    LOGGER.color_video_identity(
-                        f"{video_label} | {_format_overlap_ocr_detail(event, extract_frames.format_duration)}",
+                    _format_overlap_progress_line(
                         video_label,
+                        _format_overlap_ocr_detail(event, extract_frames.format_duration),
                     ),
                 )
 
@@ -904,9 +956,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 record_ocr_completed(str(message["video_label"]))
                 LOGGER.log(
                     "[Run - Overlap]",
-                    LOGGER.color_video_identity(
-                        f"Completed OCR for {message['video_label']} | Races: {result.get('race_count', 0)} | Duration: {extract_frames.format_duration(result.get('duration_s', 0.0))}",
-                        message["video_label"],
+                    _format_overlap_complete(
+                        str(message["video_label"]),
+                        int(result.get("race_count", 0)),
+                        extract_frames.format_duration(result.get("duration_s", 0.0)),
                     ),
                     color_name="green",
                 )
@@ -920,7 +973,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     ocr_start_time_holder["value"] = time.time()
             LOGGER.log(
                 "[Run - Overlap]",
-                LOGGER.color_video_identity(f"Queued OCR for {video_payload['video_label']}", video_payload["video_label"]),
+                _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
             )
             record_ocr_queued(str(video_payload["video_label"]))
@@ -955,7 +1008,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                             ocr_start_time_holder["value"] = time.time()
                     LOGGER.log(
                         "[Run - Overlap]",
-                        LOGGER.color_video_identity(f"Starting OCR for {job['video_label']}", job["video_label"]),
+                        _format_overlap_start_video(str(job["video_label"])),
                         color_name="cyan",
                     )
                     record_ocr_started(str(job["video_label"]))
@@ -974,9 +1027,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     record_ocr_completed(str(job["video_label"]))
                     LOGGER.log(
                         "[Run - Overlap]",
-                        LOGGER.color_video_identity(
-                            f"Completed OCR for {job['video_label']} | Races: {result.get('race_count', 0)} | Duration: {extract_frames.format_duration(result.get('duration_s', 0.0))}",
-                            job["video_label"],
+                        _format_overlap_complete(
+                            str(job["video_label"]),
+                            int(result.get("race_count", 0)),
+                            extract_frames.format_duration(result.get("duration_s", 0.0)),
                         ),
                         color_name="green",
                     )
@@ -991,7 +1045,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         def enqueue_completed_video(video_payload: dict) -> None:
             LOGGER.log(
                 "[Run - Overlap]",
-                LOGGER.color_video_identity(f"Queued OCR for {video_payload['video_label']}", video_payload["video_label"]),
+                _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
             )
             record_ocr_queued(str(video_payload["video_label"]))
@@ -1181,10 +1235,14 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
             per_video_rows,
         )
+        row_widths = _format_simple_table_widths(
+            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            per_video_rows,
+        )
         performance_lines.extend(formatted_table[:2])
-        for index, row_line in enumerate(formatted_table[2:]):
+        for index, row_values in enumerate(per_video_rows):
             video_identity = build_video_identity(Path(extract_summary["per_video_summaries"][index]["video_name"]), include_subfolders=include_subfolders)
-            performance_lines.append(LOGGER.color_video_identity(row_line, video_identity))
+            performance_lines.append(_format_colored_table_row(row_values, row_widths, video_identity))
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
     LOGGER.summary_block("[Run - Performance Summary]", performance_lines, color_name="cyan")
     LOGGER.blank_lines(2)
@@ -1242,7 +1300,10 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
         capture.release()
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, (video_identity, summary) in enumerate(source_summaries, start=1):
-        LOGGER.log("[Run - Input Summary]", LOGGER.color_video_identity(f"{index}. {summary}", video_identity))
+        LOGGER.log(
+            "[Run - Input Summary]",
+            LOGGER.video_value(f"{index}.", video_identity) + " " + LOGGER.color_video_identity(summary, video_identity),
+        )
     if selection_mode:
         cleared = clear_output_results_for_videos(video_files, include_subfolders=include_subfolders)
         cleanup_message = (
@@ -1330,9 +1391,15 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
             ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
             per_video_rows,
         )
+        row_widths = _format_simple_table_widths(
+            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            per_video_rows,
+        )
         performance_lines.extend(formatted_table[:2])
-        for index, row_line in enumerate(formatted_table[2:]):
-            performance_lines.append(LOGGER.color_video_identity(row_line, Path(per_video_summaries[index]["video_name"]).stem))
+        for index, row_values in enumerate(per_video_rows):
+            performance_lines.append(
+                _format_colored_table_row(row_values, row_widths, Path(per_video_summaries[index]["video_name"]).stem)
+            )
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
     LOGGER.summary_block(
         "[Run - Performance Summary]",

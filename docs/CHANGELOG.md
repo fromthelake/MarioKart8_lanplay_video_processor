@@ -39,6 +39,9 @@ The format is intentionally simple and human-readable.
 - Runtime GPU settings now default extraction (`execution_mode`) to `cpu` and EasyOCR (`easyocr_gpu_mode`) to `auto`, with `gpu` and `cpu` override modes still available from config, env vars, and the GUI.
 - Overlap OCR now defaults to `auto` mode with `2` consumers. When EasyOCR CUDA is available, full multi-video runs use the streamed per-race overlap path by default; when CUDA is unavailable, the overlap default resolves back to the existing sequential behavior. Explicit `video` / `race` mode overrides and custom consumer counts remain supported for experiments.
 - Initial scan now supports a multi-video shared-process path. It defaults to `2` workers for multi-video runs, and `MK8_PARALLEL_VIDEO_SCAN_WORKERS` can still override it manually. On the current 7-video benchmark set, `2` workers reduced extraction-only runtime from `06:59` to `03:58`, while `3` and `4` workers were slower.
+- Extraction worker defaults are now tuned from the full 7-video benchmark set: `pass1_scan_workers=4`, `score_analysis_workers=4`, and cross-video total-score workers resolve to `2` on `16+` logical CPU threads and `1` otherwise.
+- Selection and scoped extract runs now clear only the selected videos' exported artifacts internally before extraction starts, so repeated scoped runs start cleanly without external shell cleanup.
+- Console reporting is now clearer and more consistent during long runs: selected videos get stable neon accents, video-owned values are colored without coloring whole lines, the final performance summary is table-based, and `Pipeline time avoided` shows the wall-clock savings gained from overlap and parallelism.
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
 - Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.
@@ -76,6 +79,7 @@ The format is intentionally simple and human-readable.
   - left-side position matching uses the last 3 frames
   - RaceScore player count uses the first 3 frames
 - TotalScore consensus now loads and uses only 3 center frames instead of loading a wider bundle first.
+- Static gallery-opened RaceScore screens are now filtered using first-frame-vs-rest similarity checks with conservative thresholds, so obvious Nintendo Switch Album stills can be rejected without dropping known low-motion real races.
 - Debug exports now expose explicit score-read sources for RacePoints, old totals, and new totals (`7-segment` vs `ocr_fallback`).
 - RacePoints runtime seven-segment detection now uses the tuned fixed ROI layout with `white_threshold=180` and `active_ratio_threshold=0.45`.
 - Session rebases remain visible in validation/debug output as an attention point, but no longer count as OCR review failures by themselves.

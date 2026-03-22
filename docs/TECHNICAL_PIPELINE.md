@@ -443,6 +443,9 @@ Current reporting conventions:
 - OCR profiler sections explicitly label cumulative timing so they are not confused with wall-clock runtime
 - OCR progress lines show completed groups plus `In flight: N` while race bundles are still running
 - per-video run summaries use an aligned table for source length, processing time, race count, and player-count status
+- each selected video is assigned a stable neon console accent for the current run
+- labels remain neutral while video-owned values use that video's color across input summary, live scan, score selection, overlap OCR, and per-video summary rows
+- `Pipeline time avoided` is reported as the cumulative per-video elapsed wall-clock minus total run wall-clock, so users can see the benefit from overlap and parallelism directly
 
 Current OCR profiling sections:
 - `OCR Call Matrix`

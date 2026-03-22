@@ -300,7 +300,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 saved_image = crop_and_upscale_image(save_frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
                 runtime_state["last_track_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | track screen found at source {timecode}", video_label))
+                LOGGER.log("", _color_detection_message(video_label, race_number, " | track screen found at source ", timecode))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "0TrackName")
                 write_export_image(frame_filename, saved_image)
                 video_io.log_exported_frame(
@@ -326,7 +326,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
             if runtime_state["last_race_frame"] < max(1, frame_number - int(fps * 20)):
                 runtime_state["last_race_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | race number found at source {timecode}", video_label))
+                LOGGER.log("", _color_detection_message(video_label, race_number, " | race number found at source ", timecode))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "1RaceNumber")
                 write_export_image(frame_filename, upscaled_image)
                 video_io.log_exported_frame(
@@ -645,12 +645,12 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
 
         if detection["kind"] == "track":
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | track screen found at source {timecode}", video_label))
+            LOGGER.log("", _color_detection_message(video_label, race_number, " | track screen found at source ", timecode))
             suffix = "0TrackName"
             kind = "TrackName"
         else:
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", LOGGER.color_video_identity(f"Race {race_number:03} | race number found at source {timecode}", video_label))
+            LOGGER.log("", _color_detection_message(video_label, race_number, " | race number found at source ", timecode))
             suffix = "1RaceNumber"
             kind = "RaceNumber"
 
@@ -696,22 +696,16 @@ def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=No
             completed_frames = sum(item[0] for item in segment_state.values())
             total_frames = sum(item[1] for item in segment_state.values())
             progress.total_units = max(1, total_frames)
-            detail = (
-                f"Live detections: score {live_counts['score']} | "
-                f"track {live_counts['track']} | race {live_counts['race']}"
-            )
-            progress.update(completed_frames, detail)
+            detail = _color_live_detection_detail(video_label, live_counts['score'], live_counts['track'], live_counts['race'])
+            progress.update(completed_frames, detail, value_color_token=video_label)
         elif detection_changed and progress is not None:
             now = time.perf_counter()
             if now - float(live_state["last_detection_log_time"]) >= 2.0:
                 completed_frames = sum(item[0] for item in segment_state.values())
                 total_frames = sum(item[1] for item in segment_state.values())
                 progress.total_units = max(1, total_frames)
-                detail = (
-                    f"Live detections: score {live_counts['score']} | "
-                    f"track {live_counts['track']} | race {live_counts['race']}"
-                )
-                progress.update(completed_frames, detail, force=True)
+                detail = _color_live_detection_detail(video_label, live_counts['score'], live_counts['track'], live_counts['race'])
+                progress.update(completed_frames, detail, force=True, value_color_token=video_label)
                 live_state["last_detection_log_time"] = now
 
     def _run_with_executor(executor_factory, progress_queue, executor_label):
@@ -806,17 +800,14 @@ def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, dia
             total_frames = sum(segment_state.get(key, (0, 0))[1] for key in video_segment_keys)
             progress.total_units = max(1, total_frames)
             counts = live_counts.get(video_label, {"score": 0, "track": 0, "race": 0})
-            detail = (
-                f"Live detections: score {counts['score']} | "
-                f"track {counts['track']} | race {counts['race']}"
-            )
+            detail = _color_live_detection_detail(video_label, counts['score'], counts['track'], counts['race'])
             force = False
             if video_label in detection_changed_videos and video_label not in changed_videos:
                 now = time.perf_counter()
                 if now - float(live_state.get(video_label, 0.0)) >= 2.0:
                     force = True
                     live_state[video_label] = now
-            progress.update(completed_frames, detail, force=force)
+            progress.update(completed_frames, detail, force=force, value_color_token=video_label)
 
     def _run_with_executor(executor_factory, progress_queue, executor_label):
         run_start = time.perf_counter()
@@ -895,3 +886,21 @@ def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, dia
             for diagnostics in diagnostics_by_video.values():
                 diagnostics["fallback"] = "thread"
         return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")
+def _color_detection_message(video_label, race_number: int, description: str, timecode: str) -> str:
+    return (
+        "Race "
+        + LOGGER.video_value(f"{race_number:03}", video_label)
+        + description
+        + LOGGER.video_value(timecode, video_label)
+    )
+
+
+def _color_live_detection_detail(video_label, score_count: int, track_count: int, race_count: int) -> str:
+    return (
+        "Live detections: score "
+        + LOGGER.video_value(score_count, video_label)
+        + " | track "
+        + LOGGER.video_value(track_count, video_label)
+        + " | race "
+        + LOGGER.video_value(race_count, video_label)
+    )

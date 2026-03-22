@@ -56,6 +56,20 @@ class ResourceMonitor:
 
 
 class ConsoleLogger:
+    NEON_VIDEO_PALETTE = [
+        (0, 255, 255),   # cyan
+        (255, 64, 255),  # hot magenta
+        (64, 255, 64),   # green
+        (255, 96, 96),   # red
+        (255, 192, 0),   # amber
+        (64, 160, 255),  # blue
+        (192, 96, 255),  # violet
+        (0, 255, 160),   # mint
+        (255, 128, 0),   # orange
+        (255, 0, 128),   # pink-red
+        (160, 255, 0),   # lime
+        (0, 224, 255),   # ice blue
+    ]
     COLORS = {
         "cyan": "\033[1;96m",
         "magenta": "\033[1;95m",
@@ -77,10 +91,14 @@ class ConsoleLogger:
         self.start_time = time.perf_counter()
         self.resources = ResourceMonitor()
         self.use_color = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+        self._video_color_cache: dict[str, tuple[int, int, int]] = {}
+        self._video_color_order: list[str] = []
 
     def reset(self) -> None:
         self.start_time = time.perf_counter()
         self.resources = ResourceMonitor()
+        self._video_color_cache.clear()
+        self._video_color_order.clear()
 
     def elapsed_seconds(self) -> float:
         return max(0.0, time.perf_counter() - self.start_time)
@@ -118,22 +136,38 @@ class ConsoleLogger:
         blue = max(0, min(255, int(blue)))
         return f"\033[1;38;2;{red};{green};{blue}m{text}{self.COLORS['reset']}"
 
-    def _video_hue_from_token(self, token: object) -> float:
+    def _video_rgb_from_token(self, token: object) -> tuple[int, int, int]:
         token_text = str(token or "")
-        accumulator = 0
-        for index, char in enumerate(token_text):
-            accumulator += (index + 1) * ord(char)
-        return ((accumulator * 0.00137) + 0.03) % 1.0
+        cached = self._video_color_cache.get(token_text)
+        if cached is not None:
+            return cached
+
+        assignment_index = len(self._video_color_order)
+        self._video_color_order.append(token_text)
+        if assignment_index < len(self.NEON_VIDEO_PALETTE):
+            rgb = self.NEON_VIDEO_PALETTE[assignment_index]
+        else:
+            extra_index = assignment_index - len(self.NEON_VIDEO_PALETTE)
+            hue = ((extra_index * 0.61803398875) + 0.07) % 1.0
+            saturation = 0.72 if (extra_index % 2 == 0) else 0.84
+            value = 1.0 if (extra_index % 3 != 0) else 0.92
+            red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value)
+            rgb = (int(red * 255), int(green * 255), int(blue * 255))
+        self._video_color_cache[token_text] = rgb
+        return rgb
 
     def color_video_identity(self, text: str, video_identity: object) -> str:
-        # Cycle bright neon hues deterministically from a stable token so the same
-        # video stays the same color across all lines in the run.
-        hue = self._video_hue_from_token(video_identity)
-        red, green, blue = colorsys.hsv_to_rgb(hue, 0.78, 1.0)
-        return self.color_rgb(text, int(red * 255), int(green * 255), int(blue * 255))
+        red, green, blue = self._video_rgb_from_token(video_identity)
+        return self.color_rgb(text, red, green, blue)
 
     def color_video_text(self, text: str, video_index: int) -> str:
         return self.color_video_identity(text, video_index)
+
+    def video_value(self, value: object, video_identity: object) -> str:
+        return self.color_video_identity(str(value), video_identity)
+
+    def video_field(self, label: str, value: object, video_identity: object) -> str:
+        return f"{label}{self.video_value(value, video_identity)}"
 
     def log(self, scope: str, message: str, color_name: str | None = None) -> None:
         if scope:
@@ -152,13 +186,21 @@ class ConsoleLogger:
         for _ in range(max(0, count)):
             print("")
 
-    def resource_text(self, snapshot: ResourceSnapshot | None = None) -> str:
+    def resource_text(self, snapshot: ResourceSnapshot | None = None, *, value_color_token: object | None = None) -> str:
         snapshot = snapshot or self.resources.sample()
         parts = []
         if snapshot.cpu_percent is not None:
-            parts.append(f"CPU {snapshot.cpu_percent:.0f}%")
+            cpu_value = f"{snapshot.cpu_percent:.0f}%"
+            parts.append(self.video_field("CPU ", cpu_value, value_color_token) if value_color_token is not None else f"CPU {cpu_value}")
         if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
-            parts.append(f"RAM {snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB")
+            ram_value = f"{snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB"
+            parts.append(self.video_field("RAM ", ram_value, value_color_token) if value_color_token is not None else f"RAM {ram_value}")
+        if snapshot.gpu_percent is not None:
+            gpu_value = f"{snapshot.gpu_percent:.0f}%"
+            parts.append(self.video_field("GPU ", gpu_value, value_color_token) if value_color_token is not None else f"GPU {gpu_value}")
+        if snapshot.vram_used_gb is not None and snapshot.vram_total_gb is not None:
+            vram_value = f"{snapshot.vram_used_gb:.1f}/{snapshot.vram_total_gb:.1f} GB"
+            parts.append(self.video_field("VRAM ", vram_value, value_color_token) if value_color_token is not None else f"VRAM {vram_value}")
         return " | ".join(parts)
 
     def peak_lines(self, snapshot: ResourceSnapshot | None = None) -> list[str]:
