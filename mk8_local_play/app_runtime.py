@@ -21,6 +21,7 @@ class AppConfig:
     overlap_ocr_consumers: int
     ocr_workers: int
     score_analysis_workers: int
+    parallel_video_score_workers: int
     pass1_scan_workers: int
     ocr_consensus_frames: int
     pass1_segment_overlap_frames: int
@@ -130,8 +131,9 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     json_config = _load_json_config(config_path)
 
     default_ocr_workers = max(1, min(16, os.cpu_count() or 1))
-    default_score_workers = max(1, min(11, os.cpu_count() or 1))
+    default_score_workers = 4
     cpu_count = os.cpu_count() or 1
+    default_parallel_video_score_workers = 2 if cpu_count >= 16 else 1
     if cpu_count >= 24:
         default_pass1_workers = 4
     elif cpu_count >= 16:
@@ -172,6 +174,10 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     score_analysis_workers = _parse_int(
         os.environ.get("MK8_SCORE_ANALYSIS_WORKERS", json_config.get("score_analysis_workers")),
         default_score_workers,
+    )
+    parallel_video_score_workers = _parse_int(
+        os.environ.get("MK8_PARALLEL_VIDEO_SCORE_WORKERS", json_config.get("parallel_video_score_workers")),
+        default_parallel_video_score_workers,
     )
     pass1_scan_workers = _parse_int(
         os.environ.get("MK8_PASS1_SCAN_WORKERS", json_config.get("pass1_scan_workers")),
@@ -280,6 +286,7 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
         overlap_ocr_consumers=overlap_ocr_consumers,
         ocr_workers=ocr_workers,
         score_analysis_workers=score_analysis_workers,
+        parallel_video_score_workers=parallel_video_score_workers,
         pass1_scan_workers=pass1_scan_workers,
         ocr_consensus_frames=ocr_consensus_frames,
         pass1_segment_overlap_frames=pass1_segment_overlap_frames,

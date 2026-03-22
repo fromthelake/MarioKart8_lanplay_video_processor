@@ -59,11 +59,62 @@ def fps_scaled_frames(base_frames_30fps, fps):
 RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS = 1
 RACE_SCORE_EARLY_EXPANSION_FRAMES = 7
 RACE_SCORE_LATE_EXPANSION_FRAMES = 6
+STATIC_GALLERY_RACE_MIN_FIRST_FRAME_COEFF = 0.995
+STATIC_GALLERY_RACE_AVG_FIRST_FRAME_COEFF = 0.997
 
 
 def _position_metrics_for_frame(frame_image, score_layout_id=None):
     processed_image = process_image(frame_image, score_layout_id=score_layout_id)
     return build_position_signal_metrics(processed_image)
+
+
+def summarize_first_frame_similarity(consensus_frames):
+    """Measure how static a saved score bundle is against the earliest frame."""
+    if not consensus_frames or len(consensus_frames) < 2:
+        return None
+
+    grayscale_frames = []
+    for _frame_number, frame_image in consensus_frames:
+        if frame_image is None:
+            continue
+        if frame_image.ndim == 2:
+            gray = frame_image
+        else:
+            gray = cv2.cvtColor(frame_image, cv2.COLOR_BGR2GRAY)
+        grayscale_frames.append(gray)
+
+    if len(grayscale_frames) < 2:
+        return None
+
+    first_frame = grayscale_frames[0]
+    coefficients = []
+    for current_frame in grayscale_frames[1:]:
+        match = cv2.matchTemplate(first_frame, current_frame, cv2.TM_CCOEFF_NORMED)
+        coefficients.append(float(match[0][0]))
+
+    if not coefficients:
+        return None
+
+    return {
+        "count": len(coefficients),
+        "min": float(min(coefficients)),
+        "avg": float(sum(coefficients) / len(coefficients)),
+        "max": float(max(coefficients)),
+    }
+
+
+def is_static_gallery_race_bundle(consensus_frames):
+    """Return True when a RaceScore bundle is effectively a static gallery image."""
+    similarity = summarize_first_frame_similarity(consensus_frames)
+    if similarity is None:
+        return False, None
+
+    is_static_gallery = (
+        similarity["count"] >= 2
+        and similarity["min"] >= STATIC_GALLERY_RACE_MIN_FIRST_FRAME_COEFF
+        and similarity["avg"] >= STATIC_GALLERY_RACE_AVG_FIRST_FRAME_COEFF
+    )
+    return is_static_gallery, similarity
 
 
 def _count_visible_rows_from_position_metrics(position_metrics):

@@ -1330,6 +1330,7 @@ def print_runtime_status() -> int:
     print(f"EasyOCR detail: {easyocr_runtime['reason']}")
     print(f"OCR workers: {APP_CONFIG.ocr_workers}")
     print(f"Effective OCR workers: {1 if easyocr_runtime['enabled'] else APP_CONFIG.ocr_workers}")
+    print(f"Logical CPU threads: {os.cpu_count() or 1}")
     overlap_mode_effective = runtime_effective_overlap_ocr_mode(APP_CONFIG)
     overlap_default_enabled = runtime_easyocr_gpu_enabled(APP_CONFIG)
     if overlap_mode_effective == APP_CONFIG.overlap_ocr_mode:
@@ -1339,6 +1340,7 @@ def print_runtime_status() -> int:
     print(f"Overlap OCR active by default: {'yes' if overlap_default_enabled else 'no'}")
     print(f"Overlap OCR consumers: {APP_CONFIG.overlap_ocr_consumers}")
     print(f"Score analysis workers: {APP_CONFIG.score_analysis_workers}")
+    print(f"Parallel video total score workers: {APP_CONFIG.parallel_video_score_workers}")
     print(f"Initial scan workers: {APP_CONFIG.pass1_scan_workers}")
     print(f"OCR consensus frames: {APP_CONFIG.ocr_consensus_frames}")
     print(f"Initial scan segment overlap frames: {APP_CONFIG.pass1_segment_overlap_frames}")

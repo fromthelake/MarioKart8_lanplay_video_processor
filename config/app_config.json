@@ -5,7 +5,7 @@
   "overlap_ocr_mode": "auto",
   "overlap_ocr_consumers": 2,
   "ocr_workers": 16,
-  "score_analysis_workers": 11,
+  "score_analysis_workers": 4,
   "pass1_scan_workers": 4,
   "ocr_consensus_frames": 7,
   "pass1_segment_overlap_frames": 2100,

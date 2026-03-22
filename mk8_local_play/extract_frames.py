@@ -4,10 +4,11 @@ import os
 import argparse
 import csv
 import time
+import threading
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from .app_runtime import load_app_config
+from .app_runtime import detect_easyocr_runtime, effective_overlap_ocr_mode, load_app_config
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
 from .project_paths import PROJECT_ROOT
@@ -31,9 +32,11 @@ from .ocr_common import load_exported_frame_metadata
 # Record the start time
 start_run_time = time.time()
 APP_CONFIG = load_app_config()
+EASYOCR_RUNTIME = detect_easyocr_runtime(APP_CONFIG)
 INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 SCORE_ANALYSIS_WORKERS = APP_CONFIG.score_analysis_workers
+PARALLEL_VIDEO_SCORE_WORKERS = max(1, int(APP_CONFIG.parallel_video_score_workers))
 INITIAL_SCAN_WORKERS = APP_CONFIG.pass1_scan_workers
 INITIAL_SCAN_WINDOW_STEPS = 2
 INITIAL_SCAN_SEGMENT_OVERLAP_FRAMES = APP_CONFIG.pass1_segment_overlap_frames
@@ -44,6 +47,7 @@ INITIAL_SCAN_EOF_GUARD_PROGRESS = 0.99
 INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS = 10.0
 INITIAL_SCAN_FFPROBE_COUNTFRAME_MIN_DELTA_FRAMES = 30
 DEFAULT_PARALLEL_VIDEO_SCAN_WORKERS = 2
+DISABLE_STATIC_GALLERY_RACE_FILTER = os.environ.get("MK8_DISABLE_STATIC_GALLERY_RACE_FILTER", "0").strip().lower() in {"1", "true", "yes", "on"}
 PARALLEL_VIDEO_SCAN_WORKERS = max(
     1,
     int(os.environ.get("MK8_PARALLEL_VIDEO_SCAN_WORKERS", str(DEFAULT_PARALLEL_VIDEO_SCAN_WORKERS))),
@@ -192,7 +196,7 @@ def collect_consensus_frames(video_path, video_label, center_frame, fps, left, t
 
 def process_score_candidates(video_path, video_label, video_source_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
                              crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None,
-                             per_race_complete_callback=None):
+                             per_race_complete_callback=None, analysis_workers_override=None, io_lock=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
         return
@@ -217,7 +221,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         for candidate in score_candidates
     ]
 
-    worker_count = min(SCORE_ANALYSIS_WORKERS, len(tasks))
+    worker_count = min(max(1, int(analysis_workers_override or SCORE_ANALYSIS_WORKERS)), len(tasks))
     local_progress = progress or ProgressPrinter(
         f"[Video {video_index}/{total_videos} - Total Score Screen]" if video_index is not None else "[Total Score Screen]",
         len(tasks),
@@ -237,29 +241,58 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         )
         for key, value in result["stats"].items():
             stats[key] += value
-        for row in result["debug_rows"]:
-            csv_writer.writerow(row)
+        if io_lock is None:
+            for row in result["debug_rows"]:
+                csv_writer.writerow(row)
+        else:
+            with io_lock:
+                for row in result["debug_rows"]:
+                    csv_writer.writerow(row)
         if result["race_score_frame"] <= 0 or result["total_score_frame"] <= 0:
             return
-        saved = score_screen_selection.save_score_frames(
-            video_path,
-            video_label,
-            result["candidate"]["race_number"],
-            result["race_score_frame"],
-            result["total_score_frame"],
-            result.get("actual_race_score_frame"),
-            result.get("actual_total_score_frame"),
-            result.get("race_score_image"),
-            result.get("total_score_image"),
-            result.get("race_consensus_frames", []),
-            result.get("total_consensus_frames", []),
-            fps,
-            metadata_writer,
-            CONSENSUS_FRAME_CACHE,
-            frame_to_timecode,
-            video_source_path=video_source_path,
-            score_layout_id=result["candidate"].get("score_layout_id"),
+        is_static_gallery_bundle, similarity = score_screen_selection.is_static_gallery_race_bundle(
+            result.get("race_consensus_frames", [])
         )
+        if is_static_gallery_bundle and not DISABLE_STATIC_GALLERY_RACE_FILTER:
+            similarity_text = (
+                f"min {similarity['min']:.6f} | avg {similarity['avg']:.6f} | max {similarity['max']:.6f}"
+                if similarity is not None
+                else "no similarity summary"
+            )
+            LOGGER.log(
+                "[Score Screen Filter]",
+                (
+                    f"Skipping Race {race_number:03} for {video_label}: "
+                    f"RaceScore bundle is effectively static from first-frame comparison ({similarity_text})"
+                ),
+                color_name="yellow",
+            )
+            return
+        def _save_frames():
+            return score_screen_selection.save_score_frames(
+                video_path,
+                video_label,
+                result["candidate"]["race_number"],
+                result["race_score_frame"],
+                result["total_score_frame"],
+                result.get("actual_race_score_frame"),
+                result.get("actual_total_score_frame"),
+                result.get("race_score_image"),
+                result.get("total_score_image"),
+                result.get("race_consensus_frames", []),
+                result.get("total_consensus_frames", []),
+                fps,
+                metadata_writer,
+                CONSENSUS_FRAME_CACHE,
+                frame_to_timecode,
+                video_source_path=video_source_path,
+                score_layout_id=result["candidate"].get("score_layout_id"),
+            )
+        if io_lock is None:
+            saved = _save_frames()
+        else:
+            with io_lock:
+                saved = _save_frames()
         if saved and per_race_complete_callback is not None:
             per_race_complete_callback(
                 {
@@ -322,6 +355,156 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     flush_result(ready_results.pop(next_race_to_flush))
                     next_race_to_flush += 1
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
+
+
+def _run_total_score_phase_for_context(
+    context,
+    score_candidates,
+    templates,
+    metadata_context,
+    csv_writer,
+    metadata_writer,
+    per_race_complete_callback,
+    per_video_complete_callback,
+    include_subfolders,
+    *,
+    io_lock=None,
+    analysis_workers_override=None,
+):
+    video_index = int(context["video_index"])
+    total_videos = int(context["total_videos"])
+    video_label = context["video_label"]
+    video_name = context["video_name"]
+    source_display_name = context["source_display_name"]
+    processing_video_path = context["processing_video_path"]
+    video_stats = context["video_stats"]
+    fps = context["fps"]
+    total_frames = context["total_frames"]
+
+    LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
+    total_score_progress = ProgressPrinter(
+        f"[Video {video_index}/{total_videos} - Total Score Screen]",
+        max(1, len(score_candidates)),
+        percent_step=5,
+        min_interval_s=2.0,
+    )
+    total_score_progress.update(0)
+
+    race_complete_callback = per_race_complete_callback
+    if race_complete_callback is not None and metadata_context is not None:
+        def race_complete_callback(payload, _callback=race_complete_callback):
+            if io_lock is None:
+                metadata_context.flush()
+                _callback(payload)
+            else:
+                with io_lock:
+                    metadata_context.flush()
+                    _callback(payload)
+
+    process_score_candidates(
+        processing_video_path,
+        video_label,
+        source_display_name,
+        score_candidates,
+        templates,
+        fps,
+        csv_writer,
+        context["median_scale_x"],
+        context["median_scale_y"],
+        context["median_left"],
+        context["median_top"],
+        context["median_crop_width"],
+        context["median_crop_height"],
+        video_stats,
+        metadata_writer,
+        video_index=video_index,
+        total_videos=total_videos,
+        progress=total_score_progress,
+        per_race_complete_callback=race_complete_callback,
+        analysis_workers_override=analysis_workers_override,
+        io_lock=io_lock,
+    )
+    exported_counts = count_exported_detection_files(video_label)
+    video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
+    if total_score_progress.last_percent < 100:
+        total_score_progress.update(len(score_candidates))
+    LOGGER.summary_block(
+        f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
+        [
+            f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+            f"Total score screens found: {exported_counts['total']}",
+            *total_score_progress.peak_lines(),
+        ] if total_score_progress.peak_lines() else [
+            f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
+            f"Total score screens found: {exported_counts['total']}",
+        ],
+        color_name="green",
+    )
+    LOGGER.log(
+        f"[Video {video_index}/{total_videos} - Complete]",
+        f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
+        f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
+        f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
+        color_name="green",
+    )
+
+    per_video_summary = {
+        "video_name": video_name,
+        "source_length_s": total_frames / max(fps, 1),
+        "processing_duration_s": float(video_stats["video_total_s"]),
+        "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
+        "total_score_duration_s": float(video_stats.get("score_candidate_pass_s", 0.0)),
+        "corrupt_check_duration_s": float(video_stats.get("corrupt_check_duration_s", 0.0)),
+        "corrupt_check_status": context["corrupt_check_status"],
+        "repair_duration_s": float(video_stats.get("repair_duration_s", 0.0)),
+        "repair_created": bool(video_stats.get("repair_created", 0)),
+        "track_screens": exported_counts["track"],
+        "race_numbers": exported_counts["race"],
+        "total_score_screens": exported_counts["total"],
+    }
+
+    if per_video_complete_callback is not None:
+        if metadata_context is not None:
+            if io_lock is None:
+                metadata_context.flush()
+            else:
+                with io_lock:
+                    metadata_context.flush()
+        if io_lock is None:
+            per_video_cache = {
+                key: value[:]
+                for key, value in CONSENSUS_FRAME_CACHE.items()
+                if str(key[0]) == str(video_label)
+            }
+            metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
+        else:
+            with io_lock:
+                per_video_cache = {
+                    key: value[:]
+                    for key, value in CONSENSUS_FRAME_CACHE.items()
+                    if str(key[0]) == str(video_label)
+                }
+                metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
+        per_video_complete_callback(
+            {
+                "video_name": video_name,
+                "video_label": video_label,
+                "summary": per_video_summary,
+                "frame_bundle_cache": per_video_cache,
+                "metadata_index": {
+                    key: value
+                    for key, value in metadata_index.items()
+                    if str(value.get("video_label", "")).strip() == str(video_label)
+                    or Path(str(value.get("video", ""))).stem == str(video_label)
+                },
+            }
+        )
+
+    return {
+        "video_label": video_label,
+        "exported_counts": exported_counts,
+        "per_video_summary": per_video_summary,
+    }
 
 
 def _format_parallel_scan_diagnostics(parallel_scan_diag, merged_score_detections, merged_track_detections, merged_race_detections, parallel_merge_s, parallel_dedupe_s, auxiliary_save_s):
@@ -728,6 +911,7 @@ def _extract_frames_parallel_video_scan(
     per_video_summaries = []
 
     prepared_contexts = []
+    score_ready_items = []
     for video_index, video_path in enumerate(video_paths, start=1):
         context = _prepare_video_context(
             video_path,
@@ -883,107 +1067,62 @@ def _extract_frames_parallel_video_scan(
             color_name="green",
         )
 
-        LOGGER.log(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", "", color_name="cyan")
-        total_score_progress = ProgressPrinter(
-            f"[Video {video_index}/{total_videos} - Total Score Screen]",
-            max(1, len(score_candidates)),
-            percent_step=5,
-            min_interval_s=2.0,
-        )
-        total_score_progress.update(0)
-        race_complete_callback = per_race_complete_callback
-        if race_complete_callback is not None and metadata_context is not None:
-            def race_complete_callback(payload, _callback=race_complete_callback):
-                metadata_context.flush()
-                _callback(payload)
-        process_score_candidates(
-            processing_video_path,
-            video_label,
-            source_display_name,
-            score_candidates,
-            templates,
-            fps,
-            csv_writer,
-            context["median_scale_x"],
-            context["median_scale_y"],
-            context["median_left"],
-            context["median_top"],
-            context["median_crop_width"],
-            context["median_crop_height"],
-            video_stats,
-            metadata_writer,
-            video_index=video_index,
-            total_videos=total_videos,
-            progress=total_score_progress,
-            per_race_complete_callback=race_complete_callback,
-        )
-        exported_counts = count_exported_detection_files(video_label)
-        total_score_screens_found += exported_counts["score"]
-        total_track_screens_found += exported_counts["track"]
-        total_race_numbers_found += exported_counts["race"]
-        video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
-        if total_score_progress.last_percent < 100:
-            total_score_progress.update(len(score_candidates))
-        LOGGER.summary_block(
-            f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]",
-            [
-                f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
-                f"Total score screens found: {exported_counts['total']}",
-                *total_score_progress.peak_lines(),
-            ] if total_score_progress.peak_lines() else [
-                f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
-                f"Total score screens found: {exported_counts['total']}",
-            ],
-            color_name="green",
-        )
-        LOGGER.log(
-            f"[Video {video_index}/{total_videos} - Complete]",
-            f"{video_name} | Processing duration: {format_duration(video_stats['video_total_s'])} | "
-            f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
-            f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
-            color_name="green",
-        )
-        if video_index < total_videos:
-            LOGGER.blank_lines(2)
-        per_video_summaries.append(
-            {
-                "video_name": video_name,
-                "source_length_s": total_frames / max(fps, 1),
-                "processing_duration_s": float(video_stats["video_total_s"]),
-                "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
-                "total_score_duration_s": float(video_stats.get("score_candidate_pass_s", 0.0)),
-                "corrupt_check_duration_s": float(video_stats.get("corrupt_check_duration_s", 0.0)),
-                "corrupt_check_status": context["corrupt_check_status"],
-                "repair_duration_s": float(video_stats.get("repair_duration_s", 0.0)),
-                "repair_created": bool(video_stats.get("repair_created", 0)),
-                "track_screens": exported_counts["track"],
-                "race_numbers": exported_counts["race"],
-                "total_score_screens": exported_counts["total"],
-            }
-        )
-        if per_video_complete_callback is not None:
-            if metadata_context is not None:
-                metadata_context.flush()
-            per_video_cache = {
-                key: value[:]
-                for key, value in CONSENSUS_FRAME_CACHE.items()
-                if str(key[0]) == str(video_label)
-            }
-            metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
-            per_video_complete_callback(
-                {
-                    "video_name": video_name,
-                    "video_label": video_label,
-                    "summary": per_video_summaries[-1],
-                    "frame_bundle_cache": per_video_cache,
-                    "metadata_index": {
-                        key: value
-                        for key, value in metadata_index.items()
-                        if str(value.get("video_label", "")).strip() == str(video_label)
-                        or Path(str(value.get("video", ""))).stem == str(video_label)
-                    },
-                }
+        score_ready_items.append((context, score_candidates))
+
+    parallel_score_workers = 1
+    if len(score_ready_items) > 1:
+        parallel_score_workers = max(1, min(PARALLEL_VIDEO_SCORE_WORKERS, len(score_ready_items)))
+    per_video_score_analysis_workers = max(1, SCORE_ANALYSIS_WORKERS // max(1, parallel_score_workers))
+    io_lock = threading.Lock() if parallel_score_workers > 1 else None
+
+    if parallel_score_workers == 1:
+        for item_index, (context, score_candidates) in enumerate(score_ready_items, start=1):
+            result = _run_total_score_phase_for_context(
+                context,
+                score_candidates,
+                templates,
+                metadata_context,
+                csv_writer,
+                metadata_writer,
+                per_race_complete_callback,
+                per_video_complete_callback,
+                include_subfolders,
+                io_lock=io_lock,
+                analysis_workers_override=per_video_score_analysis_workers,
             )
+            exported_counts = result["exported_counts"]
+            total_score_screens_found += exported_counts["score"]
+            total_track_screens_found += exported_counts["track"]
+            total_race_numbers_found += exported_counts["race"]
+            per_video_summaries.append(result["per_video_summary"])
+            if item_index < len(score_ready_items):
+                LOGGER.blank_lines(2)
+    else:
+        with ThreadPoolExecutor(max_workers=parallel_score_workers) as executor:
+            futures = [
+                executor.submit(
+                    _run_total_score_phase_for_context,
+                    context,
+                    score_candidates,
+                    templates,
+                    metadata_context,
+                    csv_writer,
+                    metadata_writer,
+                    per_race_complete_callback,
+                    per_video_complete_callback,
+                    include_subfolders,
+                    io_lock=io_lock,
+                    analysis_workers_override=per_video_score_analysis_workers,
+                )
+                for context, score_candidates in score_ready_items
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                exported_counts = result["exported_counts"]
+                total_score_screens_found += exported_counts["score"]
+                total_track_screens_found += exported_counts["track"]
+                total_race_numbers_found += exported_counts["race"]
+                per_video_summaries.append(result["per_video_summary"])
 
     elapsed_time = time.time() - phase_start_time
     extract_summary = {
@@ -1118,9 +1257,28 @@ def extract_frames(
             frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT))
             total_source_seconds += frames / max(fps, 1)
         probe.release()
-    LOGGER.log("[Extract - Settings]", f"GPU acceleration: {GPU_RUNTIME['backend']} | Initial scan workers: {INITIAL_SCAN_WORKERS}", color_name="cyan")
-    if PARALLEL_VIDEO_SCAN_WORKERS > 1 and len(video_paths) > 1:
-        LOGGER.log("[Extract - Settings]", f"Parallel video initial scan workers: {PARALLEL_VIDEO_SCAN_WORKERS}", color_name="cyan")
+    effective_parallel_scan_workers = PARALLEL_VIDEO_SCAN_WORKERS if len(video_paths) > 1 else 1
+    effective_parallel_score_workers = PARALLEL_VIDEO_SCORE_WORKERS if len(video_paths) > 1 else 1
+    LOGGER.log(
+        "[Extract - Settings]",
+        (
+            f"Extraction backend: {GPU_RUNTIME['backend']} | "
+            f"Initial scan workers/video: {INITIAL_SCAN_WORKERS} | "
+            f"Parallel video scan workers: {effective_parallel_scan_workers} | "
+            f"Parallel video total score workers: {effective_parallel_score_workers}"
+        ),
+        color_name="cyan",
+    )
+    LOGGER.log(
+        "[Extract - Settings]",
+        (
+            f"OCR backend: {EASYOCR_RUNTIME['backend']} | "
+            f"OCR overlap mode: {APP_CONFIG.overlap_ocr_mode} -> {effective_overlap_ocr_mode(APP_CONFIG)} | "
+            f"OCR consumers: {APP_CONFIG.overlap_ocr_consumers} | "
+            f"Score analysis workers/video: {SCORE_ANALYSIS_WORKERS}"
+        ),
+        color_name="cyan",
+    )
 
     try:
         if PARALLEL_VIDEO_SCAN_WORKERS > 1 and len(video_paths) > 1:

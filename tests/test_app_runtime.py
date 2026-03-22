@@ -114,6 +114,26 @@ class AppRuntimeConfigTests(unittest.TestCase):
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
 
+    def test_load_app_config_reads_parallel_video_score_workers(self):
+        case_dir = _make_case_dir("app_config_parallel_video_score_workers")
+        try:
+            config_path = case_dir / "config" / "app_config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "execution_mode": "cpu",
+                        "parallel_video_score_workers": 2,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_app_config(case_dir)
+
+            self.assertEqual(config.parallel_video_score_workers, 2)
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
     def test_load_app_config_reads_overlap_ocr_mode(self):
         case_dir = _make_case_dir("app_config_overlap_ocr_mode")
         try:
