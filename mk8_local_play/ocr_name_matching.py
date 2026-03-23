@@ -331,25 +331,38 @@ def merge_fragmented_identity_aliases(df: pd.DataFrame) -> pd.DataFrame:
                 right_stats = identity_stats[right_label]
                 if left_stats["race_ids"] & right_stats["race_ids"]:
                     continue
-                if (
-                    left_stats["dominant_character"] is not None
-                    and right_stats["dominant_character"] is not None
-                    and left_stats["dominant_character"] != right_stats["dominant_character"]
-                ):
-                    continue
                 name_similarity = weighted_similarity(
                     left_stats["canonical_raw_name"], right_stats["canonical_raw_name"]
                 )
-                if name_similarity < 0.68:
+                same_character = (
+                    left_stats["dominant_character"] is not None
+                    and right_stats["dominant_character"] is not None
+                    and left_stats["dominant_character"] == right_stats["dominant_character"]
+                )
+                character_conflict = (
+                    left_stats["dominant_character"] is not None
+                    and right_stats["dominant_character"] is not None
+                    and left_stats["dominant_character"] != right_stats["dominant_character"]
+                )
+                small_fragment = min(left_stats["row_count"], right_stats["row_count"]) <= 2
+                min_name_similarity = 0.68
+                if character_conflict and small_fragment:
+                    min_name_similarity = 0.60
+                if name_similarity < min_name_similarity:
                     continue
+                if character_conflict:
+                    if not small_fragment:
+                        continue
+                    larger_identity_size = max(left_stats["row_count"], right_stats["row_count"])
+                    if larger_identity_size < 4 or name_similarity < 0.60:
+                        continue
                 if max(left_stats["unreliable_ratio"], right_stats["unreliable_ratio"]) < 0.5:
                     continue
                 score = name_similarity
-                if (
-                    left_stats["dominant_character"] is not None
-                    and left_stats["dominant_character"] == right_stats["dominant_character"]
-                ):
+                if same_character:
                     score += 0.15
+                elif character_conflict:
+                    score -= 0.10
                 merge_pairs.append((score, left_label, right_label))
 
         if not merge_pairs:
