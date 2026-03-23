@@ -1,9 +1,12 @@
 import time
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
+
+from .game_catalog import load_game_catalog
 
 USER_REVIEW_REASON_MAX_LENGTH = 160
 DEBUG_REVIEW_REASON_MAX_LENGTH = 240
@@ -23,6 +26,7 @@ USER_EXPORT_COLUMN_MAP = {
     "RacePosition": "Position",
     "FixPlayerName": "Player",
     "Character": "Character",
+    "CharacterRosterName": "Character Roster",
     "RacePoints": "Race Points",
     "OldTotalScore": "Total Before Race",
     "NewTotalScore": "Total After Race",
@@ -46,6 +50,8 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "IdentityRelinkDetected": "Identity Relink Detected",
     "IsLowRes": "Is Low Res",
     "Character": "Character",
+    "CharacterRosterIndex": "Character Roster Index",
+    "CharacterRosterName": "Character Roster Name",
     "CharacterIndex": "Character Index",
     "CharacterMatchConfidence": "Character Match Confidence",
     "CharacterMatchMethod": "Character Match Method",
@@ -156,7 +162,7 @@ def format_review_reason_for_export(value: object, max_length: int) -> str:
 
 
 def build_user_export_df(df):
-    ordered_df = df[list(USER_EXPORT_COLUMN_MAP.keys())].copy()
+    ordered_df = enrich_character_roster_columns(df)[list(USER_EXPORT_COLUMN_MAP.keys())].copy()
     ordered_df["ReviewReason"] = ordered_df["ReviewReason"].apply(
         lambda value: format_review_reason_for_export(value, USER_REVIEW_REASON_MAX_LENGTH)
     )
@@ -164,7 +170,7 @@ def build_user_export_df(df):
 
 
 def build_debug_export_df(df):
-    ordered_df = df.copy()
+    ordered_df = enrich_character_roster_columns(df)
     for column_name in DEBUG_EXPORT_COLUMN_MAP.keys():
         if column_name not in ordered_df.columns:
             ordered_df[column_name] = ""
@@ -179,6 +185,45 @@ def _normalize_character_value(value):
     if pd.isna(value):
         return ""
     return str(value).strip()
+
+
+@lru_cache(maxsize=1)
+def _character_roster_lookup() -> dict[str, tuple[int | None, str]]:
+    catalog = load_game_catalog()
+    roster_name_overrides = {
+        7: "Birdo",
+        8: "Yoshi",
+        11: "Shy Guy",
+        21: "Metal/Gold Mario",
+        40: "Inkling",
+        41: "Villager",
+        43: "Link",
+        47: "Mii",
+    }
+
+    lookup: dict[str, tuple[int | None, str]] = {}
+    for character in catalog.characters:
+        roster_index = int(character.roster_index)
+        roster_name = roster_name_overrides.get(roster_index, str(character.name_uk))
+        lookup[str(character.name_uk).strip()] = (roster_index, roster_name)
+    return lookup
+
+
+def _character_roster_fields(character_name: object) -> tuple[object, str]:
+    normalized = _normalize_character_value(character_name)
+    if not normalized:
+        return pd.NA, ""
+    return _character_roster_lookup().get(normalized, (pd.NA, normalized))
+
+
+def enrich_character_roster_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    enriched = df.copy()
+    roster_fields = enriched["Character"].apply(_character_roster_fields)
+    enriched["CharacterRosterIndex"] = roster_fields.apply(lambda item: item[0])
+    enriched["CharacterRosterName"] = roster_fields.apply(lambda item: item[1])
+    return enriched
 
 
 def _select_most_used_character(player_rows: pd.DataFrame) -> str:
@@ -228,6 +273,8 @@ def build_final_standings_df(df):
         ),
         axis=1,
     )
+    roster_fields = final_rows["Character"].apply(_character_roster_fields)
+    final_rows["CharacterRosterName"] = roster_fields.apply(lambda item: item[1])
 
     standings_df = pd.DataFrame(
         {
@@ -236,6 +283,7 @@ def build_final_standings_df(df):
             "PlayerName": final_rows["FixPlayerName"],
             "TotalPoints": final_rows["NewTotalScore"],
             "Character": final_rows["Character"],
+            "CharacterRosterName": final_rows["CharacterRosterName"],
         }
     )
 
@@ -245,7 +293,7 @@ def build_final_standings_df(df):
         .astype("Int64")
     )
     standings_df = standings_df[
-        ["VideoName", "Races", "Position", "PlayerName", "TotalPoints", "Character"]
+        ["VideoName", "Races", "Position", "PlayerName", "TotalPoints", "Character", "CharacterRosterName"]
     ]
 
     numeric_columns = ["Races", "Position", "TotalPoints"]

@@ -2,6 +2,7 @@ import os
 import argparse
 import csv
 import cv2
+import json
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple
@@ -45,6 +46,7 @@ from .console_logging import LOGGER
 from .ocr_export import build_completion_payload, build_player_count_summary_lines
 from .ocr_name_matching import (
     append_identity_relink_review_notes,
+    choose_canonical_name,
     compact_identity_labels,
     merge_fragmented_identity_aliases,
     preprocess_name,
@@ -81,10 +83,26 @@ from .ocr_scoreboard_consensus import (
 )
 from .ocr_session_validation import apply_session_validation
 from .project_paths import PROJECT_ROOT
-from .score_layouts import score_layout_id_from_filename
+from .score_layouts import get_score_layout, score_layout_id_from_filename
 from .track_metadata import load_track_tuples
 
 POSITION_TEMPLATE_COEFF_COLUMNS = [f"PositionTemplate{template_index:02}_Coeff" for template_index in range(1, 13)]
+PLACEHOLDER_NAME_PREFIX = "PlayerNameMissing_"
+PLACEHOLDER_RESCUE_MIN_SUPPORT = 3
+PLACEHOLDER_RESCUE_MIN_ROW_SCORE = 140.0
+PLACEHOLDER_RESCUE_MIN_MARGIN = 35.0
+BLACK_BLUE_VARIANT_FAMILIES = {
+    "Yoshi": ("Black Yoshi", "Blue Yoshi"),
+    "Shy Guy": ("Black Shy Guy", "Blue Shy Guy"),
+    "Birdo": ("Black Birdo", "Blue Birdo"),
+}
+BLACK_BLUE_VARIANT_NAMES = {
+    name
+    for pair in BLACK_BLUE_VARIANT_FAMILIES.values()
+    for name in pair
+}
+BLACK_BLUE_VARIANT_MARGIN = 0.015
+BLACK_BLUE_VARIANT_MIN_SCORE = 0.52
 
 # Record the start time
 start_run_time = time.time()
@@ -201,6 +219,97 @@ OCR_PROFILER = OcrProfiler()
 PLAYER_NAME_FALLBACK_STATS = defaultdict(int)
 _EASYOCR_READERS: dict[tuple[str, ...], object] = {}
 _EASYOCR_READER_LOCK = threading.Lock()
+_OCR_TRACE_LOCK = threading.Lock()
+
+
+def ocr_trace_enabled() -> bool:
+    return os.environ.get("MK8_TRACE_OCR_LINKING", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ocr_trace_label() -> str:
+    return os.environ.get("MK8_OCR_TRACE_LABEL", "").strip() or "adhoc"
+
+
+def ocr_trace_mode() -> str:
+    return os.environ.get("MK8_OCR_TRACE_MODE", "").strip() or "unspecified"
+
+
+def ocr_trace_root() -> Path:
+    return Path(PROJECT_ROOT) / "Output_Results" / "Debug" / "OCR_Tracing" / ocr_trace_label() / ocr_trace_mode()
+
+
+def _sanitize_trace_part(value: object) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", str(value or "").strip())
+    cleaned = cleaned.strip(" ._")
+    return cleaned or "unknown"
+
+
+def append_ocr_trace_event(filename: str, payload: dict) -> None:
+    if not ocr_trace_enabled():
+        return
+    trace_path = ocr_trace_root() / filename
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    event_payload = dict(payload)
+    event_payload.setdefault("trace_label", ocr_trace_label())
+    event_payload.setdefault("trace_mode", ocr_trace_mode())
+    event_payload.setdefault("pid", os.getpid())
+    event_payload.setdefault("ts", time.time())
+    with _OCR_TRACE_LOCK:
+        with trace_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event_payload, ensure_ascii=False) + "\n")
+
+
+def write_ocr_trace_json(relative_path: str, payload: dict) -> None:
+    if not ocr_trace_enabled():
+        return
+    trace_path = ocr_trace_root() / relative_path
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    with trace_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+
+
+def _identity_trace_columns(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "RaceClass",
+        "RaceIDNumber",
+        "RacePosition",
+        "TrackName",
+        "PlayerName",
+        "FixPlayerName",
+        "IdentityLabel",
+        "IdentityResolutionMethod",
+        "Character",
+        "CharacterIndex",
+        "DetectedTotalScore",
+        "OldTotalScore",
+        "NewTotalScore",
+        "NameConfidence",
+        "NameAllowedCharRatio",
+        "NameUnknownChars",
+        "NameValidationFlags",
+        "ReviewNeeded",
+        "ReviewReason",
+        "SessionResetDetected",
+        "IdentityRelinkDetected",
+        "IdentityRelinkSummary",
+        "IdentityRelinkNote",
+    ]
+    trace_df = df.copy()
+    for column_name in columns:
+        if column_name not in trace_df.columns:
+            trace_df[column_name] = ""
+    return trace_df[columns].sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable")
+
+
+def write_identity_trace_stage(stage_name: str, df: pd.DataFrame) -> None:
+    if not ocr_trace_enabled() or df.empty:
+        return
+    for race_class, race_group in _identity_trace_columns(df).groupby("RaceClass", sort=False):
+        video_dir = _sanitize_trace_part(race_class)
+        trace_path = ocr_trace_root() / "identity_stages" / video_dir / f"{stage_name}.csv"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        race_group.to_csv(trace_path, index=False, encoding="utf-8-sig")
 
 
 def reset_player_name_fallback_stats() -> None:
@@ -1005,6 +1114,250 @@ def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | 
     return df
 
 
+def _masked_chroma_variant_score(source_image: np.ndarray, template_image: np.ndarray, template_alpha: np.ndarray) -> float:
+    if source_image.size == 0:
+        return 0.0
+    template_height, template_width = template_image.shape[:2]
+    if source_image.shape[0] != template_height or source_image.shape[1] != template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    visible_mask = template_alpha > 16
+    if int(np.count_nonzero(visible_mask)) <= 0:
+        return 0.0
+
+    source_lab = cv2.cvtColor(source_image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    template_lab = cv2.cvtColor(template_image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    source_hsv = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    template_hsv = cv2.cvtColor(template_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    ab_diff = np.mean(np.abs(source_lab[:, :, 1:3][visible_mask] - template_lab[:, :, 1:3][visible_mask]))
+    sat_diff = np.mean(np.abs(source_hsv[:, :, 1][visible_mask] - template_hsv[:, :, 1][visible_mask]))
+    val_diff = np.mean(np.abs(source_hsv[:, :, 2][visible_mask] - template_hsv[:, :, 2][visible_mask]))
+
+    source_hue = source_hsv[:, :, 0][visible_mask]
+    template_hue = template_hsv[:, :, 0][visible_mask]
+    source_sat = source_hsv[:, :, 1][visible_mask]
+    template_sat = template_hsv[:, :, 1][visible_mask]
+    hue_weight = np.maximum(source_sat, template_sat) / 255.0
+    hue_delta = np.abs(source_hue - template_hue)
+    hue_delta = np.minimum(hue_delta, 180.0 - hue_delta)
+    weighted_hue = float(np.sum(hue_delta * hue_weight) / max(1e-6, float(np.sum(hue_weight)))) if np.any(hue_weight > 0) else 90.0
+
+    score = 1.0
+    score -= 0.45 * min(1.0, float(ab_diff) / 255.0)
+    score -= 0.25 * min(1.0, float(sat_diff) / 255.0)
+    score -= 0.20 * min(1.0, float(weighted_hue) / 90.0)
+    score -= 0.10 * min(1.0, float(val_diff) / 255.0)
+    return max(0.0, min(1.0, float(score)))
+
+
+def refine_black_blue_character_variants(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
+    """Refine black/blue variant pairs using chroma-heavy matching on the raw row ROI."""
+    if df.empty or "Character" not in df.columns:
+        return df
+
+    df = df.copy()
+    templates = load_character_templates()
+    template_by_name = {str(template["character_name"]): template for template in templates}
+    family_by_name = {
+        variant_name: family_name
+        for family_name, variant_names in BLACK_BLUE_VARIANT_FAMILIES.items()
+        for variant_name in variant_names
+    }
+    frame_cache: dict[tuple[str, int], tuple[np.ndarray | None, str]] = {}
+    for row_index, row in df.iterrows():
+        current_character = str(row.get("Character") or "").strip()
+        if current_character not in family_by_name:
+            continue
+        race_class = str(row.get("RaceClass", "") or "")
+        race_id = int(row.get("RaceIDNumber", 0) or 0)
+        position = int(row.get("RacePosition", 0) or 0)
+        if not race_class or race_id <= 0 or position <= 0:
+            continue
+        current_template = template_by_name.get(current_character)
+        if current_template is None:
+            continue
+        family_name = family_by_name[current_character]
+        alternate_character = next(
+            (candidate for candidate in BLACK_BLUE_VARIANT_FAMILIES[family_name] if candidate != current_character),
+            "",
+        )
+        alternate_template = template_by_name.get(alternate_character)
+        if alternate_template is None:
+            continue
+
+        cache_key = (race_class, race_id)
+        if cache_key not in frame_cache:
+            preferred_frame = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+            if preferred_frame is None:
+                frame_cache[cache_key] = (None, "")
+            else:
+                frame_cache[cache_key] = (cv2.imread(str(preferred_frame), cv2.IMREAD_COLOR), score_layout_id_from_filename(preferred_frame))
+        frame_image, score_layout_id = frame_cache[cache_key]
+        if frame_image is None:
+            continue
+        (x1, y1), (x2, y2) = character_row_roi(position - 1, score_layout_id=score_layout_id)
+        row_roi = frame_image[y1:y2, x1:x2]
+        if row_roi.size == 0:
+            continue
+
+        current_score = _masked_chroma_variant_score(
+            row_roi,
+            current_template["template_image"],
+            current_template["template_alpha"],
+        )
+        alternate_score = _masked_chroma_variant_score(
+            row_roi,
+            alternate_template["template_image"],
+            alternate_template["template_alpha"],
+        )
+        if alternate_score < BLACK_BLUE_VARIANT_MIN_SCORE:
+            continue
+        if alternate_score <= current_score + BLACK_BLUE_VARIANT_MARGIN:
+            continue
+
+        df.at[row_index, "Character"] = alternate_character
+        df.at[row_index, "CharacterIndex"] = alternate_template["character_index"]
+        df.at[row_index, "CharacterMatchConfidence"] = round(alternate_score * 100.0, 1)
+        existing_method = str(df.at[row_index, "CharacterMatchMethod"] or "").strip()
+        suffix = "black_blue_chroma_refine"
+        df.at[row_index, "CharacterMatchMethod"] = f"{existing_method}+{suffix}" if existing_method else suffix
+    return df
+
+
+def rescue_placeholder_identity_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace placeholder identity labels when multi-race row OCR yields a stable real name."""
+    if df.empty or "FixPlayerName" not in df.columns:
+        return df
+
+    df = df.copy()
+    frame_cache: dict[tuple[str, int], np.ndarray | None] = {}
+    existing_names_by_video: dict[str, set[str]] = {}
+    for race_class, race_group in df.groupby("RaceClass", sort=False):
+        existing_names_by_video[race_class] = {
+            str(value).strip()
+            for value in race_group["FixPlayerName"].dropna().tolist()
+            if str(value).strip() and not str(value).startswith(PLACEHOLDER_NAME_PREFIX)
+        }
+
+    for (race_class, placeholder_name), player_rows in df.groupby(["RaceClass", "FixPlayerName"], sort=False):
+        placeholder_name = str(placeholder_name or "").strip()
+        if not placeholder_name.startswith(PLACEHOLDER_NAME_PREFIX):
+            continue
+
+        grouped_candidates: dict[str, dict[str, object]] = {}
+        for _, row in player_rows.sort_values(["RaceIDNumber", "RacePosition"], kind="stable").iterrows():
+            race_id = int(row.get("RaceIDNumber", 0) or 0)
+            position = int(row.get("RacePosition", 0) or 0)
+            if race_id <= 0 or position <= 0:
+                continue
+            cache_key = (race_class, race_id)
+            if cache_key not in frame_cache:
+                anchor_path = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+                frame_cache[cache_key] = cv2.imread(str(anchor_path), cv2.IMREAD_COLOR) if anchor_path is not None else None
+            frame_image = frame_cache[cache_key]
+            if frame_image is None:
+                continue
+            score_layout_id = str(row.get("ScoreLayoutId") or "").strip() or "lan2_split_2p"
+            player_name_coords = get_score_layout(score_layout_id).player_name_coords
+            if position - 1 >= len(player_name_coords):
+                continue
+            (x1, y1), (x2, y2) = player_name_coords[position - 1]
+            row_candidates = _generate_player_name_fallback_candidates(frame_image, x1, y1, x2, y2, "eng")
+            best_text = ""
+            best_confidence = 0
+            best_score = float("-inf")
+            for candidate_text, candidate_confidence, _candidate_label in row_candidates:
+                candidate_text = str(candidate_text or "").strip()
+                if not candidate_text:
+                    continue
+                if candidate_text.startswith(PLACEHOLDER_NAME_PREFIX):
+                    continue
+                if visible_name_length(candidate_text) < 3 or distinct_visible_name_count(candidate_text) < 3:
+                    continue
+                candidate_score = _player_name_candidate_score(candidate_text, candidate_confidence)
+                if candidate_score > best_score:
+                    best_text = candidate_text
+                    best_confidence = int(candidate_confidence)
+                    best_score = float(candidate_score)
+            if not best_text:
+                continue
+            normalized = preprocess_name(best_text)
+            if not normalized:
+                continue
+            candidate_entry = grouped_candidates.setdefault(
+                normalized,
+                {"texts": [], "scores": [], "confidences": [], "race_ids": set()},
+            )
+            candidate_entry["texts"].append(best_text)
+            candidate_entry["scores"].append(best_score)
+            candidate_entry["confidences"].append(best_confidence)
+            candidate_entry["race_ids"].add(race_id)
+
+        if not grouped_candidates:
+            continue
+
+        ranked = sorted(
+            grouped_candidates.values(),
+            key=lambda entry: (
+                len(entry["race_ids"]),
+                sum(float(score) for score in entry["scores"]),
+                choose_canonical_name(entry["texts"]),
+            ),
+            reverse=True,
+        )
+        best_entry = ranked[0]
+        second_score = sum(float(score) for score in ranked[1]["scores"]) if len(ranked) > 1 else float("-inf")
+        best_total_score = sum(float(score) for score in best_entry["scores"])
+        best_name = choose_canonical_name(best_entry["texts"])
+        if not best_name:
+            continue
+        best_support = len(best_entry["race_ids"])
+        best_average_score = best_total_score / max(1, len(best_entry["scores"]))
+        support_ok = best_support >= PLACEHOLDER_RESCUE_MIN_SUPPORT
+        score_ok = best_average_score >= PLACEHOLDER_RESCUE_MIN_ROW_SCORE
+        margin_ok = second_score == float("-inf") or (best_total_score - second_score) >= PLACEHOLDER_RESCUE_MIN_MARGIN
+        unique_ok = best_name not in existing_names_by_video.get(race_class, set())
+        replace_allowed = support_ok and score_ok and margin_ok and unique_ok
+
+        review_note = (
+            f'placeholder_name_candidate="{best_name}"'
+            f' support={best_support}'
+            f' avg_score={best_average_score:.1f}'
+        )
+        if second_score != float("-inf"):
+            review_note += f' margin={best_total_score - second_score:.1f}'
+
+        replace_mask = (df["RaceClass"] == race_class) & (df["FixPlayerName"] == placeholder_name)
+        if not replace_allowed:
+            if "ReviewReason" in df.columns:
+                df.loc[replace_mask, "ReviewReason"] = df.loc[replace_mask, "ReviewReason"].apply(
+                    lambda value: (
+                        f"{str(value).strip(';')};{review_note}".strip(";")
+                        if review_note not in str(value or "")
+                        else str(value or "")
+                    )
+                )
+            continue
+
+        df.loc[replace_mask, "FixPlayerName"] = best_name
+        if "IdentityLabel" in df.columns:
+            df.loc[replace_mask, "IdentityLabel"] = best_name
+        if "IdentityResolutionMethod" in df.columns:
+            df.loc[replace_mask, "IdentityResolutionMethod"] = df.loc[replace_mask, "IdentityResolutionMethod"].apply(
+                lambda value: f"{value}+placeholder_name_rescue" if str(value or "").strip() else "placeholder_name_rescue"
+            )
+        if "ReviewReason" in df.columns:
+            df.loc[replace_mask, "ReviewReason"] = df.loc[replace_mask, "ReviewReason"].apply(
+                lambda value: (
+                    f"{str(value).strip(';')};{review_note}".strip(";")
+                    if review_note not in str(value or "")
+                    else str(value or "")
+                )
+            )
+        existing_names_by_video.setdefault(race_class, set()).add(best_name)
+    return df
+
+
 def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
     """Replace persistently unstable low-confidence character matches with Mii."""
     if df.empty or "FixPlayerName" not in df.columns:
@@ -1227,6 +1580,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             consensus.get("race_score_recovery_source", ""),
             consensus.get("race_score_recovery_count", race_score_players),
             consensus.get("race_point_anchor_frame"),
+            score_layout_id,
             row.get("TotalScoreMappingMethod", ""),
             row.get("TotalScoreMappingScore"),
             row.get("TotalScoreMappingMargin"),
@@ -1245,6 +1599,54 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         "total_score_players": total_score_players,
         "warning_messages": race_warning_messages,
     }
+    if ocr_trace_enabled():
+        trace_video_dir = _sanitize_trace_part(race_class)
+        trace_relative_path = f"race_outputs/{trace_video_dir}/race_{int(race_id_number):03}.json"
+        write_ocr_trace_json(
+            trace_relative_path,
+            {
+                "race_class": race_class,
+                "race_id_number": int(race_id_number),
+                "track_name": track_name_text,
+                "score_layout_id": score_layout_id,
+                "source_video_width": source_video_width,
+                "source_video_height": source_video_height,
+                "is_low_res": bool(is_low_res),
+                "race_frame_numbers": [int(frame_number) for frame_number, _frame in race_frame_entries],
+                "total_frame_numbers": [int(frame_number) for frame_number, _frame in total_frame_entries],
+                "race_point_anchor_frame": consensus.get("race_point_anchor_frame"),
+                "race_score_players": race_score_players,
+                "total_score_players": total_score_players,
+                "row_count_confidence": float(consensus.get("row_count_confidence", 0.0)),
+                "rows": [
+                    {
+                        "race_position": int(row["RacePosition"]),
+                        "player_name": str(row.get("PlayerName") or ""),
+                        "character": str(row.get("Character") or ""),
+                        "character_index": row.get("CharacterIndex"),
+                        "detected_total_score": row.get("DetectedTotalScore"),
+                        "detected_old_total_score": row.get("DetectedOldTotalScore"),
+                        "name_confidence": row.get("NameConfidence"),
+                        "name_allowed_char_ratio": row.get("NameAllowedCharRatio"),
+                        "name_validation_flags": str(row.get("NameValidationFlags") or ""),
+                    }
+                    for row in consensus["rows"]
+                ],
+            },
+        )
+        append_ocr_trace_event(
+            "race_events.jsonl",
+            {
+                "event": "race_processed",
+                "race_class": race_class,
+                "race_id_number": int(race_id_number),
+                "track_name": track_name_text,
+                "row_count": len(consensus["rows"]),
+                "race_score_players": race_score_players,
+                "total_score_players": total_score_players,
+                "duration_s": time.perf_counter() - race_start_time,
+            },
+        )
     return {"rows": results, "summary": summary, "duration_s": time.perf_counter() - race_start_time}
 
 
@@ -1314,6 +1716,7 @@ def finalize_ocr_results(
         "RaceScoreRowSignals", "TotalScoreRowSignals",
         "RaceScoreRecoveryUsed", "RaceScoreRecoverySource", "RaceScoreRecoveryCount",
         "RacePointsAnchorFrame",
+        "ScoreLayoutId",
         "TotalScoreMappingMethod", "TotalScoreMappingScore", "TotalScoreMappingMargin", "TotalScoreNameSimilarity",
         "SourceVideoWidth", "SourceVideoHeight", "IsLowRes", "ReviewReason"
     ])
@@ -1325,6 +1728,7 @@ def finalize_ocr_results(
 
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
     df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
+    write_identity_trace_stage("raw_ocr_input", df)
 
     low_res_mask = df["IsLowRes"].fillna(False).astype(bool)
     standardized_frames = []
@@ -1346,17 +1750,23 @@ def finalize_ocr_results(
             )
     df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
+    write_identity_trace_stage("after_standardize", df)
     df = merge_fragmented_identity_aliases(df)
+    write_identity_trace_stage("after_alias_merge", df)
     frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     df = annotate_raw_character_match_metrics(df, frames_folder)
+    df = refine_black_blue_character_variants(df, frames_folder)
     df = apply_mii_character_fallback(df)
 
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = reconcile_connection_reset_identities(df)
     df = compact_identity_labels(df)
+    df = rescue_placeholder_identity_names(df)
+    write_identity_trace_stage("after_connection_reset_relink", df)
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = append_identity_relink_review_notes(df)
+    write_identity_trace_stage("final_identity_export_input", df)
 
     if write_outputs:
         completion_payload = build_completion_payload(

@@ -1,11 +1,83 @@
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
+import mk8_local_play.ocr_name_matching as ocr_name_matching
 from mk8_local_play.ocr_name_matching import merge_fragmented_identity_aliases, standardize_player_names
 
 
 class TestOcrNameMatching(unittest.TestCase):
+    def test_visual_similarity_can_separate_same_name_players(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "Poule_A",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 1,
+                    "PlayerName": "Pieter",
+                    "CharacterIndex": 10,
+                    "DetectedTotalScore": pd.NA,
+                    "NameConfidence": 100.0,
+                    "NameAllowedCharRatio": 100.0,
+                    "NameValidationFlags": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+                {
+                    "RaceClass": "Poule_A",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 2,
+                    "PlayerName": "Pieter",
+                    "CharacterIndex": 20,
+                    "DetectedTotalScore": pd.NA,
+                    "NameConfidence": 100.0,
+                    "NameAllowedCharRatio": 100.0,
+                    "NameValidationFlags": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+                {
+                    "RaceClass": "Poule_A",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 1,
+                    "PlayerName": "Pieter",
+                    "CharacterIndex": 99,
+                    "DetectedTotalScore": pd.NA,
+                    "NameConfidence": 100.0,
+                    "NameAllowedCharRatio": 100.0,
+                    "NameValidationFlags": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+                {
+                    "RaceClass": "Poule_A",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 2,
+                    "PlayerName": "Pieter",
+                    "CharacterIndex": 98,
+                    "DetectedTotalScore": pd.NA,
+                    "NameConfidence": 100.0,
+                    "NameAllowedCharRatio": 100.0,
+                    "NameValidationFlags": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+            ]
+        )
+
+        visual_features = {0: "p1", 1: "p2", 2: "p1", 3: "p2"}
+
+        def fake_visual_similarity(identity_visual_refs, row_visual_roi):
+            return 1.0 if row_visual_roi in identity_visual_refs else 0.0
+
+        with patch.object(ocr_name_matching, "_prepare_visual_identity_features", return_value=visual_features):
+            with patch.object(ocr_name_matching, "_visual_similarity", side_effect=fake_visual_similarity):
+                standardized = standardize_player_names(df, output_folder=".", write_debug_linking_excel=False)
+
+        race1 = standardized[standardized["RaceIDNumber"] == 1].sort_values("RacePosition", kind="stable")
+        race2 = standardized[standardized["RaceIDNumber"] == 2].sort_values("RacePosition", kind="stable")
+
+        self.assertEqual(race1.iloc[0]["FixPlayerName"], race2.iloc[0]["FixPlayerName"])
+        self.assertEqual(race1.iloc[1]["FixPlayerName"], race2.iloc[1]["FixPlayerName"])
+        self.assertNotEqual(race2.iloc[0]["FixPlayerName"], race2.iloc[1]["FixPlayerName"])
+
     def test_unreliable_name_can_match_on_character_and_total_continuity(self):
         df = pd.DataFrame(
             [

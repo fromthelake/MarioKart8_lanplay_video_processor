@@ -1,10 +1,13 @@
 import difflib
 import re
 from collections import Counter, defaultdict
+from pathlib import Path
 
+import cv2
+import numpy as np
 import pandas as pd
 
-from .extract_common import debug_identity_workbook_path
+from .extract_common import debug_identity_workbook_path, find_score_bundle_anchor_path
 import textdistance
 from jellyfish import soundex
 
@@ -14,6 +17,7 @@ from .name_unicode import (
     distinct_visible_name_count,
     normalize_name_key,
 )
+from .ocr_scoreboard_consensus import ultra_low_res_combined_row_roi
 
 
 def preprocess_name(name):
@@ -131,25 +135,118 @@ def _row_name_is_unreliable(row) -> bool:
     return distinct_visible_name_count(visible_name) < 4
 
 
-def _build_match_candidates(identity_state, race_rows):
+def _extract_visual_identity_roi(frame: np.ndarray, position: int, score_layout_id: str | None = None) -> np.ndarray:
+    (x1, y1), (x2, y2) = ultra_low_res_combined_row_roi(position - 1, score_layout_id=score_layout_id)
+    crop = frame[y1:y2, x1:x2].copy()
+    if crop.size == 0:
+        return crop
+    target_width = max(1, x2 - x1)
+    target_height = max(1, y2 - y1)
+    if crop.shape[1] != target_width or crop.shape[0] != target_height:
+        crop = cv2.resize(crop, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+    return crop
+
+
+def _compare_visual_identity_roi(reference_roi: np.ndarray | None, query_roi: np.ndarray | None) -> float:
+    if reference_roi is None or query_roi is None:
+        return 0.0
+    if reference_roi.size == 0 or query_roi.size == 0:
+        return 0.0
+    if reference_roi.shape[:2] != query_roi.shape[:2]:
+        query_roi = cv2.resize(query_roi, (reference_roi.shape[1], reference_roi.shape[0]), interpolation=cv2.INTER_LINEAR)
+    reference_gray = cv2.cvtColor(reference_roi, cv2.COLOR_BGR2GRAY)
+    query_gray = cv2.cvtColor(query_roi, cv2.COLOR_BGR2GRAY)
+    reference_vec = reference_gray.astype(np.float32).reshape(-1)
+    query_vec = query_gray.astype(np.float32).reshape(-1)
+    if reference_vec.std() > 1e-6 and query_vec.std() > 1e-6:
+        corr = float(np.corrcoef(reference_vec, query_vec)[0, 1])
+    else:
+        corr = 0.0
+    reference_edges = cv2.Canny(reference_gray, 80, 160)
+    query_edges = cv2.Canny(query_gray, 80, 160)
+    edge_union = np.logical_or(reference_edges > 0, query_edges > 0).sum()
+    edge_intersection = np.logical_and(reference_edges > 0, query_edges > 0).sum()
+    edge_iou = float(edge_intersection / edge_union) if edge_union else 0.0
+    mad = float(np.mean(np.abs(reference_roi.astype(np.float32) - query_roi.astype(np.float32))))
+    mad_score = max(0.0, 1.0 - (mad / 255.0))
+    return float((0.45 * ((corr + 1.0) / 2.0)) + (0.30 * edge_iou) + (0.25 * mad_score))
+
+
+def _prepare_visual_identity_features(group: pd.DataFrame) -> dict[int, np.ndarray | None]:
+    frame_cache: dict[tuple[str, int], np.ndarray | None] = {}
+    visual_features: dict[int, np.ndarray | None] = {}
+    for row_index, row in group.iterrows():
+        try:
+            race_id = int(row.get("RaceIDNumber"))
+            position = int(row.get("RacePosition"))
+        except (TypeError, ValueError):
+            visual_features[row_index] = None
+            continue
+        race_class = str(row.get("RaceClass") or "")
+        cache_key = (race_class, race_id)
+        if cache_key not in frame_cache:
+            anchor_path = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+            frame_cache[cache_key] = (
+                cv2.imread(str(anchor_path), cv2.IMREAD_COLOR)
+                if anchor_path is not None and Path(anchor_path).exists()
+                else None
+            )
+        frame = frame_cache[cache_key]
+        if frame is None:
+            visual_features[row_index] = None
+            continue
+        score_layout_id = str(row.get("ScoreLayoutId") or "").strip() or None
+        visual_features[row_index] = _extract_visual_identity_roi(frame, position, score_layout_id=score_layout_id)
+    return visual_features
+
+
+def _visual_similarity(identity_visual_refs, row_visual_roi) -> float:
+    if row_visual_roi is None or not identity_visual_refs:
+        return 0.0
+    reference_rois = [roi for roi in identity_visual_refs[-4:] if roi is not None]
+    if not reference_rois:
+        return 0.0
+    return max(_compare_visual_identity_roi(reference_roi, row_visual_roi) for reference_roi in reference_rois)
+
+
+def _build_match_candidates(identity_state, race_rows, visual_features):
     candidates = []
     for row_position, (row_index, row) in enumerate(race_rows, start=1):
         row_name = str(row["PlayerName"] or "")
         row_character_index = row.get("CharacterIndex")
         row_detected_total = row.get("DetectedTotalScore")
+        row_visual_roi = visual_features.get(row_index)
+        row_is_unreliable = _row_name_is_unreliable(row)
         for identity_id, identity in identity_state.items():
             name_similarity = weighted_similarity(identity["canonical_name"], row_name)
             character_similarity = _character_similarity(identity["character_index"], row_character_index)
             total_similarity = _detected_total_similarity(identity["last_detected_total"], row_detected_total)
-            combined_score = (name_similarity * 0.55) + (character_similarity * 0.30) + (total_similarity * 0.15)
+            visual_similarity = _visual_similarity(identity.get("visual_refs", []), row_visual_roi)
+            combined_score = (
+                (name_similarity * 0.50)
+                + (total_similarity * 0.25)
+                + (visual_similarity * 0.20)
+                + (character_similarity * 0.05)
+            )
             exact_name_match = preprocess_name(identity["canonical_name"]) == preprocess_name(row_name)
-            fallback_match = _row_name_is_unreliable(row) and (
-                (character_similarity >= 1.0 and name_similarity >= 0.60)
+            fallback_match = row_is_unreliable and (
+                (visual_similarity >= 0.72 and name_similarity >= 0.50)
                 or (total_similarity >= 0.7 and name_similarity >= 0.45)
-                or (character_similarity >= 1.0 and total_similarity >= 0.7)
+                or (visual_similarity >= 0.68 and total_similarity >= 0.7)
             )
             if name_similarity >= 0.72 or exact_name_match or fallback_match:
-                candidates.append((combined_score, name_similarity, identity_id, row_position, row_index))
+                candidates.append(
+                    (
+                        combined_score,
+                        name_similarity,
+                        visual_similarity,
+                        total_similarity,
+                        character_similarity,
+                        identity_id,
+                        row_position,
+                        row_index,
+                    )
+                )
     return sorted(candidates, reverse=True)
 
 
@@ -196,29 +293,45 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
 
     for race_class, group in df.groupby("RaceClass", sort=False):
         group = group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable").copy()
+        visual_features = _prepare_visual_identity_features(group)
         identity_state = {}
         row_identity_assignments = {}
         identity_debug_rows = []
 
         for race_id, race_rows_df in group.groupby("RaceIDNumber", sort=True):
             race_rows = list(race_rows_df.iterrows())
-            candidates = _build_match_candidates(identity_state, race_rows)
+            candidates = _build_match_candidates(identity_state, race_rows, visual_features)
             used_identity_ids = set()
             used_row_indices = set()
 
-            for combined_score, name_similarity, identity_id, _row_position, row_index in candidates:
+            for (
+                combined_score,
+                name_similarity,
+                visual_similarity,
+                total_similarity,
+                character_similarity,
+                identity_id,
+                _row_position,
+                row_index,
+            ) in candidates:
                 if identity_id in used_identity_ids or row_index in used_row_indices:
                     continue
                 row = group.loc[row_index]
                 resolution_method = "name_only"
-                if pd.notna(row.get("CharacterIndex")) and pd.notna(identity_state[identity_id]["character_index"]):
-                    resolution_method = "name+character"
-                elif pd.notna(row.get("DetectedTotalScore")) and pd.notna(identity_state[identity_id]["last_detected_total"]):
+                if visual_similarity >= 0.72:
+                    resolution_method = "name+visual"
+                elif total_similarity >= 0.7:
                     resolution_method = "name+total_hint"
+                elif pd.notna(row.get("CharacterIndex")) and pd.notna(identity_state[identity_id]["character_index"]):
+                    resolution_method = "name+character"
                 row_identity_assignments[row_index] = {
                     "identity_id": identity_id,
                     "resolution_method": resolution_method,
                     "match_score": round(float(combined_score), 3),
+                    "name_score": round(float(name_similarity), 3),
+                    "visual_score": round(float(visual_similarity), 3),
+                    "total_score": round(float(total_similarity), 3),
+                    "character_score": round(float(character_similarity), 3),
                 }
                 used_identity_ids.add(identity_id)
                 used_row_indices.add(row_index)
@@ -239,6 +352,7 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
                         "character_index": row.get("CharacterIndex"),
                         "first_race": int(race_id),
                         "last_detected_total": row.get("DetectedTotalScore"),
+                        "visual_refs": [],
                     }
 
                 identity = identity_state.setdefault(
@@ -249,13 +363,18 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
                         "character_index": row.get("CharacterIndex"),
                         "first_race": int(race_id),
                         "last_detected_total": row.get("DetectedTotalScore"),
+                        "visual_refs": [],
                     },
                 )
                 identity["name_history"].append(str(row["PlayerName"] or ""))
-                if pd.notna(row.get("CharacterIndex")):
+                row_is_unreliable = _row_name_is_unreliable(row)
+                if pd.notna(row.get("CharacterIndex")) and (pd.isna(identity.get("character_index")) or not row_is_unreliable):
                     identity["character_index"] = row.get("CharacterIndex")
                 if pd.notna(row.get("DetectedTotalScore")):
                     identity["last_detected_total"] = row.get("DetectedTotalScore")
+                row_visual_roi = visual_features.get(row_index)
+                if row_visual_roi is not None and getattr(row_visual_roi, "size", 1) > 0:
+                    identity.setdefault("visual_refs", []).append(row_visual_roi)
                 identity["canonical_name"] = choose_canonical_name(identity["name_history"])
 
                 identity_debug_rows.append(
@@ -269,6 +388,10 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
                         "Identity ID": identity_id,
                         "Resolution Method": row_identity_assignments[row_index]["resolution_method"],
                         "Match Score": row_identity_assignments[row_index]["match_score"],
+                        "Name Score": row_identity_assignments[row_index].get("name_score"),
+                        "Visual Score": row_identity_assignments[row_index].get("visual_score"),
+                        "Total Score": row_identity_assignments[row_index].get("total_score"),
+                        "Character Score": row_identity_assignments[row_index].get("character_score"),
                     }
                 )
 

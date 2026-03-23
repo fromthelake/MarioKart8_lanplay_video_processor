@@ -1,6 +1,7 @@
 import argparse
 import cProfile
 import importlib.util
+import json
 import os
 import pstats
 import re
@@ -56,9 +57,39 @@ DEBUG_SCORE_FRAMES_DIR = DEBUG_DIR / "Score_Frames"
 EXTRACT_MODULE = "mk8_local_play.extract_frames"
 OCR_MODULE = "mk8_local_play.extract_text"
 PROFILE_OUTPUT = DEBUG_DIR / "performance_profile.txt"
+OCR_TRACE_DIR = DEBUG_DIR / "OCR_Tracing"
 
 
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
+
+
+def ocr_trace_enabled() -> bool:
+    return os.environ.get("MK8_TRACE_OCR_LINKING", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def ensure_ocr_trace_env(*, run_mode: str) -> tuple[str, str]:
+    trace_label = os.environ.get("MK8_OCR_TRACE_LABEL", "").strip()
+    if not trace_label:
+        trace_label = time.strftime("%Y%m%d_%H%M%S")
+        os.environ["MK8_OCR_TRACE_LABEL"] = trace_label
+    os.environ.setdefault("MK8_OCR_TRACE_MODE", run_mode)
+    return trace_label, os.environ["MK8_OCR_TRACE_MODE"]
+
+
+def append_ocr_trace_event(filename: str, payload: dict) -> None:
+    if not ocr_trace_enabled():
+        return
+    trace_label = os.environ.get("MK8_OCR_TRACE_LABEL", "").strip() or "adhoc"
+    trace_mode = os.environ.get("MK8_OCR_TRACE_MODE", "").strip() or "unspecified"
+    trace_path = OCR_TRACE_DIR / trace_label / trace_mode / filename
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    event_payload = dict(payload)
+    event_payload.setdefault("trace_label", trace_label)
+    event_payload.setdefault("trace_mode", trace_mode)
+    event_payload.setdefault("pid", os.getpid())
+    event_payload.setdefault("ts", time.time())
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event_payload, ensure_ascii=False) + "\n")
 
 
 def build_video_identity(video_path: Path, *, include_subfolders: bool = False) -> str:
@@ -539,6 +570,7 @@ def _overlap_ocr_process_worker(job_queue, result_queue, progress_queue) -> None
     while True:
         job = job_queue.get()
         if job is None:
+            append_ocr_trace_event("scheduler_events.jsonl", {"event": "video_worker_exit"})
             result_queue.put({"event": "worker_exit"})
             progress_queue.put({"event": "worker_exit"})
             return
@@ -551,6 +583,10 @@ def _overlap_ocr_process_worker(job_queue, result_queue, progress_queue) -> None
             progress_queue.put(payload)
 
         try:
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {"event": "video_worker_start", "video_label": video_label, "video_name": video_name},
+            )
             progress_queue.put({"event": "worker_start", "video_label": video_label})
             result = extract_text.process_images_in_folder(
                 str(FRAMES_DIR),
@@ -558,6 +594,16 @@ def _overlap_ocr_process_worker(job_queue, result_queue, progress_queue) -> None
                 write_outputs=False,
                 emit_logs=False,
                 progress_callback=_progress_callback,
+            )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "video_worker_result",
+                    "video_label": video_label,
+                    "video_name": video_name,
+                    "race_count": int(result.get("race_count", 0)),
+                    "duration_s": float(result.get("duration_s", 0.0)),
+                },
             )
             result_queue.put(
                 {
@@ -568,6 +614,10 @@ def _overlap_ocr_process_worker(job_queue, result_queue, progress_queue) -> None
                 }
             )
         except BaseException as exc:
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {"event": "video_worker_error", "video_label": video_label, "video_name": video_name, "error": repr(exc)},
+            )
             result_queue.put(
                 {
                     "event": "error",
@@ -590,6 +640,7 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
     while True:
         job = job_queue.get()
         if job is None:
+            append_ocr_trace_event("scheduler_events.jsonl", {"event": "race_worker_exit"})
             result_queue.put({"event": "worker_exit"})
             progress_queue.put({"event": "worker_exit"})
             return
@@ -597,6 +648,10 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
         race_id = int(job["race_id"])
         grouped_item = job["grouped_item"]
         try:
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {"event": "race_worker_start", "video_label": video_label, "race_id": race_id},
+            )
             progress_queue.put({"event": "race_start", "video_label": video_label, "race_id": race_id})
             metadata_index = extract_text.load_exported_frame_metadata(base_dir)
             race_result = extract_text.process_race_group(
@@ -614,7 +669,21 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
                     "race_result": race_result,
                 }
             )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "race_worker_result",
+                    "video_label": video_label,
+                    "race_id": race_id,
+                    "duration_s": float(race_result.get("duration_s", 0.0)),
+                    "row_count": len(race_result.get("rows", [])),
+                },
+            )
         except BaseException as exc:
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {"event": "race_worker_error", "video_label": video_label, "race_id": race_id, "error": repr(exc)},
+            )
             result_queue.put(
                 {
                     "event": "error",
@@ -871,6 +940,15 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 _format_overlap_queue_race(video_label, race_number),
                 color_name="cyan",
             )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "race_queued",
+                    "video_label": video_label,
+                    "race_id": race_number,
+                    "source": "extract_complete_callback",
+                },
+            )
             record_ocr_queued(video_label)
             ocr_jobs.put(
                 {
@@ -893,6 +971,14 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 "[Run - Overlap]",
                 _format_overlap_extraction_complete(video_label, len(grouped_items)),
                 color_name="cyan",
+            )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "video_extraction_complete",
+                    "video_label": video_label,
+                    "expected_races": len(grouped_items),
+                },
             )
             try_finalize_video(video_label)
 
@@ -976,6 +1062,14 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
             )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "video_queued",
+                    "video_label": str(video_payload["video_label"]),
+                    "video_name": str(video_payload["video_name"]),
+                },
+            )
             record_ocr_queued(str(video_payload["video_label"]))
             ocr_jobs.put(
                 {
@@ -1047,6 +1141,14 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 "[Run - Overlap]",
                 _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
+            )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "video_queued",
+                    "video_label": str(video_payload["video_label"]),
+                    "video_name": str(video_payload["video_name"]),
+                },
             )
             record_ocr_queued(str(video_payload["video_label"]))
             ocr_jobs.put(video_payload)
@@ -1270,6 +1372,30 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
     LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
     video_files = selected_input_video_files(selected_video=selected_video, include_subfolders=include_subfolders)
     overlap_active = overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1
+    if ocr_trace_enabled():
+        run_mode = (
+            "selection_overlap_race"
+            if selection_mode and overlap_active else
+            "selection_sequential"
+            if selection_mode else
+            "all_overlap_race"
+            if overlap_active else
+            "all_sequential"
+        )
+        trace_label, trace_mode = ensure_ocr_trace_env(run_mode=run_mode)
+        append_ocr_trace_event(
+            "scheduler_events.jsonl",
+            {
+                "event": "run_start",
+                "selection_mode": bool(selection_mode),
+                "selected_video": selected_video,
+                "include_subfolders": bool(include_subfolders),
+                "video_count": len(video_files),
+                "overlap_active": bool(overlap_active),
+                "trace_label": trace_label,
+                "trace_mode": trace_mode,
+            },
+        )
     if not video_files:
         target = selected_video or "Input_Videos"
         raise RuntimeError(
