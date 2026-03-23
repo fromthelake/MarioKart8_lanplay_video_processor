@@ -762,10 +762,12 @@ def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=No
         return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")
 
 
-def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, diagnostics_by_video=None, max_workers=None):
+def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, diagnostics_by_video=None, max_workers=None, total_video_count=None):
     """Run detection segments from multiple videos in one shared executor."""
     if not segment_tasks:
         return {}
+
+    status_state = {"last_print_s": 0.0}
 
     def _drain_progress(progress_queue, segment_state, live_counts, live_state, segment_totals):
         changed_videos = set()
@@ -791,6 +793,20 @@ def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, dia
             changed_videos.add(video_label)
 
         update_videos = changed_videos | detection_changed_videos
+        if update_videos:
+            now = time.perf_counter()
+            if now - float(status_state["last_print_s"]) >= 2.0:
+                active_videos = 0
+                for video_label, video_segment_keys in segment_totals.items():
+                    completed_frames = sum(segment_state.get(key, (0, 0))[0] for key in video_segment_keys)
+                    total_frames = sum(segment_state.get(key, (0, 0))[1] for key in video_segment_keys)
+                    if completed_frames < max(1, total_frames):
+                        active_videos += 1
+                LOGGER.log(
+                    "[Extract - Scan Status]",
+                    f"Active videos: {active_videos}/{int(total_video_count or len(progress_by_video))} | {LOGGER.resource_text()}",
+                )
+                status_state["last_print_s"] = now
         for video_label in update_videos:
             progress = progress_by_video.get(video_label)
             if progress is None:
@@ -898,9 +914,9 @@ def _color_detection_message(video_label, race_number: int, description: str, ti
 def _color_live_detection_detail(video_label, score_count: int, track_count: int, race_count: int) -> str:
     return (
         "Live detections: score "
-        + LOGGER.video_value(score_count, video_label)
+        + LOGGER.video_value(f"{int(score_count):2d}", video_label)
         + " | track "
-        + LOGGER.video_value(track_count, video_label)
+        + LOGGER.video_value(f"{int(track_count):2d}", video_label)
         + " | race "
-        + LOGGER.video_value(race_count, video_label)
+        + LOGGER.video_value(f"{int(race_count):2d}", video_label)
     )

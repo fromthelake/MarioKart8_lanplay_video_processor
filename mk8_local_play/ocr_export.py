@@ -249,6 +249,52 @@ def _select_most_used_character(player_rows: pd.DataFrame) -> str:
     )
 
 
+def _build_reset_segment_columns(df: pd.DataFrame, final_rows: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    if "SessionIndex" not in df.columns or "SessionNewTotalScore" not in df.columns:
+        return pd.DataFrame(index=final_rows.index), []
+
+    session_counts_by_video = (
+        df.groupby("RaceClass", sort=False)["SessionIndex"]
+        .max()
+        .fillna(1)
+        .astype(int)
+        .to_dict()
+    )
+    max_session_count = max(session_counts_by_video.values(), default=1)
+    if max_session_count <= 1:
+        return pd.DataFrame(index=final_rows.index), []
+
+    valid_rows = df.loc[df["FixPlayerName"].notna()].copy()
+    if valid_rows.empty:
+        return pd.DataFrame(index=final_rows.index), []
+
+    valid_rows["SessionIndex"] = pd.to_numeric(valid_rows["SessionIndex"], errors="coerce").astype("Int64")
+    valid_rows["SessionNewTotalScore"] = pd.to_numeric(valid_rows["SessionNewTotalScore"], errors="coerce")
+    session_totals = (
+        valid_rows.dropna(subset=["SessionIndex", "SessionNewTotalScore"])
+        .groupby(["RaceClass", "FixPlayerName", "SessionIndex"], sort=False)["SessionNewTotalScore"]
+        .max()
+        .to_dict()
+    )
+
+    segment_column_names = [f"Points Segment {segment_index}" for segment_index in range(1, max_session_count + 1)]
+    reset_segments = pd.DataFrame(index=final_rows.index, columns=segment_column_names, dtype="Int64")
+
+    for row_index, row in final_rows.iterrows():
+        race_class = row["RaceClass"]
+        player_name = row["FixPlayerName"]
+        session_count = int(session_counts_by_video.get(race_class, 1))
+        if session_count <= 1:
+            continue
+        for session_index in range(1, session_count + 1):
+            value = session_totals.get((race_class, player_name, session_index))
+            if value is None or pd.isna(value):
+                continue
+            reset_segments.at[row_index, f"Points Segment {session_index}"] = int(value)
+
+    return reset_segments, segment_column_names
+
+
 def build_final_standings_df(df):
     race_counts_by_video = (
         df.groupby("RaceClass", sort=True)["RaceIDNumber"]
@@ -261,6 +307,7 @@ def build_final_standings_df(df):
         .groupby(["RaceClass", "FixPlayerName"], sort=False, as_index=False)
         .tail(1)
         .copy()
+        .reset_index(drop=True)
     )
 
     final_rows["Races"] = final_rows["RaceClass"].map(lambda value: int(race_counts_by_video.get(value, 0)))
@@ -286,17 +333,20 @@ def build_final_standings_df(df):
             "CharacterRosterName": final_rows["CharacterRosterName"],
         }
     )
+    reset_segments_df, reset_segment_column_names = _build_reset_segment_columns(df, final_rows)
+    for column_name in reset_segment_column_names:
+        standings_df[column_name] = reset_segments_df[column_name].to_numpy()
 
     standings_df["Position"] = (
         standings_df.groupby("VideoName", sort=False)["TotalPoints"]
         .rank(method="min", ascending=False)
         .astype("Int64")
     )
-    standings_df = standings_df[
-        ["VideoName", "Races", "Position", "PlayerName", "TotalPoints", "Character", "CharacterRosterName"]
-    ]
+    ordered_columns = ["VideoName", "Races", "Position", "PlayerName", "TotalPoints", "Character", "CharacterRosterName"]
+    ordered_columns.extend(reset_segment_column_names)
+    standings_df = standings_df[ordered_columns]
 
-    numeric_columns = ["Races", "Position", "TotalPoints"]
+    numeric_columns = ["Races", "Position", "TotalPoints", *reset_segment_column_names]
     for column_name in numeric_columns:
         standings_df[column_name] = pd.to_numeric(standings_df[column_name], errors="coerce").astype("Int64")
 
@@ -325,6 +375,7 @@ def write_results_workbooks(df, folder_path):
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
     debug_output_excel_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
     output_csv_path = output_dir / f"{timestamp}_Tournament_Results.csv"
+    final_standings_csv_path = output_dir / f"{timestamp}_Final_Standings.csv"
     debug_output_csv_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.csv"
 
     with pd.ExcelWriter(output_excel_path) as writer:
@@ -336,6 +387,7 @@ def write_results_workbooks(df, folder_path):
         debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
         autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
     user_df.to_csv(output_csv_path, index=False, encoding="utf-8-sig")
+    final_standings_df.to_csv(final_standings_csv_path, index=False, encoding="utf-8-sig")
     debug_df.to_csv(debug_output_csv_path, index=False, encoding="utf-8-sig")
     return {
         "user_df": user_df,
@@ -343,6 +395,7 @@ def write_results_workbooks(df, folder_path):
         "output_excel_path": output_excel_path,
         "debug_output_excel_path": debug_output_excel_path,
         "output_csv_path": output_csv_path,
+        "final_standings_csv_path": final_standings_csv_path,
         "debug_output_csv_path": debug_output_csv_path,
     }
 
@@ -422,6 +475,7 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
             str(workbook_payload["output_excel_path"]),
             str(workbook_payload["debug_output_excel_path"]),
             str(workbook_payload["output_csv_path"]),
+            str(workbook_payload["final_standings_csv_path"]),
             str(workbook_payload["debug_output_csv_path"]),
         ]
     )
@@ -433,6 +487,7 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
         "output_excel_path": str(workbook_payload["output_excel_path"]),
         "debug_output_excel_path": str(workbook_payload["debug_output_excel_path"]),
         "output_csv_path": str(workbook_payload["output_csv_path"]),
+        "final_standings_csv_path": str(workbook_payload["final_standings_csv_path"]),
         "debug_output_csv_path": str(workbook_payload["debug_output_csv_path"]),
         "race_count": race_count,
         "per_video_summary": per_video_summary,

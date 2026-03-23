@@ -95,11 +95,22 @@ class MetadataCsvWriter:
 class ProgressPrinter:
     """Print throttled progress updates for long-running stages."""
 
-    def __init__(self, scope, total_units, percent_step=5, min_interval_s=3.0):
+    def __init__(
+        self,
+        scope,
+        total_units,
+        percent_step=5,
+        min_interval_s=3.0,
+        *,
+        unit_formatter=None,
+        include_resources=True,
+    ):
         self.scope = scope
         self.total_units = max(1, int(total_units))
         self.percent_step = max(1, int(percent_step))
         self.min_interval_s = float(min_interval_s)
+        self.unit_formatter = unit_formatter
+        self.include_resources = bool(include_resources)
         self.last_percent = -1
         self.last_print_time = 0.0
         self.start_time = time.perf_counter()
@@ -124,22 +135,29 @@ class ProgressPrinter:
             return
         snapshot = LOGGER.resources.sample()
         self._update_phase_peak(snapshot)
-        resource_text = LOGGER.resource_text(snapshot, value_color_token=value_color_token)
         percent_text = (
             LOGGER.video_value(f"{percent:3d}%", value_color_token)
             if value_color_token is not None else
             f"{percent:3d}%"
         )
-        completed_text = (
-            LOGGER.video_value(f"{min(completed_units, self.total_units):,}/{self.total_units:,}", value_color_token)
-            if value_color_token is not None else
+        completed_value = (
+            self.unit_formatter(min(completed_units, self.total_units), self.total_units)
+            if self.unit_formatter is not None else
             f"{min(completed_units, self.total_units):,}/{self.total_units:,}"
         )
+        completed_text = (
+            LOGGER.video_value(completed_value, value_color_token)
+            if value_color_token is not None else
+            completed_value
+        )
+        message = f"{percent_text} | {completed_text}"
+        if self.include_resources:
+            resource_text = LOGGER.resource_text(snapshot, value_color_token=value_color_token)
+            message = f"{message} | {resource_text}"
         detail_suffix = f" | {detail}" if detail else ""
         LOGGER.log(
             self.scope,
-            f"{percent_text} | {completed_text} | "
-            f"{resource_text}{detail_suffix}",
+            f"{message}{detail_suffix}",
         )
         self.last_percent = percent
         self.last_print_time = now
@@ -175,6 +193,72 @@ def format_duration(seconds):
     minutes = (total_seconds % 3600) // 60
     secs = total_seconds % 60
     return f"{hours:02}:{minutes:02}:{secs:02}"
+
+
+def format_scan_time_progress(completed_frames: int, total_frames: int, fps: float) -> str:
+    return f"{frame_to_timecode(completed_frames, fps)} / {frame_to_timecode(total_frames, fps)}"
+
+
+def _assign_display_video_indices(prepared_contexts):
+    total_videos = len(prepared_contexts)
+    parallel_contexts = [context for context in prepared_contexts if context["detection_segment_tasks"]]
+    serial_contexts = [context for context in prepared_contexts if not context["detection_segment_tasks"]]
+    ordered_contexts = [*parallel_contexts, *serial_contexts]
+    for display_index, context in enumerate(ordered_contexts, start=1):
+        context["display_video_index"] = display_index
+        context["display_total_videos"] = total_videos
+    return parallel_contexts, serial_contexts
+
+
+def build_workflow_video_plan(video_paths, folder_path, *, include_subfolders=False):
+    total_videos = len(video_paths)
+    plan_entries = []
+    total_source_seconds = 0.0
+    for input_index, video_path in enumerate(video_paths, start=1):
+        video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
+        source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
+        nominal_total_frames = 0
+        nominal_fps = 1.0
+        source_length_s = 0.0
+        parallel_capable = False
+        with video_io.suppress_native_stderr():
+            probe = cv2.VideoCapture(str(video_path))
+        try:
+            if probe.isOpened():
+                nominal_total_frames = int(probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                nominal_fps = probe.get(cv2.CAP_PROP_FPS) or 1.0
+                source_length_s = nominal_total_frames / max(nominal_fps, 1.0)
+                parallel_capable = (
+                    initial_scan.choose_detection_segment_count(
+                        nominal_total_frames,
+                        INITIAL_SCAN_WORKERS,
+                        INITIAL_SCAN_MIN_SEGMENT_FRAMES,
+                    ) > 1
+                )
+        finally:
+            probe.release()
+        total_source_seconds += source_length_s
+        plan_entries.append(
+            {
+                "video_path": video_path,
+                "input_index": input_index,
+                "display_video_index": input_index,
+                "display_total_videos": total_videos,
+                "video_label": video_label,
+                "source_display_name": source_display_name,
+                "source_length_s": source_length_s,
+                "nominal_total_frames": nominal_total_frames,
+                "nominal_fps": nominal_fps,
+                "parallel_capable": parallel_capable,
+            }
+        )
+    ordered_entries = sorted(
+        plan_entries,
+        key=lambda item: (0 if item["parallel_capable"] else 1, item["input_index"]),
+    )
+    for display_index, entry in enumerate(ordered_entries, start=1):
+        entry["display_video_index"] = display_index
+    return ordered_entries, total_source_seconds
 
 
 def print_timing_summary(video_name, stats):
@@ -252,11 +336,12 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
 
     worker_count = min(max(1, int(analysis_workers_override or SCORE_ANALYSIS_WORKERS)), len(tasks))
     local_progress = progress or ProgressPrinter(
-        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen]", video_label)
-        if video_index is not None else "[Total Score Screen]",
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score]", video_label)
+        if video_index is not None else "[Total Score]",
         len(tasks),
         percent_step=5,
         min_interval_s=2.0,
+        include_resources=False,
     )
     previous_total_score_players = None
 
@@ -348,13 +433,13 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     "",
                     "Race "
                     + LOGGER.video_value(f"{task['race_number']:03}", video_label)
-                    + " | total score screen found at source "
+                    + " | total score found at "
                     + LOGGER.video_value(frame_to_timecode(result['total_score_frame'], fps), video_label),
                 )
             local_progress.update(
                 completed_count,
-                color_video_detail("Completed windows: ", f"{completed_count}/{len(tasks)}", video_label)
-                + " | Last completed: race "
+                color_video_detail("done ", f"{completed_count:02}/{len(tasks):02}", video_label)
+                + " | last race "
                 + LOGGER.video_value(f"{task['race_number']:03}/{len(tasks):03}", video_label),
                 value_color_token=video_label,
             )
@@ -381,13 +466,13 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                         "",
                         "Race "
                         + LOGGER.video_value(f"{task['race_number']:03}", video_label)
-                        + " | total score screen found at source "
+                        + " | total score found at "
                         + LOGGER.video_value(frame_to_timecode(result['total_score_frame'], fps), video_label),
                     )
                 local_progress.update(
                     completed_count,
-                    color_video_detail("Completed windows: ", f"{completed_count}/{len(tasks)}", video_label)
-                    + " | Last completed: race "
+                    color_video_detail("done ", f"{completed_count:02}/{len(tasks):02}", video_label)
+                    + " | last race "
                     + LOGGER.video_value(f"{task['race_number']:03}/{len(tasks):03}", video_label),
                     value_color_token=video_label,
                 )
@@ -411,8 +496,8 @@ def _run_total_score_phase_for_context(
     io_lock=None,
     analysis_workers_override=None,
 ):
-    video_index = int(context["video_index"])
-    total_videos = int(context["total_videos"])
+    video_index = int(context.get("display_video_index", context["video_index"]))
+    total_videos = int(context.get("display_total_videos", context["total_videos"]))
     video_label = context["video_label"]
     video_name = context["video_name"]
     source_display_name = context["source_display_name"]
@@ -421,12 +506,13 @@ def _run_total_score_phase_for_context(
     fps = context["fps"]
     total_frames = context["total_frames"]
 
-    LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Start]", video_label), "")
+    LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Total Score - Phase Start]", video_label), "")
     total_score_progress = ProgressPrinter(
-        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen]", video_label),
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score]", video_label),
         max(1, len(score_candidates)),
         percent_step=5,
         min_interval_s=2.0,
+        include_resources=False,
     )
     total_score_progress.update(0)
 
@@ -469,7 +555,7 @@ def _run_total_score_phase_for_context(
     if total_score_progress.last_percent < 100:
         total_score_progress.update(len(score_candidates))
     LOGGER.summary_block(
-        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score Screen - Phase Complete]", video_label),
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score - Phase Complete]", video_label),
         [
             f"Duration: {format_duration(video_stats.get('score_candidate_pass_s', 0.0))}",
             f"Total score screens found: {exported_counts['total']}",
@@ -501,6 +587,8 @@ def _run_total_score_phase_for_context(
         "track_screens": exported_counts["track"],
         "race_numbers": exported_counts["race"],
         "total_score_screens": exported_counts["total"],
+        "display_video_index": int(context.get("display_video_index", context["video_index"])),
+        "display_total_videos": int(context.get("display_total_videos", context["total_videos"])),
     }
 
     if per_video_complete_callback is not None:
@@ -524,11 +612,13 @@ def _run_total_score_phase_for_context(
                     for key, value in CONSENSUS_FRAME_CACHE.items()
                     if str(key[0]) == str(video_label)
                 }
-                metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
+        metadata_index = load_exported_frame_metadata(Path(PROJECT_ROOT))
         per_video_complete_callback(
             {
                 "video_name": video_name,
                 "video_label": video_label,
+                "display_video_index": video_index,
+                "display_total_videos": total_videos,
                 "summary": per_video_summary,
                 "frame_bundle_cache": per_video_cache,
                 "metadata_index": {
@@ -563,11 +653,12 @@ def _format_parallel_scan_diagnostics(parallel_scan_diag, merged_score_detection
     ]
 
 
-def _prepare_video_context(video_path, folder_path, include_subfolders, video_index, total_videos, template_load_time_s, templates):
+def _prepare_video_context(video_path, folder_path, include_subfolders, video_index, total_videos, template_load_time_s, templates, *, video_label=None, source_display_name=None):
     video_start = time.perf_counter()
     video_stats = defaultdict(float)
     video_stats["template_load_s"] = template_load_time_s
     capture_poisoned = False
+    video_label = video_label or build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
 
     probe = cv2.VideoCapture(video_path)
     if not probe.isOpened():
@@ -577,7 +668,12 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     nominal_fps = probe.get(cv2.CAP_PROP_FPS) or 1
     nominal_duration_s = nominal_total_frames / max(nominal_fps, 1)
     corrupt_check_status = "checked"
-    preflight_result = video_io.sample_video_readability(video_path, nominal_total_frames, stats=video_stats)
+    preflight_result = video_io.sample_video_readability(
+        video_path,
+        nominal_total_frames,
+        stats=video_stats,
+        video_identity=video_label,
+    )
     corrupt_check_status = str(preflight_result.get("status", "checked"))
     probe.release()
     if preflight_result is not None and preflight_result.get("is_suspect"):
@@ -617,16 +713,7 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
     scales = []
     video_name = os.path.basename(processing_video_path)
-    video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
-    source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
-    LOGGER.log(
-        color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
-        color_video_message([
-            (source_display_name if include_subfolders else video_name, video_label),
-            " | Source length: ",
-            (format_duration(total_frames / max(fps, 1)), video_label),
-        ]),
-    )
+    source_display_name = source_display_name or (relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path))
     stage_start = time.perf_counter()
     eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
     for frame_num in sample_frames:
@@ -685,6 +772,8 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
         "video_name": video_name,
         "video_label": video_label,
         "source_display_name": source_display_name,
+        "display_video_index": video_index,
+        "display_total_videos": total_videos,
         "fps": fps,
         "frame_skip": frame_skip,
         "total_frames": total_frames,
@@ -721,10 +810,12 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
 
 
 def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
+    display_video_index = int(context.get("display_video_index", context["video_index"]))
+    display_total_videos = int(context.get("display_total_videos", context["total_videos"]))
     cap = cv2.VideoCapture(context["processing_video_path"])
     if not cap.isOpened():
         LOGGER.log(
-            f"[Video {context['video_index']}/{context['total_videos']} - Start]",
+            f"[Video {display_video_index}/{display_total_videos} - Start]",
             f"Could not open video: {context['processing_video_path']}",
             color_name="red",
         )
@@ -746,12 +837,14 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
     stage_start = time.perf_counter()
     scan_progress = ProgressPrinter(
         color_video_scope(
-            f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+            f"[Video {display_video_index}/{display_total_videos} - Scan]",
             context["video_label"],
         ),
         total_frames,
         percent_step=5,
         min_interval_s=2.0,
+        unit_formatter=lambda completed, total, fps=fps: format_scan_time_progress(completed, total, fps),
+        include_resources=False,
     )
     scan_progress.update(0)
     capture_poisoned = False
@@ -765,7 +858,7 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
         ):
             LOGGER.log(
                 color_video_scope(
-                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    f"[Video {display_video_index}/{display_total_videos} - Scan]",
                     context["video_label"],
                 ),
                 (
@@ -792,8 +885,8 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
             if timed_out:
                 LOGGER.log(
                     color_video_scope(
-                        f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
-                        context["video_index"],
+                        f"[Video {display_video_index}/{display_total_videos} - Scan]",
+                        context["video_label"],
                     ),
                     (
                         f"Aborting video after frame-read stall near EOF "
@@ -974,7 +1067,12 @@ def _extract_frames_parallel_video_scan(
     return_frame_cache,
     phase_start_time,
 ):
-    total_videos = len(video_paths)
+    workflow_plan, total_source_seconds = build_workflow_video_plan(
+        video_paths,
+        folder_path,
+        include_subfolders=include_subfolders,
+    )
+    total_videos = len(workflow_plan)
     total_score_screens_found = 0
     total_track_screens_found = 0
     total_race_numbers_found = 0
@@ -982,20 +1080,33 @@ def _extract_frames_parallel_video_scan(
 
     prepared_contexts = []
     score_ready_items = []
-    for video_index, video_path in enumerate(video_paths, start=1):
+    for plan_entry in workflow_plan:
         context = _prepare_video_context(
-            video_path,
+            plan_entry["video_path"],
             folder_path,
             include_subfolders,
-            video_index,
+            plan_entry["display_video_index"],
             total_videos,
             template_load_time_s,
             templates,
+            video_label=plan_entry["video_label"],
+            source_display_name=plan_entry["source_display_name"],
         )
         if context is not None:
             prepared_contexts.append(context)
 
     parallel_contexts = [context for context in prepared_contexts if context["detection_segment_tasks"]]
+    for context in prepared_contexts:
+        display_video_index = int(context.get("display_video_index", context["video_index"]))
+        display_total_videos = int(context.get("display_total_videos", context["total_videos"]))
+        LOGGER.log(
+            color_video_scope(f"[Video {display_video_index}/{display_total_videos} - Start]", context["video_label"]),
+            color_video_message([
+                (context["source_display_name"] if include_subfolders else context["video_name"], context["video_label"]),
+                " | Source length: ",
+                (format_duration(context["total_frames"] / max(context["fps"], 1)), context["video_label"]),
+            ]),
+        )
     shared_results_by_video = {}
     diagnostics_by_video = {}
     if len(parallel_contexts) > 1:
@@ -1004,19 +1115,21 @@ def _extract_frames_parallel_video_scan(
         for context in parallel_contexts:
             LOGGER.log(
                 color_video_scope(
-                    f"[Video {context['video_index']}/{context['total_videos']} - Scan - Phase Start]",
+                    f"[Video {context['display_video_index']}/{context['display_total_videos']} - Scan - Phase Start]",
                     context["video_label"],
                 ),
                 "",
             )
             scan_progress = ProgressPrinter(
                 color_video_scope(
-                    f"[Video {context['video_index']}/{context['total_videos']} - Scan]",
+                    f"[Video {context['display_video_index']}/{context['display_total_videos']} - Scan]",
                     context["video_label"],
                 ),
                 context["total_frames"],
                 percent_step=5,
                 min_interval_s=1.0,
+                unit_formatter=lambda completed, total, fps=context["fps"]: format_scan_time_progress(completed, total, fps),
+                include_resources=False,
             )
             scan_progress.update(0)
             context["scan_progress"] = scan_progress
@@ -1027,6 +1140,7 @@ def _extract_frames_parallel_video_scan(
             progress_by_video,
             diagnostics_by_video=diagnostics_by_video,
             max_workers=max(1, PARALLEL_VIDEO_SCAN_WORKERS * INITIAL_SCAN_WORKERS),
+            total_video_count=total_videos,
         )
         if diagnostics_by_video:
             for context in parallel_contexts:
@@ -1034,7 +1148,8 @@ def _extract_frames_parallel_video_scan(
 
     for context in prepared_contexts:
         video_stats = context["video_stats"]
-        video_index = context["video_index"]
+        video_index = int(context.get("display_video_index", context["video_index"]))
+        total_videos = int(context.get("display_total_videos", context["total_videos"]))
         video_name = context["video_name"]
         video_label = context["video_label"]
         processing_video_path = context["processing_video_path"]
@@ -1077,6 +1192,8 @@ def _extract_frames_parallel_video_scan(
                     total_frames,
                     percent_step=5,
                     min_interval_s=1.0,
+                    unit_formatter=lambda completed, total, fps=fps: format_scan_time_progress(completed, total, fps),
+                    include_resources=False,
                 )
                 scan_progress.update(0)
                 parallel_scan_diag = {}
@@ -1204,6 +1321,7 @@ def _extract_frames_parallel_video_scan(
                 per_video_summaries.append(result["per_video_summary"])
 
     elapsed_time = time.time() - phase_start_time
+    per_video_summaries.sort(key=lambda item: int(item.get("display_video_index", 0)))
     extract_summary = {
         "duration_s": elapsed_time,
         "total_source_seconds": total_source_seconds,

@@ -5,7 +5,9 @@ import time
 import threading
 import queue
 import shutil
+import sys
 from pathlib import Path
+from contextlib import contextmanager
 
 from .console_logging import LOGGER
 from .project_paths import PROJECT_ROOT
@@ -22,6 +24,7 @@ VIDEO_OPERATION_TIMEOUT_DIVISOR = 50.0
 VIDEO_OPERATION_TIMEOUT_MIN_S = 30.0
 VIDEO_OPERATION_TIMEOUT_MAX_S = 300.0
 VIDEO_REPAIR_PROGRESS_INTERVAL_S = 2.0
+_STDERR_REDIRECT_LOCK = threading.Lock()
 
 
 def add_timing(stats, key, start_time):
@@ -101,6 +104,36 @@ def advance_frames_by_grab(capture, frames_to_advance, stats):
 def actual_frame_after_read(capture):
     """Best-effort actual decoded frame index after a successful read()."""
     return max(0, int(capture.get(1)) - 1)
+
+
+@contextmanager
+def suppress_native_stderr():
+    """Temporarily silence native stderr noise from OpenCV/FFmpeg video backends."""
+    with _STDERR_REDIRECT_LOCK:
+        stderr_fd = None
+        saved_stderr_fd = None
+        devnull_file = None
+        try:
+            stderr_fd = sys.stderr.fileno()
+            saved_stderr_fd = os.dup(stderr_fd)
+            devnull_file = open(os.devnull, "w", encoding="utf-8", errors="ignore")
+            os.dup2(devnull_file.fileno(), stderr_fd)
+            yield
+        except (OSError, ValueError, AttributeError):
+            yield
+        finally:
+            if saved_stderr_fd is not None and stderr_fd is not None:
+                try:
+                    os.dup2(saved_stderr_fd, stderr_fd)
+                except OSError:
+                    pass
+            if saved_stderr_fd is not None:
+                try:
+                    os.close(saved_stderr_fd)
+                except OSError:
+                    pass
+            if devnull_file is not None:
+                devnull_file.close()
 
 
 def log_exported_frame(
@@ -206,10 +239,11 @@ def _timed_probe_read(capture, frame_number: int, timeout_s: float) -> tuple[boo
     return ret, frame, False, actual_frame
 
 
-def sample_video_readability(video_path: str, nominal_total_frames: int, stats: dict | None = None) -> dict:
+def sample_video_readability(video_path: str, nominal_total_frames: int, stats: dict | None = None, *, video_identity: object | None = None) -> dict:
     """Cheap corruption preflight using sampled OpenCV seeks/reads across the file."""
     video_name = os.path.basename(video_path)
-    LOGGER.log("[Frame Count Scan]", f"sampling readable frames with OpenCV for {video_name}", color_name="cyan")
+    display_video_name = LOGGER.video_value(video_name, video_identity) if video_identity is not None else video_name
+    LOGGER.log("[Frame Count Scan]", f"sampling readable frames with OpenCV for {display_video_name}", color_name="cyan")
     overall_start = time.perf_counter()
     result = {
         "status": "checked",
@@ -219,7 +253,8 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
         "failed_frame": None,
         "actual_frame": None,
     }
-    capture = cv2.VideoCapture(video_path)
+    with suppress_native_stderr():
+        capture = cv2.VideoCapture(video_path)
     if not capture.isOpened():
         _record_corrupt_check_duration(stats, overall_start)
         return {**result, "status": "inconclusive", "is_suspect": True, "reason": "opencv could not open file"}
@@ -229,7 +264,8 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
     result["probe_count"] = len(probe_frames)
     for frame_number in probe_frames:
         try:
-            ret, frame, timed_out, actual_frame = _timed_probe_read(capture, frame_number, CORRUPT_CHECK_READ_TIMEOUT_S)
+            with suppress_native_stderr():
+                ret, frame, timed_out, actual_frame = _timed_probe_read(capture, frame_number, CORRUPT_CHECK_READ_TIMEOUT_S)
         except Exception as exc:
             capture.release()
             _record_corrupt_check_duration(stats, overall_start)
@@ -274,7 +310,7 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
                 "actual_frame": int(actual_frame),
             }
     capture.release()
-    LOGGER.log("[Frame Count Scan]", f"sample probe passed for {video_name}: {len(probe_frames)} frames checked", color_name="green")
+    LOGGER.log("[Frame Count Scan]", f"sample probe passed for {display_video_name}: {len(probe_frames)} frames checked", color_name="green")
     _record_corrupt_check_duration(stats, overall_start)
     return result
 

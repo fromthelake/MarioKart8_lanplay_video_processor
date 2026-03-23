@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "8")
+os.environ.setdefault("OPENCV_VIDEOIO_DEBUG", "0")
 import cv2
 import colorsys
 import multiprocessing as mp
@@ -15,6 +17,7 @@ import threading
 import queue
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -45,6 +48,9 @@ from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
 from .ocr_export import build_completion_payload
 from .ocr_scoreboard_consensus import build_race_warning_messages
 from .project_paths import PROJECT_ROOT
+from . import extract_initial_scan as initial_scan
+from . import extract_frames
+from . import extract_video_io
 
 
 APP_CONFIG = load_app_config()
@@ -61,6 +67,22 @@ OCR_TRACE_DIR = DEBUG_DIR / "OCR_Tracing"
 
 
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
+
+
+def _workflow_sorted_source_summaries(video_files: list[Path], *, include_subfolders: bool) -> tuple[list[tuple[str, str]], float]:
+    workflow_plan, total_source_seconds = extract_frames.build_workflow_video_plan(
+        video_files,
+        INPUT_DIR,
+        include_subfolders=include_subfolders,
+    )
+    source_summaries = [
+        (
+            entry["video_label"],
+            f"{entry['source_display_name']} ({extract_frames.format_duration(entry['source_length_s'])})",
+        )
+        for entry in workflow_plan
+    ]
+    return source_summaries, total_source_seconds
 
 
 def ocr_trace_enabled() -> bool:
@@ -275,6 +297,23 @@ def _format_overlap_complete(video_label: str, race_count: int, duration_text: s
         + LOGGER.video_value(race_count, video_label)
         + " | Duration: "
         + LOGGER.video_value(duration_text, video_label)
+    )
+
+
+def _format_overlap_finalize_start(video_label: str, race_count: int) -> str:
+    return (
+        "Finalizing OCR for "
+        + LOGGER.video_value(video_label, video_label)
+        + " | Races: "
+        + LOGGER.video_value(race_count, video_label)
+    )
+
+
+def _format_overlap_complete_with_finalize(video_label: str, race_count: int, duration_text: str, finalize_duration_text: str) -> str:
+    return (
+        _format_overlap_complete(video_label, race_count, duration_text)
+        + " | Finalize: "
+        + LOGGER.video_value(finalize_duration_text, video_label)
     )
 
 
@@ -718,6 +757,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     ocr_start_time_holder = {"value": None}
     use_multi_process_ocr = overlap_ocr_consumers > 1
     use_race_overlap = use_multi_process_ocr and overlap_ocr_mode == "race"
+    finalize_executor = None
     overlap_diag = {
         "queued_at": {},
         "started_at": {},
@@ -803,19 +843,12 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         video_race_results = defaultdict(list)
         video_race_durations = defaultdict(float)
         finalized_videos = set()
+        finalizing_videos = set()
+        finalize_futures = {}
+        finalize_executor = ThreadPoolExecutor(max_workers=max(1, min(2, overlap_ocr_consumers)))
 
-        def try_finalize_video(video_label: str) -> None:
+        def _finalize_video_result(video_label: str) -> dict:
             video_label = str(video_label)
-            if video_label in finalized_videos:
-                return
-            if video_label not in video_extraction_complete:
-                return
-            completed = len(video_race_results[video_label])
-            total = max(1, int(video_expected_races.get(video_label, completed)))
-            if completed < total:
-                return
-
-            finalized_videos.add(video_label)
             finalize_start = time.time()
             finalized = extract_text.finalize_ocr_results(
                 [
@@ -839,6 +872,8 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 emit_logs=False,
             )
             finalize_duration_s = float(time.time() - finalize_start)
+            finalized["ocr_duration_s"] = float(video_race_durations[video_label])
+            finalized["finalize_duration_s"] = finalize_duration_s
             finalized["duration_s"] = float(video_race_durations[video_label]) + finalize_duration_s
             finalized["video_label"] = video_label
             finalized["video_name"] = next(
@@ -850,17 +885,63 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 video_label,
             )
             finalized["per_video_durations"] = {video_label: finalized["duration_s"]}
-            ocr_results.append(finalized)
+            return finalized
+
+        def _complete_finalize_future(future) -> None:
+            finalized = future.result()
+            video_label = str(finalized["video_label"])
+            finalizing_videos.discard(video_label)
+            finalized_videos.add(video_label)
+            with ocr_lock:
+                ocr_results.append(finalized)
             record_ocr_completed(video_label)
             LOGGER.log(
                 "[Run - Overlap]",
-                _format_overlap_complete(
+                _format_overlap_complete_with_finalize(
                     video_label,
                     int(finalized.get("race_count", 0)),
                     extract_frames.format_duration(finalized.get("duration_s", 0.0)),
+                    extract_frames.format_duration(finalized.get("finalize_duration_s", 0.0)),
                 ),
                 color_name="green",
             )
+
+        def _drain_finalize_futures() -> None:
+            completed_video_labels = []
+            for video_label, future in list(finalize_futures.items()):
+                if not future.done():
+                    continue
+                completed_video_labels.append(video_label)
+                _complete_finalize_future(future)
+            for video_label in completed_video_labels:
+                finalize_futures.pop(video_label, None)
+
+        def try_finalize_video(video_label: str) -> None:
+            video_label = str(video_label)
+            if video_label in finalized_videos or video_label in finalizing_videos:
+                return
+            if video_label not in video_extraction_complete:
+                return
+            completed = len(video_race_results[video_label])
+            total = max(1, int(video_expected_races.get(video_label, completed)))
+            if completed < total:
+                return
+
+            finalizing_videos.add(video_label)
+            LOGGER.log(
+                "[Run - Overlap]",
+                _format_overlap_finalize_start(video_label, total),
+                color_name="cyan",
+            )
+            append_ocr_trace_event(
+                "scheduler_events.jsonl",
+                {
+                    "event": "video_finalize_start",
+                    "video_label": video_label,
+                    "race_count": total,
+                },
+            )
+            finalize_futures[video_label] = finalize_executor.submit(_finalize_video_result, video_label)
 
         def progress_collector():
             worker_exits = 0
@@ -880,16 +961,23 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
         def result_collector():
             worker_exits = 0
-            while worker_exits < overlap_ocr_consumers:
-                message = ocr_result_queue.get()
+            while worker_exits < overlap_ocr_consumers or finalize_futures:
+                try:
+                    message = ocr_result_queue.get(timeout=0.5)
+                except queue.Empty:
+                    _drain_finalize_futures()
+                    continue
                 event_type = message.get("event")
                 if event_type == "worker_exit":
                     worker_exits += 1
+                    _drain_finalize_futures()
                     continue
                 if event_type == "error":
                     ocr_errors.append(RuntimeError(f"{message.get('video_label')} race {message.get('race_id')}: {message.get('error')}"))
+                    _drain_finalize_futures()
                     continue
                 if event_type != "race_result":
+                    _drain_finalize_futures()
                     continue
 
                 video_label = str(message["video_label"])
@@ -920,6 +1008,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 )
 
                 try_finalize_video(video_label)
+                _drain_finalize_futures()
 
         result_thread = threading.Thread(target=result_collector, name="mk8-ocr-results", daemon=True)
         result_thread.start()
@@ -1170,6 +1259,8 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         for process in worker_processes:
             process.join()
         result_thread.join()
+        if finalize_executor is not None:
+            finalize_executor.shutdown(wait=True)
         progress_thread.join()
     else:
         ocr_jobs.put(None)
@@ -1402,33 +1493,15 @@ def run_all(selected_video: str | None = None, selection_mode: bool = False, *, 
             f"No supported videos found for selection: {target} | "
             f"Searched under: {INPUT_DIR}"
         )
-    source_summaries = []
-    total_source_seconds = 0.0
-    for video_path in video_files:
-        if not video_path.is_file():
-            continue
-        capture = cv2.VideoCapture(str(video_path))
-        if capture.isOpened():
-            fps = capture.get(cv2.CAP_PROP_FPS) or 1
-            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-            source_length = frame_count / max(fps, 1)
-            total_source_seconds += source_length
-            display_name = (
-                str(video_path.relative_to(INPUT_DIR)).replace("\\", "/")
-                if include_subfolders else video_path.name
-            )
-            source_summaries.append(
-                (
-                    build_video_identity(video_path, include_subfolders=include_subfolders),
-                    f"{display_name} ({extract_frames.format_duration(source_length)})",
-                )
-            )
-        capture.release()
+    source_summaries, total_source_seconds = _workflow_sorted_source_summaries(
+        video_files,
+        include_subfolders=include_subfolders,
+    )
     LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
     for index, (video_identity, summary) in enumerate(source_summaries, start=1):
         LOGGER.log(
             "[Run - Input Summary]",
-            LOGGER.video_value(f"{index}.", video_identity) + " " + LOGGER.color_video_identity(summary, video_identity),
+            LOGGER.video_value(f"{index:03}.", video_identity) + " " + LOGGER.color_video_identity(summary, video_identity),
         )
     if selection_mode:
         cleared = clear_output_results_for_videos(video_files, include_subfolders=include_subfolders)
