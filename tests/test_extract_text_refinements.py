@@ -61,6 +61,96 @@ class TestExtractTextRefinements(TestCase):
         self.assertEqual(set(rescued["FixPlayerName"]), {"Lucas"})
         self.assertTrue(all("placeholder_name_rescue" in str(value) for value in rescued["IdentityResolutionMethod"]))
 
+    def test_rescue_placeholder_identity_names_can_force_choice_with_two_strong_hits(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoB",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 2,
+                    "FixPlayerName": "PlayerNameMissing_2",
+                    "IdentityLabel": "PlayerNameMissing_2",
+                    "IdentityResolutionMethod": "new_identity",
+                    "ReviewReason": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+                {
+                    "RaceClass": "VideoB",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 2,
+                    "FixPlayerName": "PlayerNameMissing_2",
+                    "IdentityLabel": "PlayerNameMissing_2",
+                    "IdentityResolutionMethod": "name+visual",
+                    "ReviewReason": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+            ]
+        )
+
+        fake_layout = SimpleNamespace(
+            player_name_coords=[((0, 0), (10, 10)) for _ in range(12)]
+        )
+        with patch("mk8_local_play.extract_text.find_score_bundle_anchor_path", return_value="dummy.png"):
+            with patch("mk8_local_play.extract_text.cv2.imread", return_value=np.zeros((20, 20, 3), dtype=np.uint8)):
+                with patch("mk8_local_play.extract_text.get_score_layout", return_value=fake_layout):
+                    with patch(
+                        "mk8_local_play.extract_text._generate_player_name_fallback_candidates",
+                        side_effect=[
+                            [("Willemijn", 95, "a")],
+                            [("Willemijn", 96, "a")],
+                        ],
+                    ):
+                        rescued = rescue_placeholder_identity_names(df)
+
+        self.assertEqual(set(rescued["FixPlayerName"]), {"Willemijn"})
+        self.assertTrue(all("placeholder_name_forced_choice" in str(value) for value in rescued["IdentityResolutionMethod"]))
+        self.assertTrue(all("forced_choice=1" in str(value) for value in rescued["ReviewReason"]))
+
+    def test_rescue_placeholder_identity_names_can_force_choice_from_single_very_strong_hit(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoC",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 2,
+                    "FixPlayerName": "PlayerNameMissing_2",
+                    "IdentityLabel": "PlayerNameMissing_2",
+                    "IdentityResolutionMethod": "new_identity",
+                    "ReviewReason": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+                {
+                    "RaceClass": "VideoC",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 2,
+                    "FixPlayerName": "PlayerNameMissing_2",
+                    "IdentityLabel": "PlayerNameMissing_2",
+                    "IdentityResolutionMethod": "name+visual",
+                    "ReviewReason": "",
+                    "ScoreLayoutId": "lan2_split_2p",
+                },
+            ]
+        )
+
+        fake_layout = SimpleNamespace(
+            player_name_coords=[((0, 0), (10, 10)) for _ in range(12)]
+        )
+        with patch("mk8_local_play.extract_text.find_score_bundle_anchor_path", return_value="dummy.png"):
+            with patch("mk8_local_play.extract_text.cv2.imread", return_value=np.zeros((20, 20, 3), dtype=np.uint8)):
+                with patch("mk8_local_play.extract_text.get_score_layout", return_value=fake_layout):
+                    with patch(
+                        "mk8_local_play.extract_text._generate_player_name_fallback_candidates",
+                        side_effect=[
+                            [("Christiaan", 98, "a")],
+                            [("noise", 10, "a")],
+                        ],
+                    ):
+                        rescued = rescue_placeholder_identity_names(df)
+
+        self.assertEqual(set(rescued["FixPlayerName"]), {"Christiaan"})
+        self.assertTrue(all("placeholder_name_forced_choice" in str(value) for value in rescued["IdentityResolutionMethod"]))
+        self.assertTrue(all("forced_choice=1" in str(value) for value in rescued["ReviewReason"]))
+
     def test_refine_black_blue_character_variants_can_flip_to_blue(self):
         df = pd.DataFrame(
             [

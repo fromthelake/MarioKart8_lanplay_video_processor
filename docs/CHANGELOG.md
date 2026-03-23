@@ -42,6 +42,7 @@ The format is intentionally simple and human-readable.
 - Extraction worker defaults are now tuned from the full 7-video benchmark set: `pass1_scan_workers=4`, `score_analysis_workers=4`, and cross-video total-score workers resolve to `2` on `16+` logical CPU threads and `1` otherwise.
 - Selection and scoped extract runs now clear only the selected videos' exported artifacts internally before extraction starts, so repeated scoped runs start cleanly without external shell cleanup.
 - Console reporting is now clearer and more consistent during long runs: selected videos get stable neon accents, video-owned values are colored without coloring whole lines, the final performance summary is table-based, and `Pipeline time avoided` shows the wall-clock savings gained from overlap and parallelism.
+- Console workflow ordering is now consistent across the input summary, frame-count preflight, scan/start labels, and per-video summaries. Scan progress now uses time-based `HH:MM:SS / HH:MM:SS` output, shared scan status centralizes CPU/RAM reporting, total-score progress is shorter, and overlap OCR now logs explicit `Finalizing OCR ...` / `Finalize: ...` timing for videos whose post-processing outlasts the last OCR race update.
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
 - Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.
@@ -66,6 +67,7 @@ The format is intentionally simple and human-readable.
 - Naming moved toward clearer, human-readable module and function names.
 - Internal extraction naming now prefers descriptive terms like `initial scan` instead of vague phase labels.
 - OCR output writes timestamped workbooks to `Output_Results/`
+- OCR output now also writes a timestamped `*_Final_Standings.csv` alongside the workbook and results CSV.
 - Track, cup, and character metadata now derive from a compact `reference_data/game_catalog.json` built from `database/firestore-export.json`.
 - User workbooks now include `Character` and `Position After Race`.
 - Debug workbooks now include explicit session rebase/reset flags, RaceScore recovery fields, identity labels, and character match details.
@@ -108,6 +110,7 @@ The format is intentionally simple and human-readable.
 - Low-resolution character matching now uses the tuned fixed ROI and `51x52` template sizing validated on multiple `640x360 -> 1280x720` captures.
 - Low-resolution `11 vs 12` last-row misses can now recover row 12 from the combined `character + player-name` blob when the rest of the video clearly indicates a 12-player race.
 - Placeholder identities no longer resolve to other `PlayerNameMissing_X` labels, preventing duplicate placeholder names inside one race.
+- Placeholder identity rescue now has a conservative forced-choice fallback for strong unresolved candidates. Forced promotions are marked as `placeholder_name_forced_choice` and keep their candidate/support/score trail in `ReviewReason`.
 - Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
 - `Output_Results` can now be cleared safely from both CLI and GUI without breaking the expected folder structure, because the app recreates `Frames/`, `Debug/`, and `Debug/Score_Frames/` immediately after cleanup.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.

@@ -8,6 +8,13 @@ In practice it:
 - rebuilds tournament progress race by race
 - exports the results into structured workbook files for review and sharing
 
+Current output set for a normal run:
+- `*_Tournament_Results.xlsx`
+- `*_Tournament_Results.csv`
+- `*_Final_Standings.csv`
+- `Debug/*_Tournament_Results_Debug.xlsx`
+- `Debug/*_Tournament_Results_Debug.csv`
+
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts
 - LAN 1 one-player full-screen score layouts
@@ -210,8 +217,17 @@ This combination is the current best verified throughput profile for the full lo
 Console output during a run now uses a clearer live format:
 - each video gets a stable neon accent color for the whole run
 - labels stay neutral while video-owned values are colorized
+- workflow ordering is consistent across the input summary, frame-count preflight, scan, and per-video summaries
+- scan progress now shows `HH:MM:SS / HH:MM:SS` instead of raw frame counters
+- shared scan status shows CPU and RAM once instead of repeating them on every video row
+- total-score progress uses a shorter per-video format and overlap OCR now logs an explicit `Finalizing OCR ...` step for long post-processing videos
 - the final performance summary uses aligned tables for run totals, phase timings, and per-video status
 - `Pipeline time avoided` shows the wall-clock time saved through overlap and parallelism
+
+Placeholder identity handling is now tiered:
+- normal placeholder rescue still requires repeated multi-race support
+- if that fails, a conservative forced-choice fallback can promote a strong top candidate
+- forced promotions are marked in the review trail with `placeholder_name_forced_choice`
 
 ## Step 7. Add your videos
 

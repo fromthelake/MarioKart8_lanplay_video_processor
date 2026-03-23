@@ -91,6 +91,9 @@ PLACEHOLDER_NAME_PREFIX = "PlayerNameMissing_"
 PLACEHOLDER_RESCUE_MIN_SUPPORT = 3
 PLACEHOLDER_RESCUE_MIN_ROW_SCORE = 140.0
 PLACEHOLDER_RESCUE_MIN_MARGIN = 35.0
+PLACEHOLDER_FORCED_CHOICE_MIN_SUPPORT = 2
+PLACEHOLDER_FORCED_CHOICE_MIN_ROW_SCORE = 160.0
+PLACEHOLDER_FORCED_SINGLE_HIT_MIN_ROW_SCORE = 190.0
 BLACK_BLUE_VARIANT_FAMILIES = {
     "Yoshi": ("Black Yoshi", "Blue Yoshi"),
     "Shy Guy": ("Black Shy Guy", "Blue Shy Guy"),
@@ -1318,6 +1321,20 @@ def rescue_placeholder_identity_names(df: pd.DataFrame) -> pd.DataFrame:
         margin_ok = second_score == float("-inf") or (best_total_score - second_score) >= PLACEHOLDER_RESCUE_MIN_MARGIN
         unique_ok = best_name not in existing_names_by_video.get(race_class, set())
         replace_allowed = support_ok and score_ok and margin_ok and unique_ok
+        forced_choice_allowed = (
+            (not replace_allowed)
+            and unique_ok
+            and (
+                (
+                    best_support >= PLACEHOLDER_FORCED_CHOICE_MIN_SUPPORT
+                    and best_average_score >= PLACEHOLDER_FORCED_CHOICE_MIN_ROW_SCORE
+                )
+                or (
+                    best_support >= 1
+                    and best_average_score >= PLACEHOLDER_FORCED_SINGLE_HIT_MIN_ROW_SCORE
+                )
+            )
+        )
 
         review_note = (
             f'placeholder_name_candidate="{best_name}"'
@@ -1326,9 +1343,11 @@ def rescue_placeholder_identity_names(df: pd.DataFrame) -> pd.DataFrame:
         )
         if second_score != float("-inf"):
             review_note += f' margin={best_total_score - second_score:.1f}'
+        if forced_choice_allowed:
+            review_note += " forced_choice=1"
 
         replace_mask = (df["RaceClass"] == race_class) & (df["FixPlayerName"] == placeholder_name)
-        if not replace_allowed:
+        if not replace_allowed and not forced_choice_allowed:
             if "ReviewReason" in df.columns:
                 df.loc[replace_mask, "ReviewReason"] = df.loc[replace_mask, "ReviewReason"].apply(
                     lambda value: (
@@ -1343,8 +1362,9 @@ def rescue_placeholder_identity_names(df: pd.DataFrame) -> pd.DataFrame:
         if "IdentityLabel" in df.columns:
             df.loc[replace_mask, "IdentityLabel"] = best_name
         if "IdentityResolutionMethod" in df.columns:
+            rescue_method = "placeholder_name_forced_choice" if forced_choice_allowed else "placeholder_name_rescue"
             df.loc[replace_mask, "IdentityResolutionMethod"] = df.loc[replace_mask, "IdentityResolutionMethod"].apply(
-                lambda value: f"{value}+placeholder_name_rescue" if str(value or "").strip() else "placeholder_name_rescue"
+                lambda value: f"{value}+{rescue_method}" if str(value or "").strip() else rescue_method
             )
         if "ReviewReason" in df.columns:
             df.loc[replace_mask, "ReviewReason"] = df.loc[replace_mask, "ReviewReason"].apply(
