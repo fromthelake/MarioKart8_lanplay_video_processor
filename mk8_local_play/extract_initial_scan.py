@@ -89,8 +89,8 @@ def _match_score_target_layouts(gray_image, templates, stats):
     best_match = {
         "max_val": 0.0,
         "layout_id": DEFAULT_SCORE_LAYOUT_ID,
-        "rejected_as_blank": False,
     }
+    saw_non_blank_layout = False
     for layout in all_score_layouts():
         roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, layout.score_anchor_roi)
         roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
@@ -101,9 +101,8 @@ def _match_score_target_layouts(gray_image, templates, stats):
 
         black_pixel_percentage = np.mean(processed_roi == 0)
         if black_pixel_percentage >= 0.97:
-            if not best_match["rejected_as_blank"]:
-                best_match["rejected_as_blank"] = True
             continue
+        saw_non_blank_layout = True
 
         if processed_roi.shape[0] < template_binary.shape[0] or processed_roi.shape[1] < template_binary.shape[1]:
             processed_roi = cv2.resize(
@@ -119,9 +118,8 @@ def _match_score_target_layouts(gray_image, templates, stats):
             best_match = {
                 "max_val": float(max_val),
                 "layout_id": layout.layout_id,
-                "rejected_as_blank": False,
             }
-    return best_match["max_val"], bool(best_match["rejected_as_blank"]), str(best_match["layout_id"])
+    return best_match["max_val"], not saw_non_blank_layout, str(best_match["layout_id"])
 
 
 def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False, video_label=None):

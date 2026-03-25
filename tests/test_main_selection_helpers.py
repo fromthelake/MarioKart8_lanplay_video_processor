@@ -4,6 +4,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
+import shutil
 
 from mk8_local_play.extract_common import (
     DEBUG_ROOT,
@@ -84,7 +85,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
 
         self.assertEqual(
             debug_score_frame_path("Demo_CaptureCard_Race", 7, "2RaceScore"),
-            DEBUG_ROOT / "Score_Frames" / "Demo_CaptureCard_Race" / "Race_007" / f"annotated_2RaceScore{expected_extension}",
+            DEBUG_ROOT / "Score_Frames" / "Demo_CaptureCard_Race" / "Race_007" / "2RaceScore" / f"annotated_2RaceScore{expected_extension}",
         )
         self.assertEqual(
             debug_identity_workbook_path("Demo_CaptureCard_Race"),
@@ -126,6 +127,22 @@ class MainSelectionHelpersTests(unittest.TestCase):
                         include_subfolders=True,
                     ),
                     [expected_a, expected_b],
+                )
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_discover_input_video_files_skips_corrupt_and_exclude_subfolders(self):
+        case_dir = _make_case_dir("discover_skip_archives")
+        try:
+            input_dir = case_dir / "Input_Videos"
+            expected = _touch(input_dir / "League 1" / "Demo_CaptureCard_Race.mp4")
+            _touch(input_dir / "corrupt" / "RecoveredRace.mp4")
+            _touch(input_dir / "League 1" / "exclude" / "SkippedRace.mp4")
+            _touch(input_dir / "League 1" / "Archive" / "exclude" / "SkippedRaceToo.mp4")
+            with mock.patch.object(main, "INPUT_DIR", input_dir):
+                self.assertEqual(
+                    main.discover_input_video_files(include_subfolders=True),
+                    [expected],
                 )
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)

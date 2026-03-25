@@ -713,7 +713,15 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
     scales = []
     video_name = os.path.basename(processing_video_path)
-    source_display_name = source_display_name or (relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path))
+    original_source_display_name = (
+        relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
+    )
+    processing_source_display_name = (
+        relative_video_path(Path(processing_video_path), folder_path)
+        if include_subfolders else
+        os.path.basename(processing_video_path)
+    )
+    source_display_name = source_display_name or processing_source_display_name
     stage_start = time.perf_counter()
     eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
     for frame_num in sample_frames:
@@ -772,6 +780,7 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
         "video_name": video_name,
         "video_label": video_label,
         "source_display_name": source_display_name,
+        "original_source_display_name": original_source_display_name,
         "display_video_index": video_index,
         "display_total_videos": total_videos,
         "fps": fps,
@@ -1562,7 +1571,14 @@ def extract_frames(
             scales = []
             video_name = os.path.basename(processing_video_path)
             video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
-            source_display_name = relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
+            original_source_display_name = (
+                relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
+            )
+            source_display_name = (
+                relative_video_path(Path(processing_video_path), folder_path)
+                if include_subfolders else
+                os.path.basename(processing_video_path)
+            )
             LOGGER.log(
                 color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_index),
                 color_video_message([

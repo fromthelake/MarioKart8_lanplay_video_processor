@@ -36,6 +36,12 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Connection-reset handling now supports repeated resets within the same video instead of stopping after the first detected reset.
+- Total-score validation now adds a second-pass reset detector for obvious fresh-session patterns where OCR totals collapse back to race-points-scale values across most of the field.
+- Final scoring now applies a late player-drop policy: reduced-player races stay visible in exports, but can be excluded from cumulative totals when later races recover to a higher player count.
+- User exports now place `Counts Toward Totals` and `Scoring Note` at the end of the results table when late scoring exclusions apply.
+- Recursive input discovery now skips any video under folders named `corrupt` or `exclude`, so archived/repaired and intentionally excluded videos are not picked up in normal subfolder runs.
+- Extraction debug output now records the actual processed source path after video repair so saved metadata matches the frames that were really analyzed.
 - Runtime GPU settings now default extraction (`execution_mode`) to `cpu` and EasyOCR (`easyocr_gpu_mode`) to `auto`, with `gpu` and `cpu` override modes still available from config, env vars, and the GUI.
 - Overlap OCR now defaults to `auto` mode with `2` consumers. When EasyOCR CUDA is available, full multi-video runs use the streamed per-race overlap path by default; when CUDA is unavailable, the overlap default resolves back to the existing sequential behavior. Explicit `video` / `race` mode overrides and custom consumer counts remain supported for experiments.
 - Initial scan now supports a multi-video shared-process path. It defaults to `2` workers for multi-video runs, and `MK8_PARALLEL_VIDEO_SCAN_WORKERS` can still override it manually. On the current 7-video benchmark set, `2` workers reduced extraction-only runtime from `06:59` to `03:58`, while `3` and `4` workers were slower.
@@ -90,6 +96,7 @@ The format is intentionally simple and human-readable.
 - The GUI now includes a `Clear Output Results` action with an `Are you sure?` confirmation before deleting generated output files.
 
 ### Fixed
+- Score-layout anchor matching no longer incorrectly reports `rejected_as_blank` when one supported layout is blank but another layout matches strongly.
 - Session-level character relabeling now supports Mii fallback when one player repeatedly produces weak, near-tied, unstable non-Mii character matches across the saved `2RaceScore` frames.
 - Mii fallback rows now keep a short explicit review note: `mii_fallback_unstable_character_match`.
 - Headless CLI runs no longer depend on GUI-only image imports.

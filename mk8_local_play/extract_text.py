@@ -82,6 +82,7 @@ from .ocr_scoreboard_consensus import (
     reset_observation_stage_stats,
 )
 from .ocr_session_validation import apply_session_validation
+from .ocr_scoring_policy import apply_temporary_player_drop_scoring_policy
 from .project_paths import PROJECT_ROOT
 from .score_layouts import get_score_layout, score_layout_id_from_filename
 from .track_metadata import load_track_tuples
@@ -1786,6 +1787,7 @@ def finalize_ocr_results(
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = append_identity_relink_review_notes(df)
+    df = apply_temporary_player_drop_scoring_policy(df)
     write_identity_trace_stage("final_identity_export_input", df)
 
     if write_outputs:

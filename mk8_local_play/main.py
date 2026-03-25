@@ -44,7 +44,7 @@ from .app_runtime import (
 )
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
-from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents
+from .extract_common import EXPORT_IMAGE_FORMAT, remove_tree_contents, should_include_input_video_path
 from .ocr_export import build_completion_payload
 from .ocr_scoreboard_consensus import build_race_warning_messages
 from .project_paths import PROJECT_ROOT
@@ -136,6 +136,7 @@ def discover_input_video_files(*, include_subfolders: bool = False) -> list[Path
     return sorted(
         path for path in iterator
         if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_SUFFIXES
+        and should_include_input_video_path(path, INPUT_DIR, include_subfolders=include_subfolders)
     )
 
 

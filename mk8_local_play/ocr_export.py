@@ -33,6 +33,8 @@ USER_EXPORT_COLUMN_MAP = {
     "PositionAfterRace": "Position After Race",
     "ReviewNeeded": "Needs Review",
     "ReviewReason": "Review Reason",
+    "CountsTowardTotals": "Counts Toward Totals",
+    "ExcludedFromTotalsReason": "Scoring Note",
 }
 
 
@@ -104,6 +106,9 @@ DEBUG_EXPORT_COLUMN_MAP = {
     "ScoreValidationStatus": "Validation Status",
     "ReviewNeeded": "Needs Review",
     "ReviewReason": "Review Reason",
+    "CountsTowardTotals": "Counts Toward Totals",
+    "ExcludedFromTotalsReason": "Scoring Note",
+    "ScoringPlayerCount": "Scoring Player Count",
 }
 
 

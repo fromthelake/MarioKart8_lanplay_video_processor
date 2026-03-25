@@ -15,6 +15,13 @@ Current output set for a normal run:
 - `Debug/*_Tournament_Results_Debug.xlsx`
 - `Debug/*_Tournament_Results_Debug.csv`
 
+Recent scoring and validation behavior:
+- videos can now contain multiple connection resets; later resets in the same source video are detected and segmented correctly
+- reset detection now has a second pass for obvious fresh-session total-score patterns where the displayed totals collapse back to race-points-scale values across most of the field
+- temporary player-drop races can stay visible in the workbook while being excluded from tournament totals when a later race recovers to a higher player count
+- user exports now include `Counts Toward Totals` and `Scoring Note` at the end of the table when that late scoring policy applies
+- recursive runs now skip any videos under a folder named `corrupt` or `exclude`
+
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts
 - LAN 1 one-player full-screen score layouts

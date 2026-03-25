@@ -175,9 +175,9 @@ def detect_initial_old_total_baseline(prepared_rows, race_index: int) -> bool:
     )
 
 
-def detect_connection_reset(previous_validated_totals, prepared_rows) -> bool:
-    """Detect a scoreboard reset where OCR totals drop, but tournament totals should keep running."""
-    if not previous_validated_totals:
+def detect_connection_reset(previous_displayed_totals, prepared_rows) -> bool:
+    """Detect a scoreboard reset where displayed totals drop across races."""
+    if not previous_displayed_totals:
         return False
 
     rows_with_detected_totals = [row for row in prepared_rows if row["detected_total"] is not None]
@@ -187,12 +187,44 @@ def detect_connection_reset(previous_validated_totals, prepared_rows) -> bool:
     broad_drops = 0
     for row in rows_with_detected_totals:
         player_key = row["player_key"]
-        previous_total = previous_validated_totals.get(player_key)
+        previous_total = previous_displayed_totals.get(player_key)
         if previous_total is None:
             continue
         if int(row["detected_total"]) + max(2, int(row["race_points"])) < int(previous_total):
             broad_drops += 1
     return broad_drops >= max(4, int(len(rows_with_detected_totals) * 0.7))
+
+
+def detect_obvious_total_score_reset(prepared_rows) -> bool:
+    """Detect reset-like total-score screens from whole-race OCR patterns."""
+    rows_with_detected_totals = [row for row in prepared_rows if row["detected_total"] is not None]
+    if len(rows_with_detected_totals) < max(4, len(prepared_rows) // 2):
+        return False
+
+    total_rows = len(rows_with_detected_totals)
+    mismatching_expected = 0
+    race_points_matches = 0
+    materially_higher_expected = 0
+
+    for row in rows_with_detected_totals:
+        detected_total = int(row["detected_total"])
+        expected_total = int(row["session_new_total"])
+        race_points = int(row["race_points"])
+        if detected_total != expected_total:
+            mismatching_expected += 1
+        if detected_total == race_points:
+            race_points_matches += 1
+        if expected_total >= detected_total + max(3, race_points):
+            materially_higher_expected += 1
+
+    # A total-score OCR result that mostly equals the race-points table while
+    # also disagreeing with the expected continuation totals is a strong reset
+    # signature, even when the broad-drop heuristic misses a few low-total rows.
+    return (
+        mismatching_expected >= max(4, int(total_rows * 0.8))
+        and race_points_matches >= max(4, int(total_rows * 0.6))
+        and materially_higher_expected >= max(4, int(total_rows * 0.6))
+    )
 
 
 def detect_total_score_order_violations(race_rows: pd.DataFrame, remapped_totals_by_index: dict[int, int]) -> set[int]:
@@ -278,7 +310,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
         race_ids = sorted(race_group["RaceIDNumber"].unique())
         expected_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
         previous_validated_totals = {}
-        connection_reset_active = False
+        previous_displayed_totals = {}
 
         for race_index, race_id in enumerate(race_ids):
             race_mask = (df["RaceClass"] == race_class) & (df["RaceIDNumber"] == race_id)
@@ -316,7 +348,10 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 "Session rebased from this race."
                 if session_rebased else ""
             )
-            session_reset_detected = False if connection_reset_active else detect_connection_reset(previous_validated_totals, prepared_rows)
+            session_reset_detected = (
+                detect_connection_reset(previous_displayed_totals, prepared_rows)
+                or detect_obvious_total_score_reset(prepared_rows)
+            )
             session_reset_reason = (
                 "Connection reset detected; tournament totals continue from prior standings."
                 if session_reset_detected else ""
@@ -345,7 +380,6 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 for prepared_row in prepared_rows:
                     prepared_row["session_old_total"] = 0
                     prepared_row["session_new_total"] = int(prepared_row["race_points"])
-                connection_reset_active = True
 
             remapped_totals_by_index = exact_total_score_fallback(prepared_rows)
             total_score_order_violations = detect_total_score_order_violations(race_rows, remapped_totals_by_index)
@@ -451,6 +485,8 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                 tournament_totals[player_key] = new_total
                 session_totals[player_key] = session_new_total
                 previous_validated_totals[player_key] = new_total
+                if detected_total is not None:
+                    previous_displayed_totals[player_key] = int(detected_total)
 
             session_index = current_session_index
 

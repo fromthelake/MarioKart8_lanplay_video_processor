@@ -51,7 +51,7 @@ class OcrExportTests(unittest.TestCase):
         self.assertEqual(
             standings.to_dict(orient="records"),
             [
-                {"VideoName": "Demo", "Races": 2, "Position": 1, "PlayerName": "Alpha", "TotalPoints": 20, "Character": "Luigi"},
-                {"VideoName": "Demo", "Races": 2, "Position": 1, "PlayerName": "Beta", "TotalPoints": 20, "Character": "Yoshi"},
+                {"VideoName": "Demo", "Races": 2, "Position": 1, "PlayerName": "Alpha", "TotalPoints": 20, "Character": "Luigi", "CharacterRosterName": "Luigi"},
+                {"VideoName": "Demo", "Races": 2, "Position": 1, "PlayerName": "Beta", "TotalPoints": 20, "Character": "Yoshi", "CharacterRosterName": "Yoshi"},
             ],
         )

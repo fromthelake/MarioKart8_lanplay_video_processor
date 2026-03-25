@@ -372,12 +372,35 @@ def relative_video_path(video_path, input_root):
     return str(video_path.relative_to(Path(input_root))).replace("\\", "/")
 
 
+def should_include_input_video_path(video_path, input_root, *, include_subfolders=False):
+    """Return whether a discovered input video should participate in processing."""
+    path = Path(video_path)
+    if not include_subfolders:
+        return True
+    root = Path(input_root)
+    try:
+        relative_parts = [part.lower() for part in path.relative_to(root).parts[:-1]]
+    except ValueError:
+        relative_parts = [part.lower() for part in path.parts[:-1]]
+    if "corrupt" in relative_parts:
+        return False
+    if "exclude" in relative_parts:
+        return False
+    return True
+
+
 def load_videos_from_folder(folder_path, *, include_subfolders=False):
     """Load supported video files from an input folder."""
     video_extensions = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
     root = Path(folder_path)
     iterator = root.rglob("*") if include_subfolders else root.iterdir()
-    return [str(path) for path in sorted(iterator) if path.is_file() and path.suffix.lower() in video_extensions]
+    return [
+        str(path)
+        for path in sorted(iterator)
+        if path.is_file()
+        and path.suffix.lower() in video_extensions
+        and should_include_input_video_path(path, root, include_subfolders=include_subfolders)
+    ]
 
 
 def count_exported_detection_files(video_path_or_label):

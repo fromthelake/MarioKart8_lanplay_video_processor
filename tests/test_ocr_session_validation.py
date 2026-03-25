@@ -7,6 +7,7 @@ from mk8_local_play.low_res_identity import low_res_race_points
 from mk8_local_play.ocr_session_validation import (
     assign_shared_positions_after_race,
     detect_connection_reset,
+    detect_obvious_total_score_reset,
     detect_rebase_candidate,
     detect_total_score_order_violations,
     format_validation_status,
@@ -65,6 +66,42 @@ class OcrSessionValidationTests(unittest.TestCase):
         ]
 
         self.assertTrue(detect_connection_reset(previous_validated_totals, prepared_rows))
+
+    def test_detect_connection_reset_can_be_reapplied_after_a_prior_reset(self):
+        previous_displayed_totals = {
+            "p1": 88,
+            "p2": 82,
+            "p3": 75,
+            "p4": 69,
+            "p5": 61,
+        }
+        prepared_rows = [
+            {"player_key": "p1", "detected_total": 15, "race_points": 15},
+            {"player_key": "p2", "detected_total": 12, "race_points": 12},
+            {"player_key": "p3", "detected_total": 10, "race_points": 10},
+            {"player_key": "p4", "detected_total": 9, "race_points": 9},
+            {"player_key": "p5", "detected_total": 8, "race_points": 8},
+        ]
+
+        self.assertTrue(detect_connection_reset(previous_displayed_totals, prepared_rows))
+
+    def test_detect_obvious_total_score_reset_when_totals_match_race_points_pattern(self):
+        prepared_rows = [
+            {"detected_total": 15, "session_new_total": 28, "race_points": 15},
+            {"detected_total": 12, "session_new_total": 37, "race_points": 12},
+            {"detected_total": 10, "session_new_total": 28, "race_points": 10},
+            {"detected_total": 9, "session_new_total": 22, "race_points": 9},
+            {"detected_total": 8, "session_new_total": 13, "race_points": 8},
+            {"detected_total": 7, "session_new_total": 27, "race_points": 7},
+            {"detected_total": 6, "session_new_total": 31, "race_points": 6},
+            {"detected_total": 5, "session_new_total": 15, "race_points": 5},
+            {"detected_total": 4, "session_new_total": 14, "race_points": 4},
+            {"detected_total": 3, "session_new_total": 12, "race_points": 3},
+            {"detected_total": 2, "session_new_total": 11, "race_points": 2},
+            {"detected_total": 1, "session_new_total": 8, "race_points": 1},
+        ]
+
+        self.assertTrue(detect_obvious_total_score_reset(prepared_rows))
 
     def test_detect_total_score_order_violations_flags_non_descending_totals(self):
         race_rows = pd.DataFrame(
