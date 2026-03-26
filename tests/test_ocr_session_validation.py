@@ -5,6 +5,7 @@ import pandas as pd
 from mk8_local_play.extract_text import get_race_points
 from mk8_local_play.low_res_identity import low_res_race_points
 from mk8_local_play.ocr_session_validation import (
+    apply_session_validation,
     assign_shared_positions_after_race,
     detect_connection_reset,
     detect_obvious_total_score_reset,
@@ -117,16 +118,75 @@ class OcrSessionValidationTests(unittest.TestCase):
 
         self.assertEqual(violations, {11, 12})
 
-    def test_assign_shared_positions_after_race_uses_competition_ranking(self):
+    def test_assign_shared_positions_after_race_uses_validated_total_order_with_stable_ties(self):
         df = pd.DataFrame(
             [
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "A", "NewTotalScore": 30},
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "B", "NewTotalScore": 30},
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "C", "NewTotalScore": 20},
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "D", "NewTotalScore": 10},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RacePosition": 2, "FixPlayerName": "A", "NewTotalScore": 30},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RacePosition": 4, "FixPlayerName": "B", "NewTotalScore": 30},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RacePosition": 3, "FixPlayerName": "C", "NewTotalScore": 20},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RacePosition": 1, "FixPlayerName": "D", "NewTotalScore": 10},
             ]
         )
 
         ranked = assign_shared_positions_after_race(df)
 
-        self.assertEqual(ranked["PositionAfterRace"].tolist(), [1, 1, 3, 4])
+        self.assertEqual(ranked["PositionAfterRace"].tolist(), [1, 2, 3, 4])
+
+    def test_apply_session_validation_suppresses_order_violation_when_total_matches_expected(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "Demo",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 1,
+                    "FixPlayerName": "A",
+                    "RacePoints": 7,
+                    "DetectedRacePoints": 7,
+                    "DetectedRacePointsSource": "ocr",
+                    "DetectedOldTotalScore": 4,
+                    "DetectedOldTotalScoreSource": "ocr",
+                    "DetectedTotalScore": 11,
+                    "DetectedTotalScoreSource": "ocr",
+                    "DetectedPositionAfterRace": 1,
+                    "PositionAfterRace": 1,
+                    "ReviewReason": "",
+                    "IsLowRes": False,
+                    "NameConfidence": 100.0,
+                    "DigitConsensus": 100.0,
+                    "RowCountConfidence": 100.0,
+                    "RaceScorePlayerCount": 2,
+                    "TotalScorePlayerCount": 2,
+                },
+                {
+                    "RaceClass": "Demo",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 2,
+                    "FixPlayerName": "B",
+                    "RacePoints": 3,
+                    "DetectedRacePoints": 3,
+                    "DetectedRacePointsSource": "ocr",
+                    "DetectedOldTotalScore": 7,
+                    "DetectedOldTotalScoreSource": "ocr",
+                    "DetectedTotalScore": 10,
+                    "DetectedTotalScoreSource": "ocr",
+                    "DetectedPositionAfterRace": 2,
+                    "PositionAfterRace": 2,
+                    "ReviewReason": "",
+                    "IsLowRes": False,
+                    "NameConfidence": 100.0,
+                    "DigitConsensus": 100.0,
+                    "RowCountConfidence": 100.0,
+                    "RaceScorePlayerCount": 2,
+                    "TotalScorePlayerCount": 2,
+                },
+            ]
+        )
+
+        validated = apply_session_validation(
+            df,
+            parse_detected_int=lambda value: None if pd.isna(value) else int(value),
+            exact_total_score_fallback=lambda prepared_rows: {},
+        )
+
+        review_text = " | ".join(str(value) for value in validated["ReviewReason"].fillna("").tolist())
+        self.assertNotIn("Scoreboard total order is not descending.", review_text)

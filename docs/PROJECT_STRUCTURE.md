@@ -28,8 +28,12 @@ The project has two main phases:
     - score screen
     - track-name screen
     - race-number screen
+  - uses the left-side row-box position prefix as the real score trigger
+  - race-number detection supports both the legacy and Dutch template/ROI variants
 - `mk8_local_play/extract_score_screen_selection.py`
   - takes rough score detections and chooses the best race-score and total-score frames
+  - expands RaceScore bundles when a real 12th-place template is seen
+  - confirms TotalScore only after a sustained score-signal drop, with tie-aware rank acceptance for rows `1..6`
 - `mk8_local_play/extract_video_io.py`
   - shared helpers for frame reads, seeks, and export metadata
 - `mk8_local_play/extract_common.py`
@@ -47,10 +51,12 @@ The project has two main phases:
 - `mk8_local_play/ocr_name_matching.py`
   - fuzzy matching for noisy OCR player names across races
   - chooses a canonical player spelling for each row history
+  - resolves duplicate-name identity chains and only marks the truly ambiguous final rows
 - `mk8_local_play/ocr_session_validation.py`
   - computes running totals
   - detects likely new sessions inside one source video
   - flags rows that need manual review
+  - recomputes `Position After Race` from validated totals with stable tie-breaks
 - `mk8_local_play/ocr_export.py`
   - writes the final workbook
   - builds the user-facing OCR completion summary

@@ -42,6 +42,12 @@ The format is intentionally simple and human-readable.
 - User exports now place `Counts Toward Totals` and `Scoring Note` at the end of the results table when late scoring exclusions apply.
 - Recursive input discovery now skips any video under folders named `corrupt` or `exclude`, so archived/repaired and intentionally excluded videos are not picked up in normal subfolder runs.
 - Extraction debug output now records the actual processed source path after video repair so saved metadata matches the frames that were really analyzed.
+- Score detection now uses the left-side position row boxes as the real score-presence signal, with a required visible-player prefix and average-coefficient gate.
+- Race-number detection now supports the Dutch `Race_template_NL_final.png` ROI in addition to the legacy race template.
+- 12th-place checks now support both `12th_pos_template.png` and `12th_pos_templateNL.png`, and confirmed 12th-place hits expand the RaceScore bundle used by OCR.
+- TotalScore timing now confirms a sustained score drop over `5.0 * fps` and anchors from the start of that drop, preventing short transition animations from triggering early TotalScore exports.
+- Final-race duplicate-name ambiguity notes now only mark the truly interchangeable rows and explicitly name the conflicting identity label(s).
+- `Position After Race` is now recomputed from the validated post-race totals with stable tie-breaks instead of keeping OCR/shared-place ordering.
 - Runtime GPU settings now default extraction (`execution_mode`) to `cpu` and EasyOCR (`easyocr_gpu_mode`) to `auto`, with `gpu` and `cpu` override modes still available from config, env vars, and the GUI.
 - Overlap OCR now defaults to `auto` mode with `2` consumers. When EasyOCR CUDA is available, full multi-video runs use the streamed per-race overlap path by default; when CUDA is unavailable, the overlap default resolves back to the existing sequential behavior. Explicit `video` / `race` mode overrides and custom consumer counts remain supported for experiments.
 - Initial scan now supports a multi-video shared-process path. It defaults to `2` workers for multi-video runs, and `MK8_PARALLEL_VIDEO_SCAN_WORKERS` can still override it manually. On the current 7-video benchmark set, `2` workers reduced extraction-only runtime from `06:59` to `03:58`, while `3` and `4` workers were slower.
@@ -128,6 +134,7 @@ The format is intentionally simple and human-readable.
 - The seven-segment reader now uses one canonical explicit segment layout for RacePoints / OldTotalScore and scales that same layout into the larger TotalScore digit boxes.
 - OCR junk punctuation on the edges of player names no longer creates false new identities when the underlying name, character, and totals clearly match an existing player.
 - RacePoints can now reconcile to the `OldTotalScore -> TotalScore` delta when the bundle evidence supports the implied score better than the initially selected point read.
+- Final-race duplicate-name ambiguity notes are now scoped only to the rows that remain interchangeable, and the note explicitly names the conflicting identity label(s).
 
 ### Documentation
 - Setup instructions were rewritten for hobbyist-friendly use from a Git clone.

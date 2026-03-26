@@ -10,13 +10,13 @@ from .extract_common import (
     TARGET_HEIGHT,
     TARGET_WIDTH,
     crop_and_upscale_image,
-    crop_to_gray_and_upscale_image,
     match_template,
     preprocess_roi,
     score_bundle_anchor_path,
     score_bundle_consensus_path,
     write_export_image,
 )
+from .extract_initial_scan import POSITION_SCAN_MIN_AVG_COEFF, POSITION_SCAN_MIN_PLAYERS, _match_score_target_layouts
 from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
 from .ocr_scoreboard_consensus import (
     POSITION_PRESENT_COEFF_THRESHOLD,
@@ -59,8 +59,42 @@ def fps_scaled_frames(base_frames_30fps, fps):
 RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS = 1
 RACE_SCORE_EARLY_EXPANSION_FRAMES = 7
 RACE_SCORE_LATE_EXPANSION_FRAMES = 6
+TOTAL_SCORE_TRANSITION_DROP_SECONDS = 5.0
 STATIC_GALLERY_RACE_MIN_FIRST_FRAME_COEFF = 0.995
 STATIC_GALLERY_RACE_AVG_FIRST_FRAME_COEFF = 0.997
+TWELFTH_TEMPLATE_INDEX = 3
+TWELFTH_TEMPLATE_NL_INDEX = 8
+TWELFTH_NL_CHECK_ROI = (306, 658, 670, 41)
+
+
+def _match_twelfth_presence(gray_image, templates, score_layout, stats):
+    """Return the strongest 12th-place template hit across supported language variants."""
+    candidates = [
+        (score_layout.twelfth_place_check_roi, TWELFTH_TEMPLATE_INDEX),
+        (TWELFTH_NL_CHECK_ROI, TWELFTH_TEMPLATE_NL_INDEX),
+    ]
+    best_match = 0.0
+    for roi_definition, template_index in candidates:
+        if template_index >= len(templates):
+            continue
+        roi_x, roi_y, roi_width, roi_height = roi_definition
+        if roi_width <= 0 or roi_height <= 0:
+            continue
+        stage_start = time.perf_counter()
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
+        if roi.size == 0:
+            continue
+        stage_start = time.perf_counter()
+        processed_roi = preprocess_roi(roi, 0)
+        add_timing(stats, "score_detail_12th_preprocess_s", stage_start)
+        template_binary, alpha_mask = templates[template_index]
+        stage_start = time.perf_counter()
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        add_timing(stats, "score_detail_match_12th_s", stage_start)
+        if max_val > best_match:
+            best_match = float(max_val)
+    return best_match
 
 
 def _position_metrics_for_frame(frame_image, score_layout_id=None):
@@ -156,6 +190,49 @@ def _row_has_expected_template(position_metrics, row_number, min_score=0.4):
     )
 
 
+def _count_tie_aware_prefix_rows(position_metrics, min_players):
+    """Count rows whose rank badges remain plausible when totals are tied."""
+    visible_rows = 0
+    last_confirmed_rank = 1
+    for row_number in range(1, min(int(min_players), len(position_metrics)) + 1):
+        metric = position_metrics[row_number - 1]
+        best_score = float(metric.get("best_position_score", 0.0))
+        best_rank = int(metric.get("best_position_template", 0))
+        coeff_ranked_templates = [int(value) for value in metric.get("coeff_ranked_templates", [])]
+        threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
+
+        chosen_rank = 0
+        if best_score >= threshold and last_confirmed_rank <= best_rank <= row_number:
+            chosen_rank = best_rank
+        else:
+            chosen_rank = next(
+                (
+                    template_rank
+                    for template_rank in coeff_ranked_templates
+                    if last_confirmed_rank <= int(template_rank) <= row_number
+                ),
+                0,
+            )
+        if chosen_rank <= 0:
+            break
+        last_confirmed_rank = int(chosen_rank)
+        visible_rows = row_number
+    return visible_rows
+
+
+def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_players=None):
+    required_players = max(2, int(min_players or POSITION_SCAN_MIN_PLAYERS))
+    position_metrics = _position_metrics_for_frame(frame_image, score_layout_id=score_layout_id)
+    if _count_tie_aware_prefix_rows(position_metrics, required_players) < required_players:
+        return False
+    prefix_scores = [
+        float(position_metrics[row_number - 1].get("best_position_score", 0.0))
+        for row_number in range(1, required_players + 1)
+    ]
+    average_score = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
+    return average_score >= float(POSITION_SCAN_MIN_AVG_COEFF)
+
+
 def count_visible_position_rows(frame_image, score_layout_id=None):
     return _count_visible_rows_from_position_metrics(_position_metrics_for_frame(frame_image, score_layout_id=score_layout_id))
 
@@ -173,6 +250,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
     visible_rows = _count_visible_rows_from_position_metrics(position_metrics)
     row11_present = _row_has_expected_template(position_metrics, 11, POSITION_PRESENT_COEFF_THRESHOLD)
     row12_present = _row_has_expected_template(position_metrics, 12, POSITION_PRESENT_COEFF_THRESHOLD)
+    twelfth_template_detected = bool(result.get("twelfth_template_detected", False))
 
     should_search = False
     if expected_players == 12:
@@ -180,7 +258,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
     elif race_number == 1 and visible_rows == 11 and row11_present:
         should_search = not row12_present
 
-    needs_early_expansion = int(expected_players or 0) >= 11
+    needs_early_expansion = twelfth_template_detected
 
     if not should_search and not needs_early_expansion:
         return result
@@ -262,7 +340,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
 
 def expand_race_score_consensus_window(result, minimum_expected_players):
     """Extend RaceScore bundles so OCR can use early frames for points and late frames for presence."""
-    if int(minimum_expected_players or 0) < 11:
+    if not bool(result.get("twelfth_template_detected", False)):
         return result
 
     candidate = result.get('candidate', {})
@@ -321,6 +399,8 @@ def analyze_score_window_task(task, frame_to_timecode):
     total_score_frame = 0
     player12 = 0
     check_player_12 = 0
+    twelfth_template_detected = False
+    drop_start_frame = None
     debug_rows = []
     stats = {}
     from collections import defaultdict
@@ -333,68 +413,49 @@ def analyze_score_window_task(task, frame_to_timecode):
 
     detail_frame_number = start_frame
     seek_to_frame(local_cap, detail_frame_number, stats)
-    template_binary, alpha_mask = templates[0]
-
     while detail_frame_number < end_frame:
         ret, frame = read_video_frame(local_cap, stats)
         if not ret:
             break
 
         frame_prepare_start = time.perf_counter()
-        gray_image, crop_upscale_time, grayscale_time = crop_to_gray_and_upscale_image(
+        upscaled_image = crop_and_upscale_image(
             frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
         )
-        stats["score_detail_crop_upscale_s"] += crop_upscale_time
-        stats["score_detail_grayscale_s"] += grayscale_time
-
-        stage_start = time.perf_counter()
-        roi_x, roi_y, roi_width, roi_height = score_layout.scoreboard_points_roi
-        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
-        add_timing(stats, "score_detail_score_roi_extract_s", stage_start)
-
-        stage_start = time.perf_counter()
-        processed_roi = preprocess_roi(roi, 0)
-        add_timing(stats, "score_detail_score_preprocess_s", stage_start)
+        gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
         add_timing(stats, "score_detail_frame_prepare_s", frame_prepare_start)
 
-        black_pixel_percentage = np.mean(processed_roi == 0)
-        if black_pixel_percentage >= 0.97:
-            detail_frame_number += 1
-            timecode = frame_to_timecode(detail_frame_number, fps)
-            debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, 0, timecode])
-            if race_score_frame != 0:
-                total_score_frame = detail_frame_number - int(2.7 * fps)
-                break
-            continue
-
         stage_start = time.perf_counter()
-        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        max_val, rejected_as_blank, detected_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
         add_timing(stats, "score_detail_match_score_s", stage_start)
         timecode = frame_to_timecode(detail_frame_number, fps)
-        debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, max_val, timecode])
+        debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, 0 if rejected_as_blank else max_val, timecode])
+
+        if rejected_as_blank:
+            if race_score_frame != 0:
+                if drop_start_frame is None:
+                    drop_start_frame = int(detail_frame_number)
+                drop_duration_frames = int(detail_frame_number) - int(drop_start_frame) + 1
+                if drop_duration_frames >= max(1, int(round(TOTAL_SCORE_TRANSITION_DROP_SECONDS * max(float(fps), 1.0)))):
+                    total_score_frame = int(drop_start_frame) - int(2.7 * fps)
+                    break
+            detail_frame_number += 1
+            continue
 
         if max_val > 0.3 and not np.isinf(max_val) and race_score_frame == 0:
             race_score_frame = detail_frame_number + int(0.6 * fps)
+            score_layout = get_score_layout(detected_layout_id or score_layout.layout_id)
             check_player_12 = 1
+            drop_start_frame = None
             continue
 
         if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
-            stage_start = time.perf_counter()
-            roi_x2, roi_y2, roi_width2, roi_height2 = score_layout.twelfth_place_check_roi
-            roi2 = gray_image[roi_y2:roi_y2 + roi_height2, roi_x2:roi_x2 + roi_width2]
-            add_timing(stats, "score_detail_12th_roi_extract_s", stage_start)
-
-            stage_start = time.perf_counter()
-            processed_roi2 = preprocess_roi(roi2, 0)
-            add_timing(stats, "score_detail_12th_preprocess_s", stage_start)
-            template_binary2, alpha_mask2 = templates[3]
-
-            stage_start = time.perf_counter()
-            max_val2 = match_template(processed_roi2, template_binary2, alpha_mask2)
-            add_timing(stats, "score_detail_match_12th_s", stage_start)
+            drop_start_frame = None
+            max_val2 = _match_twelfth_presence(gray_image, templates, score_layout, stats)
 
             if max_val2 > 0.4 and not np.isinf(max_val2):
                 player12 = 1
+                twelfth_template_detected = True
 
             if player12 == 1 and max_val2 < 0.1:
                 race_score_frame = detail_frame_number + fps_scaled_frames(16 + RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS, fps)
@@ -403,9 +464,20 @@ def analyze_score_window_task(task, frame_to_timecode):
                 check_player_12 = 2
                 continue
 
-        if max_val <= 0 and race_score_frame != 0:
-            total_score_frame = detail_frame_number - int(2.7 * fps)
-            break
+        if race_score_frame != 0:
+            if _tie_aware_score_signal_present(
+                upscaled_image,
+                score_layout_id=score_layout.layout_id,
+                min_players=POSITION_SCAN_MIN_PLAYERS,
+            ):
+                drop_start_frame = None
+            else:
+                if drop_start_frame is None:
+                    drop_start_frame = int(detail_frame_number)
+                drop_duration_frames = int(detail_frame_number) - int(drop_start_frame) + 1
+                if drop_duration_frames >= max(1, int(round(TOTAL_SCORE_TRANSITION_DROP_SECONDS * max(float(fps), 1.0)))):
+                    total_score_frame = int(drop_start_frame) - int(2.7 * fps)
+                    break
 
         detail_frame_number += 1
 
@@ -444,6 +516,7 @@ def analyze_score_window_task(task, frame_to_timecode):
         "total_score_image": total_score_image,
         "race_consensus_frames": race_consensus_frames,
         "total_consensus_frames": total_consensus_frames,
+        "twelfth_template_detected": twelfth_template_detected,
         "debug_rows": debug_rows,
         "stats": stats,
     }

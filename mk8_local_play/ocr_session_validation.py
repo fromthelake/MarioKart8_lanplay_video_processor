@@ -262,22 +262,39 @@ def detect_total_score_order_violations(race_rows: pd.DataFrame, remapped_totals
 
 
 def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
-    """Recompute post-race positions from authoritative totals, allowing ties.
+    """Recompute post-race positions from authoritative totals.
 
-    We use competition ranking ("1224" style):
-    - equal totals share the same position
-    - the next lower total skips ahead by the number of tied rows above
+    We assign a full ordered standing per race after validation:
+    - higher ``NewTotalScore`` ranks earlier
+    - equal totals are ordered stably by on-screen race position when available
+    - if race position is unavailable, keep the incoming row order as the tie-break
 
-    This keeps Position After Race aligned with the final validated tournament totals
-    instead of the earlier OCR-only row mapping guess.
+    This keeps ``PositionAfterRace`` aligned with the final validated tournament
+    totals and avoids stale OCR-only tie positions surviving after relinking.
     """
     df = df.copy()
-    ranked = (
-        df.groupby(["RaceClass", "RaceIDNumber"], sort=False)["NewTotalScore"]
-        .rank(method="min", ascending=False)
-    )
-    df["PositionAfterRace"] = ranked.astype("Int64")
-    return df
+    df["_position_rank_order"] = range(len(df))
+    if "RacePosition" not in df.columns:
+        df["RacePosition"] = pd.NA
+
+    ranked_frames: list[pd.DataFrame] = []
+    for (_race_class, _race_id), race_rows in df.groupby(["RaceClass", "RaceIDNumber"], sort=False):
+        ordered_rows = race_rows.sort_values(
+            ["NewTotalScore", "RacePosition", "_position_rank_order"],
+            ascending=[False, True, True],
+            kind="stable",
+            na_position="last",
+        ).copy()
+        ordered_rows["PositionAfterRace"] = pd.Series(
+            range(1, len(ordered_rows) + 1),
+            index=ordered_rows.index,
+            dtype="Int64",
+        )
+        ranked_frames.append(ordered_rows)
+
+    ranked_df = pd.concat(ranked_frames, axis=0).sort_values("_position_rank_order", kind="stable")
+    ranked_df = ranked_df.drop(columns=["_position_rank_order"])
+    return ranked_df
 
 
 def apply_session_validation(df, parse_detected_int, exact_total_score_fallback):
@@ -419,7 +436,7 @@ def apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
                         review_reasons.append("total_score_mismatch")
                         score_status = "total_score_mismatch"
 
-                if index in total_score_order_violations:
+                if index in total_score_order_violations and detected_total is not None and detected_total != session_new_total:
                     review_reasons.append("total_score_order_violation")
                     if score_status in {"computed_only", "race_points_match", "validated", "rebased"}:
                         score_status = "total_score_order_violation"

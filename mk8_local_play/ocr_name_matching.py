@@ -1,6 +1,8 @@
 import difflib
+import itertools
 import re
 from collections import Counter, defaultdict
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -269,9 +271,8 @@ def _assign_identity_labels(identity_state):
         ordered_identities = sorted(
             identity_ids,
             key=lambda identity_id: (
-                int(identity_state[identity_id]["character_index"])
-                if pd.notna(identity_state[identity_id]["character_index"]) else 9999,
                 int(identity_state[identity_id]["first_race"]),
+                int(identity_state[identity_id].get("first_position", 9999)),
                 identity_id,
             ),
         )
@@ -351,6 +352,7 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
                         "name_history": [],
                         "character_index": row.get("CharacterIndex"),
                         "first_race": int(race_id),
+                        "first_position": int(row.get("RacePosition", 9999)),
                         "last_detected_total": row.get("DetectedTotalScore"),
                         "visual_refs": [],
                     }
@@ -362,6 +364,7 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
                         "name_history": [],
                         "character_index": row.get("CharacterIndex"),
                         "first_race": int(race_id),
+                        "first_position": int(row.get("RacePosition", 9999)),
                         "last_detected_total": row.get("DetectedTotalScore"),
                         "visual_refs": [],
                     },
@@ -614,6 +617,167 @@ def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:
     return merged_df
 
 
+def _label_base_name(label: str) -> str:
+    match = re.match(r"^(.*)_(\d+)$", str(label))
+    return match.group(1) if match else str(label)
+
+
+def resolve_duplicate_name_identity_chains(df: pd.DataFrame) -> pd.DataFrame:
+    """Reassign duplicate-name identities by minimizing total continuity error across races."""
+    if df.empty or "FixPlayerName" not in df.columns:
+        return df.copy()
+
+    result = df.copy()
+    if "IdentityAmbiguityDetected" not in result.columns:
+        result["IdentityAmbiguityDetected"] = False
+    if "IdentityAmbiguityNote" not in result.columns:
+        result["IdentityAmbiguityNote"] = ""
+
+    def _row_int(row, column):
+        value = row.get(column)
+        if pd.isna(value):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    for race_class, race_group in result.groupby("RaceClass", sort=False):
+        race_group = race_group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable")
+
+        base_groups = defaultdict(list)
+        for label in [str(value) for value in race_group["FixPlayerName"].dropna().unique()]:
+            base_groups[_label_base_name(label)].append(label)
+
+        for base_name, labels in base_groups.items():
+            labels = sorted(set(labels))
+            if len(labels) <= 1:
+                continue
+            if len(labels) > 6:
+                continue
+
+            base_rows = race_group.loc[race_group["FixPlayerName"].isin(labels)].copy()
+            race_ids = sorted(int(value) for value in base_rows["RaceIDNumber"].dropna().unique())
+            if len(race_ids) < 2:
+                continue
+
+            race_to_rows = {}
+            valid_group = True
+            for race_id in race_ids:
+                rows = base_rows.loc[base_rows["RaceIDNumber"] == race_id].sort_values("RacePosition", kind="stable")
+                if len(rows) != len(labels):
+                    valid_group = False
+                    break
+                race_to_rows[race_id] = list(rows.iterrows())
+            if not valid_group:
+                continue
+
+            first_race_rows = race_to_rows[race_ids[0]]
+            slot_count = len(first_race_rows)
+            canonical_labels = tuple(f"{base_name}_{index}" for index in range(1, slot_count + 1))
+            canonical_characters = tuple(row.get("CharacterIndex") for _, row in first_race_rows)
+
+            per_race_permutations = {}
+            for race_id in race_ids:
+                row_entries = race_to_rows[race_id]
+                perm_entries = []
+                for perm in itertools.permutations(range(len(row_entries))):
+                    row_map = {}
+                    cost_bias = 0.0
+                    for slot_index, row_entry_index in enumerate(perm):
+                        row_index, row = row_entries[row_entry_index]
+                        row_map[slot_index] = {
+                            "row_index": row_index,
+                            "old_total": _row_int(row, "DetectedOldTotalScore"),
+                            "new_total": _row_int(row, "DetectedTotalScore"),
+                            "character_index": row.get("CharacterIndex"),
+                            "race_position": int(row.get("RacePosition")),
+                        }
+                        if row_map[slot_index]["character_index"] != canonical_characters[slot_index]:
+                            cost_bias += 1000.0
+                        current_label = str(row.get("FixPlayerName") or "")
+                        desired_label = canonical_labels[slot_index]
+                        if current_label != desired_label:
+                            cost_bias += 0.01
+                    perm_entries.append((perm, row_map, cost_bias))
+                per_race_permutations[race_id] = perm_entries
+
+            anchored_perm = tuple(range(slot_count))
+
+            @lru_cache(maxsize=None)
+            def _best_suffix(race_pos: int, previous_perm: tuple[int, ...]):
+                if race_pos >= len(race_ids):
+                    return 0.0, ()
+
+                race_id = race_ids[race_pos]
+                previous_map = next(
+                    row_map for perm, row_map, _ in per_race_permutations[race_ids[race_pos - 1]] if perm == previous_perm
+                )
+                best_result = None
+                for perm, row_map, bias in per_race_permutations[race_id]:
+                    continuity_cost = 0.0
+                    for slot_index in range(slot_count):
+                        prev_new = previous_map[slot_index]["new_total"]
+                        curr_old = row_map[slot_index]["old_total"]
+                        if prev_new is None or curr_old is None:
+                            continue
+                        continuity_cost += abs(int(prev_new) - int(curr_old))
+                    future_cost, future_path = _best_suffix(race_pos + 1, perm)
+                    candidate = (continuity_cost + bias + future_cost, (perm,) + future_path)
+                    if best_result is None or candidate[0] < best_result[0]:
+                        best_result = candidate
+                return best_result
+
+            _best_cost, suffix_path = _best_suffix(1, anchored_perm)
+            chosen_path = {race_ids[0]: anchored_perm}
+            for race_id, perm in zip(race_ids[1:], suffix_path):
+                chosen_path[race_id] = perm
+
+            for race_id in race_ids:
+                chosen_perm = chosen_path[race_id]
+                chosen_row_map = next(
+                    row_map for perm, row_map, _ in per_race_permutations[race_id] if perm == chosen_perm
+                )
+                old_total_buckets = defaultdict(list)
+                for slot_index in range(slot_count):
+                    row_state = chosen_row_map[slot_index]
+                    key = (row_state["character_index"], row_state["old_total"])
+                    old_total_buckets[key].append(slot_index)
+                ambiguous_slot_partners: dict[int, list[int]] = {}
+                for key, indices in old_total_buckets.items():
+                    if key[1] is None or len(indices) <= 1:
+                        continue
+                    for slot_index in indices:
+                        ambiguous_slot_partners[slot_index] = [other_slot for other_slot in indices if other_slot != slot_index]
+
+                for slot_index in range(slot_count):
+                    row_index = chosen_row_map[slot_index]["row_index"]
+                    desired_label = canonical_labels[slot_index]
+                    result.at[row_index, "FixPlayerName"] = desired_label
+                    result.at[row_index, "IdentityLabel"] = desired_label
+                    existing_method = str(result.at[row_index, "IdentityResolutionMethod"] or "").strip()
+                    if "duplicate_name_chain" not in existing_method:
+                        result.at[row_index, "IdentityResolutionMethod"] = (
+                            f"{existing_method}+duplicate_name_chain" if existing_method else "duplicate_name_chain"
+                        )
+                    if race_id == race_ids[-1] and slot_index in ambiguous_slot_partners:
+                        counterpart_labels = [canonical_labels[other_slot] for other_slot in ambiguous_slot_partners[slot_index]]
+                        counterpart_text = ", ".join(counterpart_labels)
+                        note = (
+                            "Identity ambiguous with "
+                            f"{counterpart_text}: final race could not be resolved uniquely for duplicate "
+                            "name/character/score chain; mapping carried forward from previous race."
+                        )
+                        result.at[row_index, "IdentityAmbiguityDetected"] = True
+                        existing_note = str(result.at[row_index, "IdentityAmbiguityNote"] or "").strip()
+                        if note not in existing_note:
+                            result.at[row_index, "IdentityAmbiguityNote"] = (
+                                f"{existing_note} | {note}" if existing_note else note
+                            )
+
+    return result
+
+
 def compact_identity_labels(df: pd.DataFrame) -> pd.DataFrame:
     """Remove stale numeric suffixes when only one identity remains for a base name."""
     if df.empty:
@@ -676,6 +840,30 @@ def append_identity_relink_review_notes(df: pd.DataFrame) -> pd.DataFrame:
 
     for index in result.index[relink_mask]:
         note = str(result.at[index, "IdentityRelinkNote"] or "").strip()
+        if not note:
+            continue
+        existing_reason = str(result.at[index, "ReviewReason"] or "").strip()
+        if existing_reason and existing_reason.lower() != "nan":
+            if note not in existing_reason:
+                result.at[index, "ReviewReason"] = f"{existing_reason} | {note}"
+        else:
+            result.at[index, "ReviewReason"] = note
+        result.at[index, "ReviewNeeded"] = True
+    return result
+
+
+def append_identity_ambiguity_review_notes(df: pd.DataFrame) -> pd.DataFrame:
+    """Append unresolved duplicate-identity ambiguity notes to review output."""
+    if df.empty or "IdentityAmbiguityDetected" not in df.columns or "IdentityAmbiguityNote" not in df.columns:
+        return df
+
+    result = df.copy()
+    ambiguity_mask = result["IdentityAmbiguityDetected"].fillna(False).astype(bool)
+    if not ambiguity_mask.any():
+        return result
+
+    for index in result.index[ambiguity_mask]:
+        note = str(result.at[index, "IdentityAmbiguityNote"] or "").strip()
         if not note:
             continue
         existing_reason = str(result.at[index, "ReviewReason"] or "").strip()

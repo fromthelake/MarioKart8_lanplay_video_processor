@@ -63,7 +63,9 @@ Initial detection templates live in:
 - `assets/templates/Score_template.png`
 - `assets/templates/Trackname_template.png`
 - `assets/templates/Race_template.png`
+- `assets/templates/Race_template_NL_final.png`
 - `assets/templates/12th_pos_template.png`
+- `assets/templates/12th_pos_templateNL.png`
 - `assets/templates/ignore.png`
 - `assets/templates/albumgallery_ignore.png`
 - `assets/templates/ignore_2.png`
@@ -86,7 +88,9 @@ Current initial-scan ROIs on the normalized `1280x720` image:
   - threshold: `0.6`
   - skip after hit: `0s`
 - race-number anchor:
-  - ROI: `(640, 590, 144, 48)`
+  - primary ROI: `(540, 590, 144, 48)`
+  - alternate ROI: `(640, 590, 144, 48)`
+  - Dutch alternate ROI: `(694, 594, 130, 40)`
   - threshold: `0.6`
   - skip after hit: `60s`
 - ignore review bar:
@@ -106,8 +110,12 @@ The matcher expands each ROI slightly before template matching to tolerate small
 
 Current score-screen detection behavior:
 - the initial scan checks both supported score layouts on each score-target frame
-- the stronger passing match becomes the score candidate layout tag
-- track-name and race-number detection are unchanged
+- score detection is now driven by the left-side row-box position signal, not by a plain score-template coefficient
+- the required prefix length comes from `POSITION_SCAN_MIN_PLAYERS`, currently defaulting to `6`
+- rows `1..N` must all match their own rank and the prefix average must clear the configured average floor
+- the stronger passing layout becomes the score candidate layout tag
+- track-name detection still uses grayscale ROI preprocessing plus template matching
+- race-number detection now supports both the legacy and Dutch template/ROI variants
 - ignore-template matching runs on the same normalized `1280x720` post-crop frame, so the ROIs inherit the same black-border correction as the score templates
 - any ignore hit above its threshold is treated as a hard veto and skips ahead before score candidates are queued
 - parallel initial scan now also streams live score/track/race detection counts back to the parent process so long-running segment scans remain visible in the console
@@ -170,17 +178,24 @@ Current constants:
 - LAN 1 scoreboard points ROI: `(540, 32, 102, 660)`
 - LAN 2 12th-place validation ROI: `(313, 632, 651, 88)`
 - LAN 1 12th-place validation ROI: `(313, 632, 651, 88)`
+- Dutch 12th-place validation ROI: `(306, 658, 670, 41)`
 
 These are used by:
 - [extract_score_screen_selection.py](/C:/Ai/MarioKart8_lanplay_video_processor/mk8_local_play/extract_score_screen_selection.py)
 
 Current RaceScore selection behavior:
 - the first score-screen hit still seeds a provisional RaceScore export time
-- when the 12th-place validation template is seen, the later RaceScore offset is now FPS-scaled instead of using a raw fixed-frame jump
-- for races after race 1, if the previous TotalScore implies a 12-player field, the selector may walk a few frames later to find a valid 12th row before finalizing RaceScore
-- for race 1, that same late-frame search is only attempted when the fixed-offset RaceScore frame looks like a plausible 11-of-12 case
-- TotalScore timing itself is unchanged by this refinement
-- `12th_pos_template.png` remains the shared template asset; only the search ROI changes by score layout
+- the second pass now uses the same row-box score helper as the initial scan instead of a standalone score-template coefficient
+- when a supported 12th-place template is seen, the later RaceScore offset is FPS-scaled instead of using a raw fixed-frame jump
+- both `12th_pos_template.png` and `12th_pos_templateNL.png` are checked; either one can trigger 12th-row logic
+- a true 12th-place hit also expands the RaceScore consensus window so OCR can use a wider early/late bundle around the anchor
+
+Current TotalScore selection behavior:
+- TotalScore is still timed from the end of the RaceScore phase rather than by a separate positive template detector
+- a one-frame score drop is no longer enough to end RaceScore
+- the selector now tracks the start of a continuous score-signal drop and confirms it only after `5.0 * fps` worth of uninterrupted absence
+- that absence check uses a tie-aware row-prefix rule on rows `1..6`, so tied totals do not create a false drop
+- once the drop is confirmed, the existing `-2.7s` timing offset is applied from the `drop_start_frame`, not from the later confirmation frame
 
 ## 7. OCR Regions
 
@@ -235,6 +250,7 @@ Current row-count gating notes:
 - for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
 - the winning template label on that row is debug signal only
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
+- for TotalScore drop confirmation, the code also supports a tie-aware prefix where a row may accept any non-decreasing rank up to its own row number
 
 ### Character icons
 Defined in:
@@ -398,6 +414,7 @@ Validation / review behavior:
 - session rebases remain visible in the debug export as an attention point
 - session rebases no longer count as OCR review failures by themselves
 - actual score mismatches, out-of-range values, and non-monotonic total-score rows still produce review reasons
+- final-race duplicate-name ambiguity notes are now only attached to the rows that remain truly interchangeable, and the note names the conflicting identity label(s)
 
 ## 10. Output Files
 

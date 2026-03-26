@@ -45,12 +45,14 @@ from .extract_common import (
 from .console_logging import LOGGER
 from .ocr_export import build_completion_payload, build_player_count_summary_lines
 from .ocr_name_matching import (
+    append_identity_ambiguity_review_notes,
     append_identity_relink_review_notes,
     choose_canonical_name,
     compact_identity_labels,
     merge_fragmented_identity_aliases,
     preprocess_name,
     reconcile_connection_reset_identities,
+    resolve_duplicate_name_identity_chains,
     standardize_player_names,
     weighted_similarity,
 )
@@ -1772,6 +1774,8 @@ def finalize_ocr_results(
     df = pd.concat(standardized_frames, ignore_index=True) if standardized_frames else df.copy()
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     write_identity_trace_stage("after_standardize", df)
+    df = resolve_duplicate_name_identity_chains(df)
+    write_identity_trace_stage("after_duplicate_name_chain_resolution", df)
     df = merge_fragmented_identity_aliases(df)
     write_identity_trace_stage("after_alias_merge", df)
     frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
@@ -1787,6 +1791,7 @@ def finalize_ocr_results(
     df = df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)
     df = append_identity_relink_review_notes(df)
+    df = append_identity_ambiguity_review_notes(df)
     df = apply_temporary_player_drop_scoring_policy(df)
     write_identity_trace_stage("final_identity_export_input", df)
 

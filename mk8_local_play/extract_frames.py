@@ -352,7 +352,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         result = score_screen_selection.refine_race_score_result_for_expected_players(result, expected_players)
         result = score_screen_selection.expand_race_score_consensus_window(
             result,
-            11 if race_number >= 2 else expected_players,
+            expected_players,
         )
         for key, value in result["stats"].items():
             stats[key] += value
@@ -1384,6 +1384,8 @@ def extract_frames(
         (str(resolve_asset_file('templates', 'ignore.png')), None),
         (str(resolve_asset_file('templates', 'albumgallery_ignore.png')), None),
         (str(resolve_asset_file('templates', 'ignore_2.png')), None),
+        (str(resolve_asset_file('templates', 'Race_template_NL_final.png')), None),
+        (str(resolve_asset_file('templates', '12th_pos_templateNL.png')), None),
     ]
 
     templates = []

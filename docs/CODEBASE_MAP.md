@@ -35,9 +35,9 @@ Runtime baseline:
 - `mk8_local_play/extract_frames.py`
   Extraction orchestrator. Loads videos, determines crop/upscale geometry, runs initial scan, runs score-screen selection, exports frames, and builds extraction summaries.
 - `mk8_local_play/extract_initial_scan.py`
-  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs and segment-based scanning.
+  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, and multiple race-number template/ROI variants.
 - `mk8_local_play/extract_score_screen_selection.py`
-  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains FPS-scaled timing logic and visible-row recovery rules.
+  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains FPS-scaled timing logic, 12th-place/template recovery, and tie-aware sustained-drop logic for TotalScore timing.
 - `mk8_local_play/extract_video_io.py`
   Shared seek/read/grab helpers, corrupt-video sampling, and FFmpeg repair flow.
 - `mk8_local_play/extract_common.py`
@@ -52,14 +52,14 @@ Runtime baseline:
 - `mk8_local_play/low_res_identity.py`
   Dedicated low-resolution identity path. Rebuilds identities from fixed ROIs, character matching, and blob fallback when OCR is too weak.
 - `mk8_local_play/ocr_name_matching.py`
-  Fuzzy matching and canonicalization for noisy player names across races.
+  Fuzzy matching and canonicalization for noisy player names across races, including duplicate-name chain resolution and targeted final-race ambiguity notes.
 - `mk8_local_play/ocr_common.py`
   Shared OCR metadata and frame-loading helpers.
 
 ### Validation and export phase
 
 - `mk8_local_play/ocr_session_validation.py`
-  Validates totals, identifies session rebases/resets, and attaches review reasons.
+  Validates totals, identifies session rebases/resets, attaches review reasons, and recomputes final post-race ordering from validated totals.
 - `mk8_local_play/ocr_export.py`
   Builds user/debug export dataframes and writes timestamped workbook files.
 

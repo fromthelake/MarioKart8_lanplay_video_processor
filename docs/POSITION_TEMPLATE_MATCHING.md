@@ -4,14 +4,18 @@ This note explains how the left-side position number check works on score screen
 
 ## Goal
 
-The position template check is used as an extra visual signal for player-count detection.
+The position template check is used as the main score-presence signal for score-screen detection and as an extra visual signal for player-count detection.
 
 It helps answer:
 
 - Does this scoreboard row show a real rank number?
 - Is this lower row likely empty noise?
 
-It does **not** replace the other OCR signals by itself.
+It does **not** replace the rest of OCR by itself, but it now drives:
+
+- initial score-screen detection
+- RaceScore player-count recovery
+- TotalScore drop confirmation
 
 ## Current ROI
 
@@ -124,6 +128,24 @@ logical high-coefficient candidate first instead of stopping immediately.
 
 This is mainly useful for close-shape neighbours such as `3` and `8`.
 
+### Step 4. Tie-aware prefix acceptance
+
+For some TotalScore checks, the code intentionally allows tied rank numbers.
+
+That means the row is still acceptable when:
+
+- the shown rank does not go down compared with the row above
+- the shown rank is not larger than the row number itself
+
+Examples:
+
+- row 2 may show `1` or `2`
+- row 3 may show `1`, `2`, or `3`
+- row 6 may show any non-decreasing rank in `1..6`
+
+This tie-aware rule is used for confirming when the RaceScore signal has really disappeared,
+so temporary transition frames and tied totals do not create a false TotalScore drop.
+
 ## Current status
 
 The stricter ROI and the new template slicing made the row-level results much stronger.
@@ -140,6 +162,12 @@ position method is consistent with the corrected expectation.
 
 The position-template method is now the official row-count guide, with the older OCR-only
 count retained only as a legacy debug reference.
+
+For initial score detection, the same left-side row boxes now act as the score trigger:
+
+- rows `1..N` must all match their own rank
+- each row must clear the configured row floor
+- the prefix average must clear the configured average floor
 
 The current 10-player reference video now validates cleanly with this rule set:
 
@@ -158,6 +186,21 @@ When the selected RaceScore frame looks suspicious, the OCR layer now:
 
 This recovery only changes the RaceScore player-count decision. It does not replace the
 whole OCR payload for the race.
+
+## TotalScore drop confirmation
+
+TotalScore selection no longer treats a single missing score frame as the end of the
+RaceScore phase.
+
+Instead the selector now:
+
+1. watches for a sustained drop in the score signal
+2. uses tie-aware rank acceptance on rows `1..6`
+3. confirms the drop only after `5.0 * fps` worth of continuous absence
+4. anchors TotalScore from the start of that confirmed drop, then applies the existing
+   `-2.7s` timing offset
+
+This prevents short transition animations from triggering an early `3TotalScore` frame.
 
 ## RaceScore frame split
 

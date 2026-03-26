@@ -21,6 +21,10 @@ Recent scoring and validation behavior:
 - temporary player-drop races can stay visible in the workbook while being excluded from tournament totals when a later race recovers to a higher player count
 - user exports now include `Counts Toward Totals` and `Scoring Note` at the end of the table when that late scoring policy applies
 - recursive runs now skip any videos under a folder named `corrupt` or `exclude`
+- final-race duplicate-name ambiguity notes now only mark the rows that are still truly interchangeable, and the note names the conflicting identity label(s)
+- score detection now uses the left-side row-box position signal for the required visible-player prefix instead of relying on a standalone score-strip template match
+- 12th-place checks now support both the legacy and Dutch templates during score selection
+- TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
 
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts

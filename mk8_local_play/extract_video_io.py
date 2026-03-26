@@ -20,25 +20,15 @@ CORRUPT_CHECK_EDGE_SAMPLE_COUNT = 10
 CORRUPT_CHECK_EDGE_FRACTION = 0.02
 CORRUPT_CHECK_READ_TIMEOUT_S = 5.0
 CORRUPT_CHECK_FRAME_SLACK = 5
-VIDEO_OPERATION_TIMEOUT_DIVISOR = 50.0
-VIDEO_OPERATION_TIMEOUT_MIN_S = 30.0
-VIDEO_OPERATION_TIMEOUT_MAX_S = 300.0
 VIDEO_REPAIR_PROGRESS_INTERVAL_S = 2.0
+VIDEO_REPAIR_STALL_TIMEOUT_S = 45.0
+VIDEO_REPAIR_PROGRESS_EPSILON_S = 0.25
 _STDERR_REDIRECT_LOCK = threading.Lock()
 
 
 def add_timing(stats, key, start_time):
     """Accumulate elapsed time for a named timing bucket."""
     stats[key] += time.perf_counter() - start_time
-
-
-def video_operation_timeout_s(duration_s: float | None) -> float:
-    if duration_s is None or duration_s <= 0:
-        return VIDEO_OPERATION_TIMEOUT_MIN_S
-    return min(
-        VIDEO_OPERATION_TIMEOUT_MAX_S,
-        max(VIDEO_OPERATION_TIMEOUT_MIN_S, float(duration_s) / VIDEO_OPERATION_TIMEOUT_DIVISOR),
-    )
 
 
 def seek_to_frame(capture, frame_number, stats):
@@ -376,7 +366,20 @@ def _format_media_clock(seconds: float) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02}"
 
 
-def _run_ffmpeg_repair_command(command: list[str], source_name: str, timeout_s: float, source_duration_s: float | None = None) -> None:
+def _update_repair_progress_state(
+    encoded_seconds: float,
+    previous_progress_seconds: float,
+    stalled_elapsed_s: float,
+    elapsed_since_last_check_s: float,
+    *,
+    epsilon_s: float = VIDEO_REPAIR_PROGRESS_EPSILON_S,
+) -> tuple[float, float]:
+    if encoded_seconds > previous_progress_seconds + float(epsilon_s):
+        return 0.0, float(encoded_seconds)
+    return float(stalled_elapsed_s + elapsed_since_last_check_s), float(previous_progress_seconds)
+
+
+def _run_ffmpeg_repair_command(command: list[str], source_name: str, stall_timeout_s: float, source_duration_s: float | None = None) -> None:
     progress_command = command[:1] + ["-progress", "pipe:1", "-nostats"] + command[1:]
     process = subprocess.Popen(
         progress_command,
@@ -401,6 +404,8 @@ def _run_ffmpeg_repair_command(command: list[str], source_name: str, timeout_s: 
     start_time = time.perf_counter()
     last_progress_log = start_time
     encoded_seconds = 0.0
+    previous_progress_seconds = 0.0
+    stalled_progress_elapsed_s = 0.0
 
     while True:
         try:
@@ -420,19 +425,15 @@ def _run_ffmpeg_repair_command(command: list[str], source_name: str, timeout_s: 
         except queue.Empty:
             pass
 
-        elapsed = time.perf_counter() - start_time
-        if elapsed >= timeout_s:
-            try:
-                process.kill()
-            except Exception:
-                pass
-            try:
-                process.wait(timeout=5)
-            except Exception:
-                pass
-            raise subprocess.TimeoutExpired(progress_command, timeout_s)
-
         if process.poll() is None and time.perf_counter() - last_progress_log >= VIDEO_REPAIR_PROGRESS_INTERVAL_S:
+            elapsed = time.perf_counter() - start_time
+            elapsed_since_last_check_s = max(0.0, time.perf_counter() - last_progress_log)
+            stalled_progress_elapsed_s, previous_progress_seconds = _update_repair_progress_state(
+                encoded_seconds,
+                previous_progress_seconds,
+                stalled_progress_elapsed_s,
+                elapsed_since_last_check_s,
+            )
             detail = ""
             if encoded_seconds > 0 and source_duration_s and source_duration_s > 0:
                 progress_pct = min(100.0, max(0.0, (encoded_seconds / source_duration_s) * 100.0))
@@ -448,6 +449,16 @@ def _run_ffmpeg_repair_command(command: list[str], source_name: str, timeout_s: 
                 color_name="yellow",
             )
             last_progress_log = time.perf_counter()
+            if stalled_progress_elapsed_s >= max(1.0, float(stall_timeout_s)):
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+                raise subprocess.TimeoutExpired(progress_command, elapsed)
 
         if process.poll() is not None:
             reader.join(timeout=1.0)
@@ -492,7 +503,7 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
         _run_ffmpeg_repair_command(
             _ffmpeg_repair_command(source_path, repairing_path),
             source_path.name,
-            video_operation_timeout_s(duration_s),
+            VIDEO_REPAIR_STALL_TIMEOUT_S,
             source_duration_s=duration_s,
         )
     except subprocess.TimeoutExpired:
@@ -505,7 +516,10 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
             stats["repair_duration_s"] = stats.get("repair_duration_s", 0.0) + (time.perf_counter() - repair_start)
         LOGGER.log(
             "[Video Repair]",
-            f"Repair timed out after {video_operation_timeout_s(duration_s):.0f}s for {source_path.name}",
+            (
+                f"Repair stalled after {VIDEO_REPAIR_STALL_TIMEOUT_S:.0f}s "
+                f"without ffmpeg progress for {source_path.name}"
+            ),
             color_name="yellow",
         )
         return video_path

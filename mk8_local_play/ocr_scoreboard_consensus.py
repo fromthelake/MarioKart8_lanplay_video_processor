@@ -2063,6 +2063,35 @@ def map_total_rows_to_race_rows(
             )
         return mapped_rows
 
+    def _expected_total_similarity(score_row: Dict[str, object], total_row: Dict[str, object]) -> float:
+        detected_old_total = parse_detected_int(score_row.get("DetectedSecondaryValue"))
+        detected_race_points = parse_detected_int(score_row.get("DetectedValue"))
+        detected_total = parse_detected_int(total_row.get("DetectedValue"))
+        if detected_old_total is None or detected_race_points is None or detected_total is None:
+            return 0.0
+        expected_total = int(detected_old_total) + int(detected_race_points)
+        gap = abs(int(detected_total) - expected_total)
+        if gap == 0:
+            return 1.0
+        if gap == 1:
+            return 0.75
+        if gap == 2:
+            return 0.45
+        if gap <= 4:
+            return 0.15
+        return -0.35
+
+    score_name_counts = Counter(
+        preprocess_name(str(score_row["PlayerName"] or ""))
+        for score_row in score_rows
+        if preprocess_name(str(score_row["PlayerName"] or ""))
+    )
+    total_name_counts = Counter(
+        preprocess_name(str(total_row["PlayerName"] or ""))
+        for total_row in total_rows
+        if preprocess_name(str(total_row["PlayerName"] or ""))
+    )
+
     candidate_matches = []
     candidate_matches_by_score_index = defaultdict(list)
     for score_index, score_row in enumerate(score_rows):
@@ -2081,18 +2110,33 @@ def map_total_rows_to_race_rows(
                 character_score = 0.0
             else:
                 character_score = 0.1
-            combined_score = (similarity * 0.65) + (confidence_floor * 0.15) + (character_score * 0.20)
+            duplicate_name = max(score_name_counts[normalized_score_name], total_name_counts[normalized_total_name]) > 1
+            if duplicate_name:
+                expected_total_score = _expected_total_similarity(score_row, total_row)
+                effective_name_score = 0.25 if normalized_score_name == normalized_total_name else similarity * 0.25
+                combined_score = (
+                    (effective_name_score * 0.20)
+                    + (confidence_floor * 0.10)
+                    + (character_score * 0.25)
+                    + (expected_total_score * 0.45)
+                )
+            else:
+                combined_score = (similarity * 0.65) + (confidence_floor * 0.15) + (character_score * 0.20)
             if similarity >= 0.72 or normalized_score_name == normalized_total_name:
-                candidate_matches.append((combined_score, similarity, score_index, total_index))
+                candidate_matches.append((combined_score, similarity, duplicate_name, score_index, total_index))
                 candidate_matches_by_score_index[score_index].append((combined_score, similarity, total_index))
 
     assigned_score_indices = set()
     assigned_total_indices = set()
     matched_totals_by_score_index = {}
-    for _combined_score, similarity, score_index, total_index in sorted(candidate_matches, reverse=True):
+    for _combined_score, similarity, duplicate_name, score_index, total_index in sorted(candidate_matches, reverse=True):
         if score_index in assigned_score_indices or total_index in assigned_total_indices:
             continue
-        matched_totals_by_score_index[score_index] = (total_index, "name_exact" if similarity >= 0.999 else "name_fuzzy")
+        if duplicate_name:
+            mapping_method = "duplicate_name_expected_total"
+        else:
+            mapping_method = "name_exact" if similarity >= 0.999 else "name_fuzzy"
+        matched_totals_by_score_index[score_index] = (total_index, mapping_method)
         assigned_score_indices.add(score_index)
         assigned_total_indices.add(total_index)
 

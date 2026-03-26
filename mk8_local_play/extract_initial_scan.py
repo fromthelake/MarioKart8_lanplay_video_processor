@@ -22,11 +22,15 @@ from .extract_common import (
     relative_video_path,
     write_export_image,
 )
+from .ocr_scoreboard_consensus import build_position_signal_metrics, process_image
 from .project_paths import PROJECT_ROOT
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, all_score_layouts
 from . import extract_video_io as video_io
 
 INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
+POSITION_SCAN_MIN_PLAYERS = max(2, int(os.environ.get("MK8_POSITION_SCAN_MIN_PLAYERS", "6")))
+POSITION_SCAN_MIN_ROW_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_ROW_COEFF", "0.4"))
+POSITION_SCAN_MIN_AVG_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_AVG_COEFF", "0.6"))
 
 
 INITIAL_SCAN_TARGETS = (
@@ -43,13 +47,19 @@ INITIAL_SCAN_TARGETS = (
         "match_threshold": 0.6,
         "skip_seconds": 0,
         "roi": (141, 607, 183, 101),
+        "template_index": 1,
     },
     {
         "kind": "race",
         "label": "RaceNumber",
         "match_threshold": 0.6,
         "skip_seconds": 60,
-        "roi": (640, 590, 144, 48),
+        "roi": (540, 590, 144, 48),
+        "template_index": 2,
+        "alternate_matches": (
+            {"roi": (640, 590, 144, 48), "template_index": 2},
+            {"roi": (694, 594, 130, 40), "template_index": 7},
+        ),
     },
 )
 
@@ -82,44 +92,51 @@ IGNORE_FRAME_TARGETS = (
     },
 )
 
-
-def _match_score_target_layouts(gray_image, templates, stats):
-    """Evaluate the score anchor against both supported score layouts."""
-    template_binary, alpha_mask = templates[0]
+def _match_score_target_layouts(image_source, templates, stats):
+    """Evaluate score presence using the per-row position boxes for both supported layouts."""
     best_match = {
         "max_val": 0.0,
         "layout_id": DEFAULT_SCORE_LAYOUT_ID,
     }
-    saw_non_blank_layout = False
+    saw_supported_layout = False
+    if len(image_source.shape) == 2:
+        bgr_image = cv2.cvtColor(image_source, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr_image = image_source
     for layout in all_score_layouts():
-        roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, layout.score_anchor_roi)
-        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
-
         stage_start = time.perf_counter()
-        processed_roi = preprocess_roi(roi, 0)
+        processed_image = process_image(bgr_image, score_layout_id=layout.layout_id)
         video_io.add_timing(stats, "initial_roi_preprocess_s", stage_start)
 
-        black_pixel_percentage = np.mean(processed_roi == 0)
-        if black_pixel_percentage >= 0.97:
-            continue
-        saw_non_blank_layout = True
-
-        if processed_roi.shape[0] < template_binary.shape[0] or processed_roi.shape[1] < template_binary.shape[1]:
-            processed_roi = cv2.resize(
-                processed_roi,
-                (max(template_binary.shape[1], processed_roi.shape[1]), max(template_binary.shape[0], processed_roi.shape[0])),
-                interpolation=cv2.INTER_LINEAR,
-            )
-
         stage_start = time.perf_counter()
-        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        position_metrics = build_position_signal_metrics(processed_image, score_layout_id=layout.layout_id)
         video_io.add_timing(stats, "initial_match_s", stage_start)
+
+        if not position_metrics:
+            continue
+        saw_supported_layout = True
+        prefix_scores = []
+        for row_number in range(1, POSITION_SCAN_MIN_PLAYERS + 1):
+            if row_number > len(position_metrics):
+                break
+            metric = position_metrics[row_number - 1]
+            best_rank = int(metric.get("best_position_template", 0))
+            best_score = float(metric.get("best_position_score", 0.0))
+            if best_rank != row_number or best_score < POSITION_SCAN_MIN_ROW_COEFF:
+                break
+            prefix_scores.append(best_score)
+        if len(prefix_scores) < POSITION_SCAN_MIN_PLAYERS:
+            continue
+        average_score = float(sum(prefix_scores) / len(prefix_scores))
+        if average_score < POSITION_SCAN_MIN_AVG_COEFF:
+            continue
+        max_val = average_score
         if max_val > best_match["max_val"]:
             best_match = {
-                "max_val": float(max_val),
+                "max_val": max_val,
                 "layout_id": layout.layout_id,
             }
-    return best_match["max_val"], not saw_non_blank_layout, str(best_match["layout_id"])
+    return best_match["max_val"], not saw_supported_layout, str(best_match["layout_id"])
 
 
 def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False, video_label=None):
@@ -163,6 +180,12 @@ def _expanded_roi(gray_image, roi_definition):
     roi_width = min(roi_width + 50, gray_image.shape[1] - roi_x)
     roi_height = min(roi_height + 50, gray_image.shape[0] - roi_y)
     return roi_x, roi_y, roi_width, roi_height
+
+
+def _score_anchor_roi_for_template(gray_image, roi_definition, template_binary):
+    """Keep the anchor aligned to the top of the scoreboard for shorter score templates."""
+    roi_x, roi_y, roi_width, _roi_height = roi_definition
+    return _expanded_roi(gray_image, (roi_x, roi_y, roi_width, int(template_binary.shape[0])))
 
 
 def _bounded_roi(gray_image, roi_definition):
@@ -214,30 +237,45 @@ def _match_ignore_frame_target(gray_image, templates, stats):
 
 
 def _match_initial_scan_target(gray_image, target, templates, stats):
-    """Prepare, filter, and match one anchor target inside the current frame."""
-    roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, target["roi"])
-    roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+    best_processed_roi = None
+    best_match_val = 0.0
+    saw_non_blank_roi = False
+    candidate_matches = (
+        {"roi": target["roi"], "template_index": int(target["template_index"])},
+        *tuple(target.get("alternate_matches", ())),
+    )
+    for candidate in candidate_matches:
+        template_binary, alpha_mask = templates[int(candidate["template_index"])]
+        roi_definition = candidate["roi"]
+        roi_x, roi_y, roi_width, roi_height = _expanded_roi(gray_image, roi_definition)
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
 
-    stage_start = time.perf_counter()
-    processed_roi = preprocess_roi(roi, INITIAL_SCAN_TARGETS.index(target))
-    video_io.add_timing(stats, "initial_roi_preprocess_s", stage_start)
+        stage_start = time.perf_counter()
+        processed_roi = preprocess_roi(roi, INITIAL_SCAN_TARGETS.index(target))
+        video_io.add_timing(stats, "initial_roi_preprocess_s", stage_start)
 
-    black_pixel_percentage = np.mean(processed_roi == 0)
-    if black_pixel_percentage >= 0.97:
-        return 0.0, True, processed_roi
+        black_pixel_percentage = np.mean(processed_roi == 0)
+        if black_pixel_percentage >= 0.97:
+            if best_processed_roi is None:
+                best_processed_roi = processed_roi
+            continue
+        saw_non_blank_roi = True
 
-    template_binary, alpha_mask = templates[INITIAL_SCAN_TARGETS.index(target)]
-    if processed_roi.shape[0] < template_binary.shape[0] or processed_roi.shape[1] < template_binary.shape[1]:
-        processed_roi = cv2.resize(
-            processed_roi,
-            (max(template_binary.shape[1], processed_roi.shape[1]), max(template_binary.shape[0], processed_roi.shape[0])),
-            interpolation=cv2.INTER_LINEAR,
-        )
+        if processed_roi.shape[0] < template_binary.shape[0] or processed_roi.shape[1] < template_binary.shape[1]:
+            processed_roi = cv2.resize(
+                processed_roi,
+                (max(template_binary.shape[1], processed_roi.shape[1]), max(template_binary.shape[0], processed_roi.shape[0])),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
-    stage_start = time.perf_counter()
-    max_val = match_template(processed_roi, template_binary, alpha_mask)
-    video_io.add_timing(stats, "initial_match_s", stage_start)
-    return max_val, False, processed_roi
+        stage_start = time.perf_counter()
+        max_val = match_template(processed_roi, template_binary, alpha_mask)
+        video_io.add_timing(stats, "initial_match_s", stage_start)
+        if best_processed_roi is None or max_val > best_match_val:
+            best_processed_roi = processed_roi
+            best_match_val = float(max_val)
+
+    return best_match_val, not saw_non_blank_roi, best_processed_roi
 
 
 def process_frame(frame, frame_number, video_path, video_label, video_source_path, templates, fps, csv_writer, scale_x, scale_y, left, top,
@@ -259,7 +297,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":
-            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(gray_image, templates, stats)
+            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
         else:
             max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
             score_layout_id = ""
@@ -364,7 +402,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":
-            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(gray_image, templates, stats)
+            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
         else:
             max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
             score_layout_id = ""
@@ -670,6 +708,8 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
 
 def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=None):
     """Prefer processes for the CPU-bound initial scan, then fall back to threads if needed."""
+    progress_video_label = str(segment_tasks[0].get("video_label", "")) if segment_tasks else ""
+
     def _drain_progress(progress_queue, segment_state, live_counts, live_state):
         changed = False
         detection_changed = False
@@ -694,16 +734,16 @@ def run_parallel_detection_segments(segment_tasks, progress=None, diagnostics=No
             completed_frames = sum(item[0] for item in segment_state.values())
             total_frames = sum(item[1] for item in segment_state.values())
             progress.total_units = max(1, total_frames)
-            detail = _color_live_detection_detail(video_label, live_counts['score'], live_counts['track'], live_counts['race'])
-            progress.update(completed_frames, detail, value_color_token=video_label)
+            detail = _color_live_detection_detail(progress_video_label, live_counts['score'], live_counts['track'], live_counts['race'])
+            progress.update(completed_frames, detail, value_color_token=progress_video_label)
         elif detection_changed and progress is not None:
             now = time.perf_counter()
             if now - float(live_state["last_detection_log_time"]) >= 2.0:
                 completed_frames = sum(item[0] for item in segment_state.values())
                 total_frames = sum(item[1] for item in segment_state.values())
                 progress.total_units = max(1, total_frames)
-                detail = _color_live_detection_detail(video_label, live_counts['score'], live_counts['track'], live_counts['race'])
-                progress.update(completed_frames, detail, force=True, value_color_token=video_label)
+                detail = _color_live_detection_detail(progress_video_label, live_counts['score'], live_counts['track'], live_counts['race'])
+                progress.update(completed_frames, detail, force=True, value_color_token=progress_video_label)
                 live_state["last_detection_log_time"] = now
 
     def _run_with_executor(executor_factory, progress_queue, executor_label):
