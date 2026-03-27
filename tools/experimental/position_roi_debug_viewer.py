@@ -21,9 +21,14 @@ from PIL import Image, ImageTk
 from mk8_local_play.extract_common import TARGET_HEIGHT, TARGET_WIDTH, crop_and_upscale_image, frame_to_timecode
 from mk8_local_play.extract_initial_scan import (
     INITIAL_SCAN_TARGETS,
+    INITIAL_SCAN_GATE_MIN_COEFF,
+    INITIAL_SCAN_GATE_ROW_END,
+    INITIAL_SCAN_GATE_ROW_START,
     _match_ignore_frame_target,
     _match_initial_scan_target,
+    _match_score_target_layouts,
     _expanded_roi,
+    _initial_scan_score_gate,
     _bounded_roi,
     IGNORE_FRAME_TARGETS,
 )
@@ -32,7 +37,10 @@ from mk8_local_play.ocr_scoreboard_consensus import (
     POSITION_ROW_PADDING_BOTTOM,
     POSITION_ROW_PADDING_TOP,
     POSITION_ROW_PADDING_X,
+    _template_match_score,
     build_position_signal_metrics,
+    extract_position_row_match_crops,
+    load_position_row_templates,
     position_strip_roi,
     position_template_row_windows,
     process_image,
@@ -263,8 +271,11 @@ class PositionRoiDebugViewer:
             f"Rows used: 1..{self.min_players_var.get()}"
         )
         self.decision_var.set(
-            f"Score Pass: {'YES' if scan_summary['score_pass'] else 'NO'}\n"
-            f"Score Layout: {scan_summary['score_layout_id']}\n"
+            f"ScoreGate56 Pass: {'YES' if scan_summary['score_gate_pass'] else 'NO'} | "
+            f"{scan_summary['score_gate_value']:.3f} / {scan_summary['score_gate_threshold']:.2f} | "
+            f"layout {scan_summary['score_gate_layout_id']}\n"
+            f"Score Confirm Pass: {'YES' if scan_summary['score_pass'] else 'NO'} | "
+            f"{scan_summary['score_value']:.3f} | layout {scan_summary['score_layout_id']}\n"
             f"Per-row floor: {self.row_floor_var.get():.2f}\n"
             f"Average floor: {self.avg_floor_var.get():.2f}\n"
             f"Average rows 1..{self.min_players_var.get()}: {avg:.3f}\n"
@@ -275,6 +286,15 @@ class PositionRoiDebugViewer:
             f"{self.last_scan_step}"
         )
         self.rows_text.delete("1.0", tk.END)
+        self.rows_text.insert(tk.END, "ScoreGate56\n")
+        for row_info in scan_summary.get("score_gate_rows", []):
+            self.rows_text.insert(
+                tk.END,
+                f"layout {row_info['layout_id']} | row {row_info['row_number']:02d} | "
+                f"{row_info['score']:.3f} | {'PASS' if row_info['passes'] else 'FAIL'} | "
+                f"{row_info['reason']}\n",
+            )
+        self.rows_text.insert(tk.END, "\nScore Confirm 1..N\n")
         for item in decisions:
             self.rows_text.insert(
                 tk.END,
@@ -304,6 +324,43 @@ class PositionRoiDebugViewer:
         avg = sum(item.score for item in required) / len(required)
         return avg >= avg_floor
 
+    def _evaluate_score_gate(self, upscaled) -> dict:
+        stats = defaultdict(float)
+        gate_result = _initial_scan_score_gate(upscaled, stats)
+        templates = load_position_row_templates()
+        row_details = []
+        for layout in all_score_layouts():
+            position_rows = extract_position_row_match_crops(
+                upscaled,
+                score_layout_id=layout.layout_id,
+                max_rows=max(1, int(INITIAL_SCAN_GATE_ROW_END)),
+            )
+            for row_number in range(int(INITIAL_SCAN_GATE_ROW_START), int(INITIAL_SCAN_GATE_ROW_END) + 1):
+                if row_number > len(position_rows):
+                    continue
+                coeff = float(_template_match_score(position_rows[row_number - 1], templates[row_number - 1]))
+                row_details.append(
+                    {
+                        "layout_id": str(layout.layout_id),
+                        "row_number": int(row_number),
+                        "score": coeff,
+                        "passes": coeff >= float(INITIAL_SCAN_GATE_MIN_COEFF),
+                        "delta_to_threshold": coeff - float(INITIAL_SCAN_GATE_MIN_COEFF),
+                        "reason": (
+                            "meets threshold"
+                            if coeff >= float(INITIAL_SCAN_GATE_MIN_COEFF)
+                            else f"below threshold by {float(INITIAL_SCAN_GATE_MIN_COEFF) - coeff:.3f}"
+                        ),
+                    }
+                )
+        return {
+            "passed": bool(gate_result["passed"]),
+            "max_val": float(gate_result["max_val"]),
+            "layout_id": str(gate_result["layout_id"]),
+            "row_details": row_details,
+            "threshold": float(INITIAL_SCAN_GATE_MIN_COEFF),
+        }
+
     def _evaluate_score_layouts(self, upscaled) -> ScoreLayoutEvaluation:
         evaluations: list[ScoreLayoutEvaluation] = []
         min_players = max(2, int(self.min_players_var.get()))
@@ -329,10 +386,27 @@ class PositionRoiDebugViewer:
 
     def _evaluate_scan_frame(self, upscaled) -> tuple[list[RowDecision], dict]:
         gray_image = cv2.cvtColor(upscaled, cv2.COLOR_BGR2GRAY)
-        score_eval = self._evaluate_score_layouts(upscaled)
-        decisions = score_eval.decisions
-        score_pass = score_eval.passed
-        score_value = score_eval.average_score if score_eval.decisions else 0.0
+        gate_summary = self._evaluate_score_gate(upscaled)
+        if gate_summary["passed"]:
+            stats = defaultdict(float)
+            max_val, rejected_as_blank, score_layout_id, _layout_metrics = _match_score_target_layouts(
+                upscaled,
+                self.templates,
+                stats,
+                return_layout_metrics=True,
+                stats_scope="viewer",
+            )
+            score_eval = self._evaluate_score_layouts(upscaled)
+            decisions = score_eval.decisions
+            score_pass = bool(not rejected_as_blank and score_eval.passed)
+            score_value = float(max_val)
+            score_layout = str(score_layout_id or score_eval.layout_id)
+        else:
+            score_eval = ScoreLayoutEvaluation(str(gate_summary["layout_id"]), [], 0.0, False)
+            decisions = []
+            score_pass = False
+            score_value = 0.0
+            score_layout = str(gate_summary["layout_id"])
 
         stats = defaultdict(float)
         ignore_match = _match_ignore_frame_target(gray_image, self.templates, stats)
@@ -387,9 +461,14 @@ class PositionRoiDebugViewer:
         next_frame = self.current_frame if total_advance_frames == 0 else min(max(0, self.frame_count - 1), self.current_frame + max(1, total_advance_frames))
         next_timecode = frame_to_timecode(next_frame, self.fps)
         scan_summary = {
+            "score_gate_pass": bool(gate_summary["passed"]),
+            "score_gate_value": float(gate_summary["max_val"]),
+            "score_gate_layout_id": str(gate_summary["layout_id"]),
+            "score_gate_threshold": float(gate_summary["threshold"]),
+            "score_gate_rows": gate_summary["row_details"],
             "score_pass": score_pass,
             "score_value": score_value,
-            "score_layout_id": score_eval.layout_id,
+            "score_layout_id": score_layout,
             "ignore_label": ignore_match["label"] or "Ignore",
             "ignore_score": float(ignore_match["max_val"]),
             "ignore_threshold": float(ignore_match["match_threshold"]),
@@ -429,7 +508,7 @@ class PositionRoiDebugViewer:
         }
         return decisions, scan_summary
 
-    def _next_scan_frame(self) -> None:
+    def _next_scan_frame(self, *, pause_on_pass: bool = True) -> None:
         if self.capture is None:
             return
         if self.pending_resume_frame is not None and self.pending_resume_frame != self.current_frame:
@@ -456,7 +535,7 @@ class PositionRoiDebugViewer:
         )
         if next_frame == self.current_frame:
             self.last_scan_step += " | no frame advance"
-        if self.last_scan_found_pass:
+        if self.last_scan_found_pass and pause_on_pass:
             self.last_scan_step += f" | paused on detected {scan_summary['branch']} at frame {current_frame_before_step}"
             self.pending_resume_frame = next_frame
             self.current_frame = current_frame_before_step
@@ -475,8 +554,8 @@ class PositionRoiDebugViewer:
         if not self.scan_autoplay:
             return
         previous_frame = self.current_frame
-        self._next_scan_frame()
-        if self.last_scan_found_pass or self.current_frame == previous_frame or self.current_frame >= max(0, self.frame_count - 1):
+        self._next_scan_frame(pause_on_pass=False)
+        if self.current_frame == previous_frame or self.current_frame >= max(0, self.frame_count - 1):
             self.scan_autoplay = False
             self.autoplay_button.configure(text="Start Scan Play")
             return
@@ -509,7 +588,7 @@ class PositionRoiDebugViewer:
 
         cv2.putText(
             image,
-            f"Score Layout: {score_layout_id}",
+            f"Score Layout: {score_layout_id} | Gate56 {'PASS' if scan_summary.get('score_gate_pass') else 'FAIL'}",
             (12, 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -517,6 +596,36 @@ class PositionRoiDebugViewer:
             1,
             cv2.LINE_AA,
         )
+
+        gate_layout_id = str(scan_summary.get("score_gate_layout_id") or score_layout_id)
+        gate_rows = [
+            row_info
+            for row_info in scan_summary.get("score_gate_rows", [])
+            if str(row_info.get("layout_id")) == gate_layout_id
+        ]
+        (gate_x1, gate_y1), (gate_x2, gate_y2) = position_strip_roi(score_layout_id=gate_layout_id)
+        row_windows = position_template_row_windows()
+        for row_info in gate_rows:
+            row_index = int(row_info["row_number"]) - 1
+            if row_index < 0 or row_index >= len(row_windows):
+                continue
+            start_y, end_y = row_windows[row_index]
+            crop_x1 = max(0, gate_x1 - POSITION_ROW_PADDING_X)
+            crop_y1 = max(0, gate_y1 + start_y - POSITION_ROW_PADDING_TOP)
+            crop_x2 = min(image.shape[1], gate_x2 + POSITION_ROW_PADDING_X)
+            crop_y2 = min(image.shape[0], gate_y1 + end_y + POSITION_ROW_PADDING_BOTTOM)
+            gate_color = (0, 255, 255) if row_info["passes"] else (0, 128, 255)
+            cv2.rectangle(image, (crop_x1, crop_y1), (crop_x2, crop_y2), gate_color, 2)
+            cv2.putText(
+                image,
+                f"G{row_info['row_number']} {row_info['score']:.2f}",
+                (max(4, crop_x1 - 2), max(12, crop_y1 - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.4,
+                gate_color,
+                1,
+                cv2.LINE_AA,
+            )
 
         for ignore_target in scan_summary.get("ignore_targets", []):
             roi_x, roi_y, roi_width, roi_height = ignore_target["roi"]

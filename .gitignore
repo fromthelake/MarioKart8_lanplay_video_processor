@@ -19,9 +19,12 @@ Output_Results/Debug/*
 !Output_Results/Debug/.gitkeep
 Output_Results/Debug/Score_Frames/*
 !Output_Results/Debug/Score_Frames/.gitkeep
+Output_Results/*.xlsx
+Output_Results/*.csv
 Output_Results/*_Tournament_Results.xlsx
 Output_Results/*_Tournament_Results.csv
 Output_Results/*_Tournament_Results_Debug.xlsx
+Output_Results/*_Final_Standings.csv
 Output_Results/_temp_*.xlsx
 
 # Local debug artifacts
@@ -39,4 +42,9 @@ benchmarks/baselines/local/
 benchmarks/baselines/*_current/
 benchmarks/baselines/*_baseline/
 !benchmarks/baselines/.gitkeep
+benchmarks/*.log
+benchmarks/compare_scan*/
+benchmarks/full_scan*/
+benchmarks/scan*_clean_extract.log
+benchmarks/scan*_extract.log
 MK8DX_LAN_Tournament_Seating/
