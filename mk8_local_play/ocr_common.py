@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .extract_common import find_score_bundle_consensus_paths
+from .extract_common import extract_exported_frame_number, find_score_bundle_consensus_paths
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID
 
 TARGET_WIDTH = 1280
@@ -13,8 +13,7 @@ TARGET_HEIGHT = 720
 
 
 def _extract_numeric_suffix(stem: str) -> int:
-    match = re.search(r"(\d+)$", stem)
-    return int(match.group(1)) if match else -1
+    return extract_exported_frame_number(stem)
 
 
 def calculate_sum_intensity(gray_image: np.ndarray):

@@ -373,7 +373,37 @@ def combine_position_rows(row_images: List[np.ndarray], score_layout_id: str | N
     return combined
 
 
-def extract_position_row_match_crops(processed_image: np.ndarray, score_layout_id: str | None = None) -> List[np.ndarray]:
+def stack_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
+    """Stack row crops into one compact vertical strip for cheap prefix gating."""
+    if not row_images:
+        return np.zeros((0, 0), dtype=np.uint8)
+    normalized_rows = []
+    target_height = max(row.shape[0] for row in row_images)
+    target_width = max(row.shape[1] for row in row_images)
+    for row_image in row_images:
+        row = row_image
+        if row.shape[0] != target_height or row.shape[1] != target_width:
+            row = cv2.copyMakeBorder(
+                row,
+                0,
+                max(0, target_height - row.shape[0]),
+                0,
+                max(0, target_width - row.shape[1]),
+                cv2.BORDER_CONSTANT,
+                value=0,
+            )
+        normalized_rows.append(row)
+    return np.vstack(normalized_rows)
+
+
+def extract_position_row_match_crops(
+    processed_image: np.ndarray,
+    score_layout_id: str | None = None,
+    *,
+    max_rows: int | None = None,
+    stats: dict | None = None,
+    stats_prefix: str = "score",
+) -> List[np.ndarray]:
     """Extract per-row position ROIs based on the template row windows.
 
     The core template area is 56x36. We keep just 1 px padding around it so the
@@ -386,8 +416,13 @@ def extract_position_row_match_crops(processed_image: np.ndarray, score_layout_i
     else:
         grayscale_image = processed_image
 
+    extract_start = time.perf_counter()
     row_crops = []
-    for row_start_offset, row_end_offset in position_template_row_windows():
+    row_windows = position_template_row_windows()
+    if max_rows is not None:
+        row_windows = row_windows[:max(0, int(max_rows))]
+    requested_rows = len(row_windows)
+    for row_start_offset, row_end_offset in row_windows:
         row_start = y1 + int(row_start_offset)
         row_end = y1 + int(row_end_offset)
         crop_x1 = max(0, x1 - POSITION_ROW_PADDING_X)
@@ -397,6 +432,11 @@ def extract_position_row_match_crops(processed_image: np.ndarray, score_layout_i
         row_crop = grayscale_image[crop_y1:crop_y2, crop_x1:crop_x2]
         _, row_crop = cv2.threshold(row_crop, 180, 255, cv2.THRESH_BINARY)
         row_crops.append(normalize_binary_foreground(row_crop))
+    if stats is not None:
+        stats[f"{stats_prefix}_position_row_crop_calls"] += 1
+        stats[f"{stats_prefix}_position_rows_requested"] += int(requested_rows)
+        stats[f"{stats_prefix}_position_rows_extracted"] += int(len(row_crops))
+        stats[f"{stats_prefix}_position_row_crop_s"] += time.perf_counter() - extract_start
     return row_crops
 
 
@@ -409,6 +449,26 @@ def load_position_row_templates() -> List[np.ndarray]:
         raise FileNotFoundError(f"Position template image not found: {template_path}")
     _, template_binary = cv2.threshold(template_image, 180, 255, cv2.THRESH_BINARY)
     return slice_position_templates(template_binary)
+
+
+@lru_cache(maxsize=12)
+def load_position_prefix_template_stack(prefix_rows: int) -> np.ndarray:
+    """Return a compact stacked template for the first N score-position rows."""
+    prefix_count = max(1, min(12, int(prefix_rows)))
+    padded_templates = []
+    for template in load_position_row_templates()[:prefix_count]:
+        padded_templates.append(
+            cv2.copyMakeBorder(
+                template,
+                POSITION_ROW_PADDING_TOP,
+                POSITION_ROW_PADDING_BOTTOM,
+                POSITION_ROW_PADDING_X,
+                POSITION_ROW_PADDING_X,
+                cv2.BORDER_CONSTANT,
+                value=0,
+            )
+        )
+    return stack_position_rows(padded_templates)
 
 
 @lru_cache(maxsize=1)
@@ -684,19 +744,54 @@ def _build_position_signal_metrics_fast(position_rows: List[np.ndarray], templat
     return metrics
 
 
-def build_position_signal_metrics(processed_image: np.ndarray, score_layout_id: str | None = None) -> List[Dict[str, float]]:
+def build_position_signal_metrics(
+    processed_image: np.ndarray,
+    score_layout_id: str | None = None,
+    *,
+    max_rows: int | None = None,
+    stats: dict | None = None,
+    stats_prefix: str = "score",
+) -> List[Dict[str, float]]:
     """Measure whether each row still shows a position number in the fixed left strip."""
-    position_rows = extract_position_row_match_crops(processed_image, score_layout_id=score_layout_id)
+    total_start = time.perf_counter()
+    position_rows = extract_position_row_match_crops(
+        processed_image,
+        score_layout_id=score_layout_id,
+        max_rows=max_rows,
+        stats=stats,
+        stats_prefix=stats_prefix,
+    )
     templates = load_position_row_templates()
     if POSITION_TEMPLATE_FAST_PATH_ENABLED:
-        return _build_position_signal_metrics_fast(position_rows, templates)
+        fast_start = time.perf_counter()
+        metrics = _build_position_signal_metrics_fast(position_rows, templates)
+        if stats is not None:
+            stats[f"{stats_prefix}_position_metrics_fast_calls"] += 1
+            stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_rows))
+            stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(
+                sum(1 if row_index == 0 else 2 for row_index in range(len(position_rows)))
+            )
+            stats[f"{stats_prefix}_position_metrics_fast_s"] += time.perf_counter() - fast_start
+            stats[f"{stats_prefix}_position_metrics_total_calls"] += 1
+            stats[f"{stats_prefix}_position_metrics_total_s"] += time.perf_counter() - total_start
+        return metrics
     metrics = []
+    slow_start = time.perf_counter()
+    template_eval_count = 0
     for row_index, row_image in enumerate(position_rows):
         template_scores = [
             _evaluate_position_template(row_image, template_index, template)
             for template_index, template in enumerate(templates, start=1)
         ]
+        template_eval_count += len(template_scores)
         metrics.append(_build_position_metrics_from_template_scores(row_index, template_scores))
+    if stats is not None:
+        stats[f"{stats_prefix}_position_metrics_slow_calls"] += 1
+        stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_rows))
+        stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(template_eval_count)
+        stats[f"{stats_prefix}_position_metrics_slow_s"] += time.perf_counter() - slow_start
+        stats[f"{stats_prefix}_position_metrics_total_calls"] += 1
+        stats[f"{stats_prefix}_position_metrics_total_s"] += time.perf_counter() - total_start
     return metrics
 
 
@@ -1093,8 +1188,15 @@ def crop_and_process_image(frame: np.ndarray, coordinates: List[Tuple[Tuple[int,
     return cropped_images
 
 
-def process_image(image_source, score_layout_id: str | None = None) -> np.ndarray:
+def process_image(
+    image_source,
+    score_layout_id: str | None = None,
+    *,
+    stats: dict | None = None,
+    stats_prefix: str = "score",
+) -> np.ndarray:
     """Rewrite the scoreboard into OCR-friendly blocks before digit and name reading."""
+    total_start = time.perf_counter()
     score_layout = get_score_layout(score_layout_id)
     coordinates = {
         "player_name": score_layout.player_name_coords,
@@ -1111,16 +1213,24 @@ def process_image(image_source, score_layout_id: str | None = None) -> np.ndarra
     if image is None:
         raise FileNotFoundError(f"Image not found at path: {image_path}")
 
+    preprocess_start = time.perf_counter()
     processed_image = preprocess_image_v_channel(image)
     if len(processed_image.shape) == 2:
         processed_image = cv2.cvtColor(processed_image, cv2.COLOR_GRAY2BGR)
+    if stats is not None:
+        stats[f"{stats_prefix}_process_image_preprocess_s"] += time.perf_counter() - preprocess_start
 
+    block_rewrite_start = time.perf_counter()
     for region_type, coord_list in coordinates.items():
         rois = crop_and_process_image(processed_image, coord_list, region_type)
         for roi, ((x1, y1), (x2, y2)) in zip(rois, coord_list):
             if len(roi.shape) == 2:
                 roi = cv2.cvtColor(roi, cv2.COLOR_GRAY2BGR)
             processed_image[y1:y2, x1:x2] = roi
+    if stats is not None:
+        stats[f"{stats_prefix}_process_image_internal_calls"] += 1
+        stats[f"{stats_prefix}_process_image_block_rewrite_s"] += time.perf_counter() - block_rewrite_start
+        stats[f"{stats_prefix}_process_image_total_s"] += time.perf_counter() - total_start
     return processed_image
 
 
@@ -1595,6 +1705,7 @@ def extract_scoreboard_observation(
     name_field_name: str = "",
     race_points_field_name: str = "",
     total_points_field_name: str = "",
+    include_name_ocr: bool = True,
 ) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
     score_layout = get_score_layout(score_layout_id)
@@ -1654,32 +1765,40 @@ def extract_scoreboard_observation(
     )
     record_observation_stage("detect_total_points", time.perf_counter() - stage_start)
 
-    stage_start = time.perf_counter()
-    annotated_image = cv2.cvtColor(np.array(annotation_image), cv2.COLOR_RGB2BGR)
-    record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
+    annotated_image = None
+    if include_name_ocr:
+        stage_start = time.perf_counter()
+        annotated_image = cv2.cvtColor(np.array(annotation_image), cv2.COLOR_RGB2BGR)
+        record_observation_stage("prepare_name_image", time.perf_counter() - stage_start)
     if annotate_path:
         Path(annotate_path).parent.mkdir(parents=True, exist_ok=True)
         save_kwargs = {"format": "JPEG", "quality": 95} if EXPORT_IMAGE_FORMAT == "jpg" else {"format": "PNG"}
         annotation_image.save(annotate_path, **save_kwargs)
 
-    stage_start = time.perf_counter()
-    names, confidence_scores = extract_player_names_batched(
-        annotated_image,
-        score_layout.player_name_coords,
-        bundle_kind=bundle_kind,
-        field_name=name_field_name,
-    )
-    record_observation_stage("extract_player_names", time.perf_counter() - stage_start)
+    if include_name_ocr:
+        stage_start = time.perf_counter()
+        names, confidence_scores = extract_player_names_batched(
+            annotated_image,
+            score_layout.player_name_coords,
+            bundle_kind=bundle_kind,
+            field_name=name_field_name,
+        )
+        record_observation_stage("extract_player_names", time.perf_counter() - stage_start)
 
-    stage_start = time.perf_counter()
-    character_metrics = build_character_match_metrics(
-        frame_image,
-        names=names,
-        name_confidences=confidence_scores,
-        video_context=video_context,
-        score_layout_id=score_layout.layout_id,
-    )
-    record_observation_stage("character_metrics", time.perf_counter() - stage_start)
+        stage_start = time.perf_counter()
+        character_metrics = build_character_match_metrics(
+            frame_image,
+            names=names,
+            name_confidences=confidence_scores,
+            video_context=video_context,
+            score_layout_id=score_layout.layout_id,
+        )
+        record_observation_stage("character_metrics", time.perf_counter() - stage_start)
+    else:
+        row_count = len(score_layout.player_name_coords)
+        names = [""] * row_count
+        confidence_scores = [0] * row_count
+        character_metrics = [{} for _ in range(row_count)]
 
     stage_start = time.perf_counter()
     row_metrics = build_row_presence_metrics(names, confidence_scores, race_points, total_points)
@@ -1713,6 +1832,52 @@ def extract_scoreboard_observation(
         "visible_rows": visible_rows,
         "position_guided_visible_rows": position_guided_visible_rows,
         "template_row_confidence": template_row_confidence,
+        "score_layout_id": score_layout.layout_id,
+    }
+
+
+def extract_points_transition_observation(
+    frame_image: np.ndarray,
+    *,
+    score_layout_id: str | None = None,
+) -> Dict[str, object]:
+    """Read only the scoreboard point fields used for animation transition detection."""
+    score_layout = get_score_layout(score_layout_id)
+    processed_img = process_image(frame_image, score_layout_id=score_layout.layout_id)
+    processed_img_pil = Image.fromarray(processed_img).convert("RGB")
+    scale_factor = 5
+    scaled_image = processed_img_pil.resize(
+        (processed_img_pil.width * scale_factor, processed_img_pil.height * scale_factor),
+        Image.NEAREST,
+    )
+    layout = score_digit_layout(scale_factor, score_layout_id=score_layout.layout_id)
+    race_points, race_point_sources = detect_digits_in_image(
+        scaled_image,
+        *layout["race_points"],
+        valid_min=1,
+        valid_max=15,
+        annotation_prefix="",
+        bundle_kind="2RaceScore",
+        field_name="RacePoints",
+        draw_image=None,
+        draw_scale_divisor=scale_factor,
+    )
+    total_points, total_point_sources = detect_digits_in_image(
+        scaled_image,
+        *layout["total_points"],
+        valid_min=0,
+        valid_max=999,
+        annotation_prefix="",
+        bundle_kind="2RaceScore",
+        field_name="OldTotalScore",
+        draw_image=None,
+        draw_scale_divisor=scale_factor,
+    )
+    return {
+        "race_points": race_points,
+        "race_point_sources": race_point_sources,
+        "total_points": total_points,
+        "total_point_sources": total_point_sources,
         "score_layout_id": score_layout.layout_id,
     }
 
@@ -1894,27 +2059,43 @@ def _parse_observation_value(observation: Dict[str, object], key: str, row_index
     return parse_detected_int(values[row_index])
 
 
-def find_points_animation_transition_index(observations: List[Dict[str, object]]) -> int | None:
-    """Find the first frame where both top rows switch from old totals/race points to animated values."""
+def find_points_animation_transition_index(
+    observations: List[Dict[str, object]],
+    *,
+    max_rows: int = 6,
+) -> int | None:
+    """Find the first frame where stable pre-rollup rows begin transitioning."""
     if len(observations) < 2:
         return None
 
     for index in range(1, len(observations)):
         previous = observations[index - 1]
         current = observations[index]
-        changed_checks = []
-        for row_index in (0, 1):
+        previous_visible_rows = int(previous.get("position_guided_visible_rows") or previous.get("visible_rows") or 0)
+        current_visible_rows = int(current.get("position_guided_visible_rows") or current.get("visible_rows") or 0)
+        rows_to_check = min(max_rows, previous_visible_rows, current_visible_rows)
+        if rows_to_check <= 0:
+            rows_to_check = min(max_rows, 6)
+
+        changed_total_rows = 0
+        changed_race_rows = 0
+        changed_any_rows = 0
+        for row_index in range(rows_to_check):
             previous_race = _parse_observation_value(previous, "race_points", row_index)
             current_race = _parse_observation_value(current, "race_points", row_index)
             previous_total = _parse_observation_value(previous, "total_points", row_index)
             current_total = _parse_observation_value(current, "total_points", row_index)
-            changed_checks.extend(
-                [
-                    previous_race is not None and current_race is not None and previous_race != current_race,
-                    previous_total is not None and current_total is not None and previous_total != current_total,
-                ]
-            )
-        if len(changed_checks) == 4 and all(changed_checks):
+            race_changed = previous_race is not None and current_race is not None and previous_race != current_race
+            total_changed = previous_total is not None and current_total is not None and previous_total != current_total
+            changed_race_rows += int(race_changed)
+            changed_total_rows += int(total_changed)
+            changed_any_rows += int(race_changed or total_changed)
+
+        min_total_changes = min(2, rows_to_check) if rows_to_check > 0 else 0
+        min_any_changes = min(3, rows_to_check) if rows_to_check > 0 else 0
+        if changed_total_rows >= min_total_changes and (
+            changed_race_rows >= 1 or changed_any_rows >= min_any_changes
+        ):
             return index
     return None
 
@@ -2316,11 +2497,15 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                                 annotate_paths: List[str | None] | None = None,
                                 total_annotate_paths: List[str | None] | None = None,
                                 video_context: str | None = None, is_low_res: bool = False,
-                                score_layout_id: str | None = None) -> Dict[str, object]:
+                                score_layout_id: str | None = None,
+                                preselected_race_point_anchor_frame: int | None = None,
+                                preselected_point_frames: List[np.ndarray] | None = None,
+                                preselected_late_frames: List[np.ndarray] | None = None) -> Dict[str, object]:
     """Combine several neighbouring score frames into one stable observation."""
     if not frames:
         return {"rows": [], "visible_rows": 0, "row_count_confidence": 0.0, "name_confidence": 0.0, "digit_consensus": 0.0}
 
+    names_from_late_override = bool(preselected_late_frames)
     score_observations = []
     total_observations = []
     for index, frame in enumerate(frames):
@@ -2341,6 +2526,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 name_field_name="RacePlayerName",
                 race_points_field_name="RacePoints",
                 total_points_field_name="OldTotalScore",
+                include_name_ocr=not names_from_late_override,
             )
         )
     score_core_observations = score_observations[-APP_CONFIG.ocr_consensus_frames:] or score_observations
@@ -2377,7 +2563,56 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     race_point_anchor_frame = frame_numbers[-1] if frame_numbers else None
     score_name_observations = select_consensus_window(score_core_observations, "all")
     score_point_source_observations = score_observations
-    if len(score_observations) > APP_CONFIG.ocr_consensus_frames:
+    late_override_observations = []
+    if preselected_late_frames:
+        for frame in preselected_late_frames:
+            late_override_observations.append(
+                extract_scoreboard_observation(
+                    frame,
+                    extract_player_names_batched,
+                    None,
+                    annotation_prefix="RSL-",
+                    video_context=video_context,
+                    score_layout_id=score_layout_id,
+                    bundle_kind="2RaceScore",
+                    name_field_name="RacePlayerName",
+                    race_points_field_name="RacePoints",
+                    total_points_field_name="OldTotalScore",
+                )
+            )
+    point_override_observations = []
+    if preselected_point_frames:
+        for frame in preselected_point_frames:
+            point_override_observations.append(
+                extract_scoreboard_observation(
+                    frame,
+                    extract_player_names_batched,
+                    None,
+                    annotation_prefix="RSP-",
+                    video_context=video_context,
+                    score_layout_id=score_layout_id,
+                    bundle_kind="2RaceScore",
+                    name_field_name="RacePlayerName",
+                    race_points_field_name="RacePoints",
+                    total_points_field_name="OldTotalScore",
+                    include_name_ocr=False,
+                )
+            )
+    if late_override_observations:
+        score_name_observations = late_override_observations
+    if preselected_race_point_anchor_frame is not None and frame_numbers:
+        try:
+            anchor_index = next(
+                index for index, value in enumerate(frame_numbers)
+                if int(value) == int(preselected_race_point_anchor_frame)
+            )
+        except StopIteration:
+            anchor_index = None
+        if anchor_index is not None:
+            point_window_start = max(0, anchor_index - (RACE_SCORE_POINT_WINDOW_SIZE - 1))
+            score_point_source_observations = score_observations[point_window_start:anchor_index + 1]
+            race_point_anchor_frame = frame_numbers[anchor_index]
+    elif len(score_observations) > APP_CONFIG.ocr_consensus_frames:
         transition_index = find_points_animation_transition_index(score_observations)
         if transition_index is not None:
             score_point_source_observations = score_observations[max(0, transition_index - RACE_SCORE_POINT_WINDOW_SIZE):transition_index]
@@ -2390,10 +2625,21 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
             score_point_source_observations = score_observations[point_window_start:anchor_index + 1]
             if anchor_index < len(frame_numbers):
                 race_point_anchor_frame = frame_numbers[anchor_index]
+    if point_override_observations:
+        score_point_source_observations = point_override_observations
     score_point_observations = select_consensus_window(score_point_source_observations, "early")
-    score_character_observations = select_consensus_window(score_core_observations, "late")
-    score_position_observations = select_consensus_window(score_core_observations, "late")
-    score_count_observations = select_consensus_window(score_core_observations, "early")
+    score_character_observations = (
+        late_override_observations if late_override_observations
+        else select_consensus_window(score_core_observations, "late")
+    )
+    score_position_observations = (
+        late_override_observations if late_override_observations
+        else select_consensus_window(score_core_observations, "late")
+    )
+    score_count_observations = (
+        late_override_observations if late_override_observations
+        else select_consensus_window(score_core_observations, "early")
+    )
     total_consensus_observations = total_observations
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
     visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0

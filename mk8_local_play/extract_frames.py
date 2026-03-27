@@ -284,6 +284,104 @@ def print_timing_summary(video_name, stats):
     LOGGER.summary_block(f"[{video_name} - Debug Timing]", lines, color_name="dim")
 
 
+def print_extract_profiler_summary(video_name, stats):
+    """Print per-function/bucket call counts, total time, and average milliseconds."""
+    profile_rows = [
+        ("score selection match", "score_detail_match_score_s", "score_detail_score_match_calls"),
+        ("scan 5/6 gate", "scan_gate_s", "scan_gate_calls"),
+        ("scan gate row crops", "scan_gate_position_row_crop_s", "scan_gate_position_row_crop_calls"),
+        ("scan score preprocess", "scan_score_preprocess_s", "scan_score_process_image_calls"),
+        ("scan score metrics", "scan_score_metrics_s", "scan_score_position_metrics_calls"),
+        ("detail score preprocess", "detail_score_preprocess_s", "detail_score_process_image_calls"),
+        ("detail score metrics", "detail_score_metrics_s", "detail_score_position_metrics_calls"),
+        ("initial score metrics", "initial_match_s", "score_position_metrics_calls"),
+        ("score preprocess", "initial_roi_preprocess_s", "score_process_image_calls"),
+        ("score prefix gate", "score_prefix_gate_s", "score_prefix_gate_calls"),
+        ("gate row crops", "score_gate_position_row_crop_s", "score_gate_position_row_crop_calls"),
+        ("position row crops", "score_position_row_crop_s", "score_position_row_crop_calls"),
+        ("position metrics total", "score_position_metrics_total_s", "score_position_metrics_total_calls"),
+        ("position metrics fast", "score_position_metrics_fast_s", "score_position_metrics_fast_calls"),
+        ("position metrics slow", "score_position_metrics_slow_s", "score_position_metrics_slow_calls"),
+        ("score preprocess internal", "score_process_image_total_s", "score_process_image_internal_calls"),
+        ("score rewrite blocks", "score_process_image_block_rewrite_s", "score_process_image_internal_calls"),
+        ("video seek", "seek_time_s", "seek_calls"),
+        ("video read", "read_time_s", "read_calls"),
+        ("video grab", "grab_time_s", "grab_calls"),
+        ("score frame prepare", "score_detail_frame_prepare_s", "score_detail_frames"),
+        ("12th template match", "score_detail_match_12th_s", None),
+        ("12th preprocess", "score_detail_12th_preprocess_s", None),
+        ("frame export", "output_frame_capture_s", None),
+    ]
+    lines = []
+    for label, seconds_key, calls_key in profile_rows:
+        total_s = float(stats.get(seconds_key, 0.0))
+        calls = int(stats.get(calls_key, 0)) if calls_key is not None else 0
+        if total_s <= 0 and calls <= 0:
+            continue
+        avg_ms = (total_s / calls * 1000.0) if calls > 0 else 0.0
+        if calls > 0:
+            lines.append(f"{label}: calls {calls:,} | total {total_s:.2f}s | avg {avg_ms:.1f} ms")
+        else:
+            lines.append(f"{label}: total {total_s:.2f}s")
+
+    extra_lines = []
+    if int(stats.get("score_layout_evaluation_calls", 0)) > 0:
+        extra_lines.append(f"score layout evaluations: {int(stats.get('score_layout_evaluation_calls', 0)):,}")
+    if int(stats.get("scan_score_layout_evaluation_calls", 0)) > 0 or int(stats.get("detail_score_layout_evaluation_calls", 0)) > 0:
+        extra_lines.append(
+            f"score layout evaluations by phase: "
+            f"scan {int(stats.get('scan_score_layout_evaluation_calls', 0)):,} | "
+            f"detail {int(stats.get('detail_score_layout_evaluation_calls', 0)):,}"
+        )
+    if int(stats.get("scan_gate_passes", 0)) > 0 or int(stats.get("scan_gate_calls", 0)) > 0:
+        extra_lines.append(
+            f"scan 5/6 gate passes: {int(stats.get('scan_gate_passes', 0)):,}/{int(stats.get('scan_gate_calls', 0)):,}"
+        )
+    if int(stats.get("scan_gate_template_checks", 0)) > 0:
+        extra_lines.append(f"scan gate template checks: {int(stats.get('scan_gate_template_checks', 0)):,}")
+    if int(stats.get("scan_gate_position_rows_requested", 0)) > 0:
+        extra_lines.append(
+            f"scan gate rows requested/extracted: "
+            f"{int(stats.get('scan_gate_position_rows_requested', 0)):,}/"
+            f"{int(stats.get('scan_gate_position_rows_extracted', 0)):,}"
+        )
+    if int(stats.get("score_prefix_gate_passes", 0)) > 0:
+        extra_lines.append(f"score prefix gate passes: {int(stats.get('score_prefix_gate_passes', 0)):,}")
+    if int(stats.get("score_gate_position_rows_requested", 0)) > 0:
+        extra_lines.append(
+            f"gate rows requested/extracted: "
+            f"{int(stats.get('score_gate_position_rows_requested', 0)):,}/"
+            f"{int(stats.get('score_gate_position_rows_extracted', 0)):,}"
+        )
+    if int(stats.get("score_position_rows_requested", 0)) > 0:
+        extra_lines.append(
+            f"position rows requested/extracted: "
+            f"{int(stats.get('score_position_rows_requested', 0)):,}/"
+            f"{int(stats.get('score_position_rows_extracted', 0)):,}"
+        )
+    if int(stats.get("score_position_metrics_rows_processed", 0)) > 0:
+        extra_lines.append(
+            f"position metric rows processed: {int(stats.get('score_position_metrics_rows_processed', 0)):,}"
+        )
+    if int(stats.get("score_position_metrics_template_candidates", 0)) > 0:
+        extra_lines.append(
+            f"position template candidates scored: "
+            f"{int(stats.get('score_position_metrics_template_candidates', 0)):,}"
+        )
+    if int(stats.get("score_tie_aware_reuse_calls", 0)) > 0:
+        extra_lines.append(f"tie-aware metric reuses: {int(stats.get('score_tie_aware_reuse_calls', 0)):,}")
+    if int(stats.get("score_tie_aware_drop_checks", 0)) > 0:
+        extra_lines.append(f"drop-window checks: {int(stats.get('score_tie_aware_drop_checks', 0)):,}")
+
+    if not lines and not extra_lines:
+        return
+    LOGGER.summary_block(
+        f"[{video_name} - Extract Profiler]",
+        [*lines, *extra_lines],
+        color_name="dim",
+    )
+
+
 def collect_consensus_frames(video_path, video_label, center_frame, fps, left, top, crop_width, crop_height, bundle_kind):
     """Collect nearby upscaled frames for in-memory OCR consensus during --all runs."""
     radius = max(0, APP_CONFIG.ocr_consensus_frames // 2)
@@ -402,6 +500,9 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 frame_to_timecode,
                 video_source_path=video_source_path,
                 score_layout_id=result["candidate"].get("score_layout_id"),
+                actual_points_anchor_frame=result.get("actual_points_anchor_frame"),
+                points_anchor_image=result.get("points_anchor_image"),
+                points_context_frames=result.get("points_context_frames", []),
             )
         if io_lock is None:
             saved = _save_frames()
@@ -1009,7 +1110,11 @@ def _finalize_parallel_initial_scan(context, segment_results, csv_writer, metada
 
     score_frame_numbers = [item["frame_number"] for item in merged_score_detections]
     score_candidates = [
-        {"race_number": index + 1, "frame_number": item["frame_number"]}
+        {
+            "race_number": index + 1,
+            "frame_number": item["frame_number"],
+            "score_layout_id": item.get("score_layout_id"),
+        }
         for index, item in enumerate(merged_score_detections)
     ]
 
@@ -1829,7 +1934,11 @@ def extract_frames(
 
                 score_frame_numbers = [item["frame_number"] for item in merged_score_detections]
                 score_candidates = [
-                    {"race_number": index + 1, "frame_number": item["frame_number"]}
+                    {
+                        "race_number": index + 1,
+                        "frame_number": item["frame_number"],
+                        "score_layout_id": item.get("score_layout_id"),
+                    }
                     for index, item in enumerate(merged_score_detections)
                 ]
 
@@ -1963,6 +2072,7 @@ def extract_frames(
                 ],
                 color_name="green",
             )
+            print_extract_profiler_summary(video_name, video_stats)
             LOGGER.log(
                 color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_label),
                 f"{video_name} | Elapsed until complete: {format_duration(video_stats['video_total_s'])} | "

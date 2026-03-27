@@ -38,7 +38,9 @@ from .extract_common import (
     build_video_identity,
     debug_score_frame_path,
     debug_score_frame_variant_path,
+    extract_exported_frame_number,
     find_anchor_frame_path,
+    find_score_bundle_race_context_paths,
     find_score_bundle_anchor_path,
     iter_video_race_dirs,
 )
@@ -57,7 +59,7 @@ from .ocr_name_matching import (
     weighted_similarity,
 )
 from .ocr_common import find_metadata_entry, load_consensus_frame_entries, load_exported_frame_metadata
-from .extract_common import score_bundle_points_anchor_path, write_export_image
+from .extract_common import write_export_image
 from .low_res_identity import apply_low_res_identity_pipeline, is_low_res_height
 from .name_unicode import (
     allowed_name_char_ratio,
@@ -1492,6 +1494,24 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         in_memory_frames=(in_memory_frame_bundles or {}).get(total_bundle_key),
     )
     total_frames = [frame for _frame_number, frame in total_frame_entries]
+    preselected_points_anchor_frame = None
+    preselected_point_frames = None
+    preselected_late_frames = None
+    race_context_entries = []
+    for context_path in find_score_bundle_race_context_paths(race_class, race_id_number, "2RaceScore"):
+        frame = cv2.imread(str(context_path), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        frame_number = extract_exported_frame_number(context_path.stem)
+        if frame_number < 0:
+            continue
+        race_context_entries.append((frame_number, frame))
+    if race_context_entries:
+        race_context_entries = sorted(race_context_entries, key=lambda item: int(item[0]))
+        mid_index = len(race_context_entries) // 2
+        preselected_points_anchor_frame = int(race_context_entries[mid_index][0])
+        preselected_point_frames = [frame for _frame_number, frame in race_context_entries[:mid_index + 1]]
+        preselected_late_frames = [frame for _frame_number, frame in race_context_entries[mid_index:]]
     if APP_CONFIG.write_debug_score_images:
         race_mid_index = len(race_frame_entries) // 2 if race_frame_entries else -1
         annotate_paths = []
@@ -1524,28 +1544,10 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         video_context=race_class,
         is_low_res=is_low_res,
         score_layout_id=score_layout_id,
+        preselected_race_point_anchor_frame=preselected_points_anchor_frame,
+        preselected_point_frames=preselected_point_frames,
+        preselected_late_frames=preselected_late_frames,
     )
-    selected_points_anchor_frame = consensus.get("race_point_anchor_frame")
-    if selected_points_anchor_frame is not None and race_metadata is not None:
-        selected_entry = next(
-            (
-                (frame_number, frame)
-                for frame_number, frame in race_frame_entries
-                if int(frame_number) == int(selected_points_anchor_frame)
-            ),
-            None,
-        )
-        if selected_entry is not None:
-            _frame_number, selected_frame = selected_entry
-            write_export_image(
-                score_bundle_points_anchor_path(
-                    str(race_metadata.get("video_label", "") or race_class),
-                    int(race_metadata.get("race", race_id_number) or race_id_number),
-                    "2RaceScore",
-                    int(selected_points_anchor_frame),
-                ),
-                selected_frame,
-            )
     num_players = len(consensus["rows"])
     race_score_players = int(consensus.get("score_visible_rows", num_players))
     total_score_players = int(consensus.get("total_visible_rows", num_players))

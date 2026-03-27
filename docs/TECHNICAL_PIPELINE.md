@@ -112,7 +112,8 @@ Current score-screen detection behavior:
 - the initial scan checks both supported score layouts on each score-target frame
 - score detection is now driven by the left-side row-box position signal, not by a plain score-template coefficient
 - the required prefix length comes from `POSITION_SCAN_MIN_PLAYERS`, currently defaulting to `6`
-- rows `1..N` must all match their own rank and the prefix average must clear the configured average floor
+- the scan confirmation prefix now starts at row `2`, so rows `2..6` must match their own rank and the prefix average must clear the configured average floor
+- row `1` is intentionally excluded from this confirmation prefix because Nintendo `Capture taken.` overlays can obscure first place while the rest of the scoreboard is still valid
 - the stronger passing layout becomes the score candidate layout tag
 - track-name detection still uses grayscale ROI preprocessing plus template matching
 - race-number detection now supports both the legacy and Dutch template/ROI variants
@@ -185,10 +186,12 @@ These are used by:
 
 Current RaceScore selection behavior:
 - the first score-screen hit still seeds a provisional RaceScore export time
+- before the first confirmed score hit, second-pass search now advances in coarse `+10` frame steps; once a hit is found it rewinds `10` frames and resumes fine `+1` scanning
 - the second pass now uses the same row-box score helper as the initial scan instead of a standalone score-template coefficient
 - when a supported 12th-place template is seen, the later RaceScore offset is FPS-scaled instead of using a raw fixed-frame jump
 - both `12th_pos_template.png` and `12th_pos_templateNL.png` are checked; either one can trigger 12th-row logic
 - a true 12th-place hit also expands the RaceScore consensus window so OCR can use a wider early/late bundle around the anchor
+- saved `2RaceScore` context frames are now centered on the detected roll-up transition instead of a midpoint split, so OCR consumes the intended pre-rollup and post-transition bundle directly
 
 Current TotalScore selection behavior:
 - TotalScore is still timed from the end of the RaceScore phase rather than by a separate positive template detector
@@ -196,6 +199,7 @@ Current TotalScore selection behavior:
 - the selector now tracks the start of a continuous score-signal drop and confirms it only after `5.0 * fps` worth of uninterrupted absence
 - that absence check uses a tie-aware row-prefix rule on rows `1..6`, so tied totals do not create a false drop
 - once the drop is confirmed, the existing `-2.7s` timing offset is applied from the `drop_start_frame`, not from the later confirmation frame
+- during TotalScore stabilization, the search now also starts with coarse `+10` stepping, rewinds when a stable signature first appears, and then resumes fine-grained scanning
 
 ## 7. OCR Regions
 

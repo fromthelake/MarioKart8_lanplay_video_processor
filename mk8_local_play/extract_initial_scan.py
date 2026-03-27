@@ -4,12 +4,14 @@ import time
 from bisect import bisect_left
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from functools import lru_cache
 from queue import Empty, Queue
 
 import cv2
 import numpy as np
 
 from .console_logging import LOGGER
+from .data_paths import resolve_asset_file
 from .extract_common import (
     TARGET_HEIGHT,
     TARGET_WIDTH,
@@ -22,15 +24,28 @@ from .extract_common import (
     relative_video_path,
     write_export_image,
 )
-from .ocr_scoreboard_consensus import build_position_signal_metrics, process_image
+from .ocr_scoreboard_consensus import (
+    _template_match_score,
+    build_position_signal_metrics,
+    extract_position_row_match_crops,
+    load_position_row_templates,
+    process_image,
+)
 from .project_paths import PROJECT_ROOT
-from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, all_score_layouts
+from .score_layouts import DEFAULT_SCORE_LAYOUT_ID, LAN1_SCORE_LAYOUT_ID, SCORE_LAYOUT_SHIFT_X, all_score_layouts
 from . import extract_video_io as video_io
 
 INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
 POSITION_SCAN_MIN_PLAYERS = max(2, int(os.environ.get("MK8_POSITION_SCAN_MIN_PLAYERS", "6")))
 POSITION_SCAN_MIN_ROW_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_ROW_COEFF", "0.4"))
 POSITION_SCAN_MIN_AVG_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_AVG_COEFF", "0.6"))
+INITIAL_SCAN_SCORE_PREFIX_ROW_START = max(1, int(os.environ.get("MK8_INITIAL_SCAN_SCORE_PREFIX_ROW_START", "2")))
+INITIAL_SCAN_GATE_ROW_START = max(1, int(os.environ.get("MK8_INITIAL_SCAN_GATE_ROW_START", "5")))
+INITIAL_SCAN_GATE_ROW_END = max(INITIAL_SCAN_GATE_ROW_START, int(os.environ.get("MK8_INITIAL_SCAN_GATE_ROW_END", "6")))
+INITIAL_SCAN_GATE_MIN_COEFF = float(os.environ.get("MK8_INITIAL_SCAN_GATE_MIN_COEFF", str(POSITION_SCAN_MIN_ROW_COEFF)))
+INITIAL_SCAN_GATE_TEMPLATE_GRID_X = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_X", "313"))
+INITIAL_SCAN_GATE_TEMPLATE_GRID_Y = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_Y", "46"))
+INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE", "52"))
 
 
 INITIAL_SCAN_TARGETS = (
@@ -92,31 +107,67 @@ IGNORE_FRAME_TARGETS = (
     },
 )
 
-def _match_score_target_layouts(image_source, templates, stats):
+def _match_score_target_layouts(
+    image_source,
+    templates,
+    stats,
+    *,
+    return_layout_metrics=False,
+    preferred_layout_ids=None,
+    stats_scope="scan",
+):
     """Evaluate score presence using the per-row position boxes for both supported layouts."""
     best_match = {
         "max_val": 0.0,
         "layout_id": DEFAULT_SCORE_LAYOUT_ID,
     }
+    layout_metrics = {}
     saw_supported_layout = False
     if len(image_source.shape) == 2:
         bgr_image = cv2.cvtColor(image_source, cv2.COLOR_GRAY2BGR)
     else:
         bgr_image = image_source
-    for layout in all_score_layouts():
+    layout_order = list(all_score_layouts())
+    if preferred_layout_ids:
+        preferred_set = {str(layout_id) for layout_id in preferred_layout_ids if str(layout_id).strip()}
+        if preferred_set:
+            layout_order = [
+                *[layout for layout in layout_order if str(layout.layout_id) in preferred_set],
+                *[layout for layout in layout_order if str(layout.layout_id) not in preferred_set],
+            ]
+    for layout in layout_order:
+        video_io.increment_counter(stats, "score_layout_evaluation_calls")
+        video_io.increment_counter(stats, f"{stats_scope}_score_layout_evaluation_calls")
         stage_start = time.perf_counter()
-        processed_image = process_image(bgr_image, score_layout_id=layout.layout_id)
+        processed_image = process_image(
+            bgr_image,
+            score_layout_id=layout.layout_id,
+            stats=stats,
+            stats_prefix=f"{stats_scope}_score",
+        )
         video_io.add_timing(stats, "initial_roi_preprocess_s", stage_start)
+        video_io.add_timing(stats, f"{stats_scope}_score_preprocess_s", stage_start)
+        video_io.increment_counter(stats, "score_process_image_calls")
+        video_io.increment_counter(stats, f"{stats_scope}_score_process_image_calls")
 
         stage_start = time.perf_counter()
-        position_metrics = build_position_signal_metrics(processed_image, score_layout_id=layout.layout_id)
+        position_metrics = build_position_signal_metrics(
+            processed_image,
+            score_layout_id=layout.layout_id,
+            max_rows=POSITION_SCAN_MIN_PLAYERS,
+            stats=stats,
+            stats_prefix=f"{stats_scope}_score",
+        )
         video_io.add_timing(stats, "initial_match_s", stage_start)
+        video_io.add_timing(stats, f"{stats_scope}_score_metrics_s", stage_start)
+        video_io.increment_counter(stats, "score_position_metrics_calls")
+        video_io.increment_counter(stats, f"{stats_scope}_score_position_metrics_calls")
 
         if not position_metrics:
             continue
         saw_supported_layout = True
         prefix_scores = []
-        for row_number in range(1, POSITION_SCAN_MIN_PLAYERS + 1):
+        for row_number in range(int(INITIAL_SCAN_SCORE_PREFIX_ROW_START), POSITION_SCAN_MIN_PLAYERS + 1):
             if row_number > len(position_metrics):
                 break
             metric = position_metrics[row_number - 1]
@@ -125,18 +176,147 @@ def _match_score_target_layouts(image_source, templates, stats):
             if best_rank != row_number or best_score < POSITION_SCAN_MIN_ROW_COEFF:
                 break
             prefix_scores.append(best_score)
-        if len(prefix_scores) < POSITION_SCAN_MIN_PLAYERS:
+        prefix_average = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
+        required_prefix_rows = max(1, POSITION_SCAN_MIN_PLAYERS - int(INITIAL_SCAN_SCORE_PREFIX_ROW_START) + 1)
+        exact_prefix_pass = len(prefix_scores) >= required_prefix_rows and prefix_average >= POSITION_SCAN_MIN_AVG_COEFF
+        layout_metrics[str(layout.layout_id)] = {
+            "position_metrics": position_metrics,
+            "exact_prefix_scores": prefix_scores,
+            "exact_prefix_average": prefix_average,
+            "exact_prefix_pass": bool(exact_prefix_pass),
+        }
+        if not exact_prefix_pass:
             continue
-        average_score = float(sum(prefix_scores) / len(prefix_scores))
-        if average_score < POSITION_SCAN_MIN_AVG_COEFF:
-            continue
-        max_val = average_score
+        max_val = prefix_average
         if max_val > best_match["max_val"]:
             best_match = {
                 "max_val": max_val,
                 "layout_id": layout.layout_id,
             }
+    if return_layout_metrics:
+        return best_match["max_val"], not saw_supported_layout, str(best_match["layout_id"]), layout_metrics
     return best_match["max_val"], not saw_supported_layout, str(best_match["layout_id"])
+
+
+def _ordered_score_layout_ids(preferred_layout_ids=None):
+    layout_ids = [layout.layout_id for layout in all_score_layouts()]
+    if preferred_layout_ids:
+        preferred_set = {str(layout_id).strip() for layout_id in preferred_layout_ids if str(layout_id).strip()}
+        if preferred_set:
+            layout_ids = [
+                *[layout_id for layout_id in layout_ids if layout_id in preferred_set],
+                *[layout_id for layout_id in layout_ids if layout_id not in preferred_set],
+            ]
+    return layout_ids
+
+
+def _initial_scan_score_gate(image_source, stats, *, preferred_layout_ids=None):
+    if len(image_source.shape) == 2:
+        bgr_image = cv2.cvtColor(image_source, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr_image = image_source
+    row_start = int(INITIAL_SCAN_GATE_ROW_START)
+    row_end = int(INITIAL_SCAN_GATE_ROW_END)
+    best_coeff = 0.0
+    best_layout_id = DEFAULT_SCORE_LAYOUT_ID
+    best_row_scores = {}
+    best_row_variants = {}
+    for layout_id in _ordered_score_layout_ids(preferred_layout_ids):
+        row_scores = {}
+        row_variants = {}
+        for row_number in range(row_start, row_end + 1):
+            tile_roi = _initial_scan_gate_tile_roi(bgr_image, row_number, score_layout_id=layout_id)
+            if tile_roi.size == 0:
+                row_scores[int(row_number)] = 0.0
+                row_variants[int(row_number)] = ""
+                continue
+            tile_gray = cv2.cvtColor(tile_roi, cv2.COLOR_BGR2GRAY)
+            coeff, variant_name = _best_initial_scan_gate_score(tile_gray, row_number)
+            row_scores[int(row_number)] = float(coeff)
+            row_variants[int(row_number)] = str(variant_name)
+            best_coeff = max(best_coeff, float(coeff))
+            video_io.increment_counter(stats, "scan_gate_template_checks")
+        layout_passed = all(
+            float(row_scores.get(int(row_number), 0.0)) >= float(INITIAL_SCAN_GATE_MIN_COEFF)
+            for row_number in range(row_start, row_end + 1)
+        )
+        if layout_passed:
+            best_layout_id = str(layout_id)
+            best_row_scores = row_scores
+            best_row_variants = row_variants
+            passed = True
+            break
+        if not best_row_scores or max(row_scores.values() or [0.0]) > max(best_row_scores.values() or [0.0]):
+            best_layout_id = str(layout_id)
+            best_row_scores = row_scores
+            best_row_variants = row_variants
+    else:
+        passed = False
+    if passed:
+        video_io.increment_counter(stats, "scan_gate_passes")
+    return {
+        "passed": bool(passed),
+        "max_val": float(best_coeff),
+        "layout_id": str(best_layout_id),
+        "row_scores": best_row_scores,
+        "row_variants": best_row_variants,
+    }
+
+
+@lru_cache(maxsize=24)
+def _load_initial_scan_gate_tile(template_variant: str, row_number: int):
+    template_filename = f"Score_template_{template_variant}.png"
+    template_path = resolve_asset_file("templates", template_filename)
+    template = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
+    if template is None:
+        raise FileNotFoundError(f"Could not load template: {template_path}")
+    tile_size = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE)
+    tile_y = (int(row_number) - 1) * tile_size
+    tile = template[tile_y:tile_y + tile_size, 0:tile_size]
+    if tile.shape[0] != tile_size or tile.shape[1] != tile_size:
+        raise ValueError(f"Unexpected gate tile size for {template_filename} row {row_number}: {tile.shape}")
+    if len(tile.shape) == 3 and tile.shape[2] == 4:
+        tile_gray = cv2.cvtColor(tile[:, :, :3], cv2.COLOR_BGR2GRAY)
+        _, alpha_mask = cv2.threshold(tile[:, :, 3], 0, 255, cv2.THRESH_BINARY)
+    elif len(tile.shape) == 3:
+        tile_gray = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+        alpha_mask = None
+    else:
+        tile_gray = tile
+        alpha_mask = None
+    return tile_gray, alpha_mask
+
+
+def _initial_scan_gate_tile_roi(image_source, row_number: int, score_layout_id: str | None = None):
+    tile_size = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE)
+    x1 = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_X)
+    if str(score_layout_id or "").strip() == LAN1_SCORE_LAYOUT_ID:
+        x1 += int(SCORE_LAYOUT_SHIFT_X)
+    y1 = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_Y) + ((int(row_number) - 1) * tile_size)
+    x2 = x1 + tile_size
+    y2 = y1 + tile_size
+    return image_source[y1:y2, x1:x2]
+
+
+def _masked_template_match_score(source_image, template_image, alpha_mask) -> float:
+    result = cv2.matchTemplate(source_image, template_image, cv2.TM_CCOEFF_NORMED, mask=alpha_mask)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    return float(max_val)
+
+
+def _best_initial_scan_gate_score(tile_gray, row_number: int):
+    threshold = float(INITIAL_SCAN_GATE_MIN_COEFF)
+    best_score = float("-inf")
+    best_variant = ""
+    for template_variant in ("white", "black"):
+        template_gray, alpha_mask = _load_initial_scan_gate_tile(template_variant, int(row_number))
+        score = _masked_template_match_score(tile_gray, template_gray, alpha_mask)
+        if score > best_score:
+            best_score = float(score)
+            best_variant = str(template_variant)
+        if score >= threshold:
+            return float(score), str(template_variant)
+    return float(best_score), str(best_variant)
 
 
 def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False, video_label=None):
@@ -297,7 +477,27 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
 
     for target in INITIAL_SCAN_TARGETS:
         if target["kind"] == "score":
-            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
+            gate_result = _initial_scan_score_gate(upscaled_image, stats)
+            csv_writer.writerow([
+                video_source_path or os.path.basename(video_path),
+                "ScoreGate56Pass" if gate_result["passed"] else "ScoreGate56Fail",
+                frame_number,
+                gate_result["max_val"],
+                frame_to_timecode(frame_number, fps),
+            ])
+            if not gate_result["passed"]:
+                max_val = 0.0
+                rejected_as_blank = False
+                score_layout_id = gate_result["layout_id"] or DEFAULT_SCORE_LAYOUT_ID
+            else:
+                score_layout_id = gate_result["layout_id"] or DEFAULT_SCORE_LAYOUT_ID
+                max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(
+                    upscaled_image,
+                    templates,
+                    stats,
+                    preferred_layout_ids=[score_layout_id],
+                    stats_scope="scan",
+                )
         else:
             max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
             score_layout_id = ""
@@ -401,12 +601,33 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
         return int(fps * ignore_match["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
+        timecode = frame_to_timecode(frame_number, fps) if emit_results else ""
         if target["kind"] == "score":
-            max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
+            gate_result = _initial_scan_score_gate(upscaled_image, stats)
+            if emit_results:
+                debug_rows.append([
+                    video_source_path or os.path.basename(video_path),
+                    "ScoreGate56Pass" if gate_result["passed"] else "ScoreGate56Fail",
+                    frame_number,
+                    gate_result["max_val"],
+                    timecode,
+                ])
+            if not gate_result["passed"]:
+                max_val = 0.0
+                rejected_as_blank = False
+                score_layout_id = gate_result["layout_id"] or DEFAULT_SCORE_LAYOUT_ID
+            else:
+                score_layout_id = gate_result["layout_id"] or DEFAULT_SCORE_LAYOUT_ID
+                max_val, rejected_as_blank, score_layout_id = _match_score_target_layouts(
+                    upscaled_image,
+                    templates,
+                    stats,
+                    preferred_layout_ids=[score_layout_id],
+                    stats_scope="scan",
+                )
         else:
             max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
             score_layout_id = ""
-        timecode = frame_to_timecode(frame_number, fps) if emit_results else ""
         if emit_results:
             debug_rows.append([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0 if rejected_as_blank else max_val, timecode])
         if rejected_as_blank:

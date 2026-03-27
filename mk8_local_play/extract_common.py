@@ -32,6 +32,12 @@ FRAMES_ROOT = PROJECT_ROOT / "Output_Results" / "Frames"
 DEBUG_ROOT = PROJECT_ROOT / "Output_Results" / "Debug"
 
 
+def _score_layout_filename_tag(score_layout_id: str | None) -> str:
+    if str(score_layout_id or "").strip() == "lan1_full_1p":
+        return "1p"
+    return "2p"
+
+
 def calculate_sum_intensity(gray_image):
     """Return row/column intensity sums used to locate the active game area."""
     sum_row_intensity = np.sum(gray_image, axis=1)
@@ -215,16 +221,87 @@ def score_bundle_dir(video_label: str, race_number: int, frame_content: str) -> 
     return race_frames_dir(video_label, race_number) / str(frame_content)
 
 
-def score_bundle_anchor_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
-    return score_bundle_dir(video_label, race_number, frame_content) / f"anchor_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+def score_bundle_anchor_path(
+    video_label: str,
+    race_number: int,
+    frame_content: str,
+    actual_frame: int,
+    score_layout_id: str | None = None,
+) -> Path:
+    layout_suffix = f"_{_score_layout_filename_tag(score_layout_id)}" if score_layout_id else ""
+    return score_bundle_dir(video_label, race_number, frame_content) / (
+        f"anchor_{int(actual_frame)}{layout_suffix}{EXPORT_IMAGE_SUFFIX}"
+    )
 
 
 def score_bundle_consensus_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
     return score_bundle_dir(video_label, race_number, frame_content) / f"frame_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
 
 
+def score_bundle_race_context_path(
+    video_label: str,
+    race_number: int,
+    frame_content: str,
+    actual_frame: int,
+    score_layout_id: str | None = None,
+) -> Path:
+    layout_suffix = f"_{_score_layout_filename_tag(score_layout_id)}" if score_layout_id else ""
+    return score_bundle_dir(video_label, race_number, frame_content) / (
+        f"Race_{int(race_number):03d}_F{int(actual_frame)}{layout_suffix}{EXPORT_IMAGE_SUFFIX}"
+    )
+
+
 def score_bundle_points_anchor_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
     return score_bundle_dir(video_label, race_number, frame_content) / f"12point_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+
+
+def score_bundle_points_context_path(video_label: str, race_number: int, frame_content: str, actual_frame: int) -> Path:
+    return score_bundle_dir(video_label, race_number, frame_content) / f"12point_frame_{int(actual_frame)}{EXPORT_IMAGE_SUFFIX}"
+
+
+def find_score_bundle_points_anchor_path(video_label: str, race_number: int, frame_content: str) -> Path | None:
+    bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
+    if not bundle_dir.exists():
+        return None
+    candidates = sorted(
+        bundle_dir.glob(f"12point_*{EXPORT_IMAGE_SUFFIX}"),
+        key=lambda path: path.name,
+    )
+    return candidates[0] if candidates else None
+
+
+def find_score_bundle_points_context_paths(video_label: str, race_number: int, frame_content: str) -> list[Path]:
+    bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
+    candidates = [
+        path
+        for path in bundle_dir.glob("12point_frame_*")
+        if is_exported_image_file(path)
+    ]
+    return sorted(
+        candidates,
+        key=lambda path: (
+            _extract_numeric_suffix(path.stem),
+            exported_image_extension_priority(path.suffix),
+            str(path).lower(),
+        ),
+    )
+
+
+def find_score_bundle_race_context_paths(video_label: str, race_number: int, frame_content: str) -> list[Path]:
+    bundle_dir = score_bundle_dir(video_label, race_number, frame_content)
+    candidates = [
+        path
+        for path in bundle_dir.glob(f"Race_{int(race_number):03d}_F*")
+        if is_exported_image_file(path)
+    ]
+    return sorted(
+        candidates,
+        key=lambda path: (
+            _extract_numeric_suffix(path.stem),
+            exported_image_extension_priority(path.suffix),
+            str(path).lower(),
+        ),
+    )
 
 
 def debug_score_frames_root() -> Path:
@@ -345,7 +422,19 @@ def remove_tree_contents(root_path: str | os.PathLike[str]) -> bool:
     return deleted_anything
 
 
-def _extract_numeric_suffix(stem: str) -> int:
+def extract_exported_frame_number(stem: str) -> int:
+    frame_match = re.search(r"_F(\d+)(?:_(?:1p|2p))?$", str(stem))
+    if frame_match:
+        try:
+            return int(frame_match.group(1))
+        except ValueError:
+            return -1
+    anchor_match = re.search(r"anchor_(\d+)(?:_(?:1p|2p))?$", str(stem))
+    if anchor_match:
+        try:
+            return int(anchor_match.group(1))
+        except ValueError:
+            return -1
     match = re.search(r"(\d+)$", str(stem))
     if not match:
         return -1
@@ -353,6 +442,10 @@ def _extract_numeric_suffix(stem: str) -> int:
         return int(match.group(1))
     except ValueError:
         return -1
+
+
+def _extract_numeric_suffix(stem: str) -> int:
+    return extract_exported_frame_number(stem)
 
 
 def glob_exported_images(folder: str | os.PathLike[str], stem_pattern: str) -> list[str]:

@@ -14,18 +14,37 @@ from .extract_common import (
     preprocess_roi,
     score_bundle_anchor_path,
     score_bundle_consensus_path,
+    score_bundle_dir,
+    score_bundle_race_context_path,
+    score_bundle_points_anchor_path,
+    score_bundle_points_context_path,
     write_export_image,
 )
-from .extract_initial_scan import POSITION_SCAN_MIN_AVG_COEFF, POSITION_SCAN_MIN_PLAYERS, _match_score_target_layouts
+from .extract_initial_scan import (
+    IGNORE_FRAME_TARGETS,
+    POSITION_SCAN_MIN_AVG_COEFF,
+    POSITION_SCAN_MIN_PLAYERS,
+    POSITION_SCAN_MIN_ROW_COEFF,
+    _best_initial_scan_gate_score,
+    _initial_scan_gate_tile_roi,
+    _match_score_target_layouts,
+)
 from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
 from .ocr_scoreboard_consensus import (
     POSITION_PRESENT_COEFF_THRESHOLD,
     POSITION_PRESENT_ROW1_COEFF_THRESHOLD,
+    _template_match_score,
     build_position_signal_metrics,
+    extract_position_row_match_crops,
+    extract_points_transition_observation,
+    load_position_prefix_template_stack,
+    parse_detected_int,
     process_image,
+    stack_position_rows,
 )
 from .project_paths import PROJECT_ROOT
 from .score_layouts import draw_score_layout_demo, get_score_layout, score_demo_output_path
+from .app_runtime import load_app_config
 
 
 def enhance_export_frame(upscaled_image, scale_x, scale_y):
@@ -65,6 +84,54 @@ STATIC_GALLERY_RACE_AVG_FIRST_FRAME_COEFF = 0.997
 TWELFTH_TEMPLATE_INDEX = 3
 TWELFTH_TEMPLATE_NL_INDEX = 8
 TWELFTH_NL_CHECK_ROI = (306, 658, 670, 41)
+POSITION_PREFIX_GATE_MIN_COEFF = 0.20
+POINTS_TRANSITION_SEARCH_END_SECONDS = 6.0
+TOTAL_SCORE_FROM_TRANSITION_SECONDS = 3.6
+TOTAL_SCORE_STABLE_SEARCH_SECONDS = 5.0
+TOTAL_SCORE_STABLE_FRAMES_30FPS = 20
+COARSE_SEARCH_STEP_FRAMES = 10
+COARSE_SEARCH_REWIND_FRAMES = 10
+
+
+APP_CONFIG = load_app_config()
+
+
+def _match_ignore_frame_target_detail(gray_image, templates, stats):
+    """Detect ignore/gallery overlays during second-pass score selection."""
+    best_match = {
+        "label": "",
+        "max_val": 0.0,
+        "match_threshold": 1.0,
+        "rejected_as_blank": True,
+    }
+    for target in IGNORE_FRAME_TARGETS:
+        template_index = int(target["template_index"])
+        if len(templates) <= template_index:
+            continue
+        roi_x, roi_y, roi_width, roi_height = target["roi"]
+        roi_x = max(int(roi_x), 0)
+        roi_y = max(int(roi_y), 0)
+        roi_width = min(int(roi_width), gray_image.shape[1] - roi_x)
+        roi_height = min(int(roi_height), gray_image.shape[0] - roi_y)
+        roi = gray_image[roi_y:roi_y + roi_height, roi_x:roi_x + roi_width]
+        template_binary, alpha_mask = templates[template_index]
+        if roi.shape[0] < template_binary.shape[0] or roi.shape[1] < template_binary.shape[1]:
+            roi = cv2.resize(
+                roi,
+                (max(template_binary.shape[1], roi.shape[1]), max(template_binary.shape[0], roi.shape[0])),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        stage_start = time.perf_counter()
+        max_val = match_template(roi, template_binary, alpha_mask)
+        add_timing(stats, "score_ignore_match_s", stage_start)
+        if max_val > best_match["max_val"]:
+            best_match = {
+                "label": str(target["label"]),
+                "max_val": float(max_val),
+                "match_threshold": float(target["match_threshold"]),
+                "rejected_as_blank": False,
+            }
+    return best_match
 
 
 def _match_twelfth_presence(gray_image, templates, score_layout, stats):
@@ -97,9 +164,19 @@ def _match_twelfth_presence(gray_image, templates, score_layout, stats):
     return best_match
 
 
-def _position_metrics_for_frame(frame_image, score_layout_id=None):
-    processed_image = process_image(frame_image, score_layout_id=score_layout_id)
-    return build_position_signal_metrics(processed_image)
+def _position_metrics_for_frame(frame_image, score_layout_id=None, stats=None):
+    processed_image = process_image(
+        frame_image,
+        score_layout_id=score_layout_id,
+        stats=stats,
+        stats_prefix="score_detail",
+    )
+    return build_position_signal_metrics(
+        processed_image,
+        score_layout_id=score_layout_id,
+        stats=stats,
+        stats_prefix="score_detail",
+    )
 
 
 def summarize_first_frame_similarity(consensus_frames):
@@ -220,9 +297,56 @@ def _count_tie_aware_prefix_rows(position_metrics, min_players):
     return visible_rows
 
 
-def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_players=None):
+def _fast_prefix_gate_score(frame_image, score_layout_id=None, min_players=None, stats=None):
+    """Cheap pre-gate: reuse the raw fixed-grid 5/6 tile check from the initial scan."""
+    gate_start = time.perf_counter()
+    row_scores = {}
+    for row_number in (5, 6):
+        tile_roi = _initial_scan_gate_tile_roi(frame_image, row_number, score_layout_id=score_layout_id)
+        if tile_roi.size == 0:
+            row_scores[int(row_number)] = 0.0
+            continue
+        tile_gray = cv2.cvtColor(tile_roi, cv2.COLOR_BGR2GRAY)
+        coeff, _variant_name = _best_initial_scan_gate_score(tile_gray, row_number)
+        row_scores[int(row_number)] = float(coeff)
+        if stats is not None:
+            stats["score_prefix_gate_template_checks"] += 1
+    result = all(float(row_scores.get(row_number, 0.0)) >= float(POSITION_PREFIX_GATE_MIN_COEFF) for row_number in (5, 6))
+    if stats is not None:
+        stats["score_prefix_gate_calls"] += 1
+        stats["score_prefix_gate_s"] += time.perf_counter() - gate_start
+        if result:
+            stats["score_prefix_gate_passes"] += 1
+    return result
+
+
+def _raw_fixed_grid_prefix_confirm(frame_image, required_players=None, score_layout_id=None, stats=None):
+    """Confirm a score screen using the fixed-grid raw position tiles for rows 1..N."""
+    confirm_start = time.perf_counter()
+    prefix_count = max(2, int(required_players or POSITION_SCAN_MIN_PLAYERS))
+    row_scores = []
+    for row_number in range(1, prefix_count + 1):
+        tile_roi = _initial_scan_gate_tile_roi(frame_image, row_number, score_layout_id=score_layout_id)
+        if tile_roi.size == 0:
+            row_scores.append(0.0)
+            continue
+        tile_gray = cv2.cvtColor(tile_roi, cv2.COLOR_BGR2GRAY)
+        coeff, _variant_name = _best_initial_scan_gate_score(tile_gray, row_number)
+        row_scores.append(float(coeff))
+        if stats is not None:
+            stats["score_raw_prefix_confirm_template_checks"] += 1
+    passed = all(score >= float(POSITION_PREFIX_GATE_MIN_COEFF) for score in row_scores)
+    average_score = float(sum(row_scores) / len(row_scores)) if row_scores else 0.0
+    if stats is not None:
+        stats["score_raw_prefix_confirm_calls"] += 1
+        stats["score_raw_prefix_confirm_s"] += time.perf_counter() - confirm_start
+        if passed:
+            stats["score_raw_prefix_confirm_passes"] += 1
+    return passed, average_score
+
+
+def _tie_aware_score_signal_present_from_metrics(position_metrics, min_players=None):
     required_players = max(2, int(min_players or POSITION_SCAN_MIN_PLAYERS))
-    position_metrics = _position_metrics_for_frame(frame_image, score_layout_id=score_layout_id)
     if _count_tie_aware_prefix_rows(position_metrics, required_players) < required_players:
         return False
     prefix_scores = [
@@ -231,6 +355,118 @@ def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_playe
     ]
     average_score = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
     return average_score >= float(POSITION_SCAN_MIN_AVG_COEFF)
+
+
+def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_players=None, stats=None):
+    position_metrics = _position_metrics_for_frame(frame_image, score_layout_id=score_layout_id, stats=stats)
+    return _tie_aware_score_signal_present_from_metrics(position_metrics, min_players=min_players)
+
+
+def _extract_total_score_stable_signature(frame_image, score_layout_id=None):
+    observation = extract_points_transition_observation(
+        frame_image,
+        score_layout_id=score_layout_id,
+    )
+    totals = observation.get("total_points") or []
+    signature = []
+    for row_index in range(3):
+        if row_index >= len(totals):
+            return None
+        parsed_value = parse_detected_int(totals[row_index])
+        if parsed_value is None:
+            return None
+        signature.append(int(parsed_value))
+    if not (signature[0] >= signature[1] >= signature[2]):
+        return None
+    return tuple(signature)
+
+
+def _find_points_transition_frame(local_cap, start_frame, end_frame, left, top, crop_width, crop_height, score_layout_id, stats):
+    previous_observation = None
+    previous_frame_number = None
+    seek_to_frame(local_cap, start_frame, stats)
+    for frame_number in range(int(start_frame), int(end_frame) + 1):
+        ret, frame = read_video_frame(local_cap, stats)
+        if not ret:
+            break
+        upscaled_image = crop_and_upscale_image(frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
+        observation = extract_points_transition_observation(
+            upscaled_image,
+            score_layout_id=score_layout_id,
+        )
+        if previous_observation is not None:
+            changed_total_rows = 0
+            changed_race_rows = 0
+            changed_any_rows = 0
+            for row_index in range(6):
+                previous_race = parse_detected_int(previous_observation["race_points"][row_index])
+                current_race = parse_detected_int(observation["race_points"][row_index])
+                previous_total = parse_detected_int(previous_observation["total_points"][row_index])
+                current_total = parse_detected_int(observation["total_points"][row_index])
+                race_changed = previous_race is not None and current_race is not None and previous_race != current_race
+                total_changed = previous_total is not None and current_total is not None and previous_total != current_total
+                changed_race_rows += int(race_changed)
+                changed_total_rows += int(total_changed)
+                changed_any_rows += int(race_changed or total_changed)
+            if changed_total_rows >= 2 and (changed_race_rows >= 1 or changed_any_rows >= 3):
+                return int(frame_number), int(frame_number)
+        previous_observation = observation
+        previous_frame_number = int(frame_number)
+    return None, None
+
+
+def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, crop_width, crop_height, score_layout_id, stats):
+    stable_frames_required = max(1, fps_scaled_frames(TOTAL_SCORE_STABLE_FRAMES_30FPS, fps))
+    search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
+    coarse_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
+    coarse_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
+    frame_number = int(transition_frame)
+    seek_to_frame(local_cap, frame_number, stats)
+    stable_run_start = None
+    stable_run_count = 0
+    stable_signature = None
+    while frame_number <= int(search_end_frame):
+        ret, frame = read_video_frame(local_cap, stats)
+        if not ret:
+            break
+        upscaled_image = crop_and_upscale_image(
+            frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+        )
+        signature = _extract_total_score_stable_signature(
+            upscaled_image,
+            score_layout_id=score_layout_id,
+        )
+        if coarse_step > 1:
+            if signature is None:
+                next_frame = min(int(search_end_frame), int(frame_number) + coarse_step)
+                if next_frame <= int(frame_number):
+                    break
+                seek_to_frame(local_cap, next_frame, stats)
+                frame_number = next_frame
+                continue
+            rewind_frame = max(int(transition_frame), int(frame_number) - coarse_rewind)
+            coarse_step = 1
+            stable_run_start = None
+            stable_run_count = 0
+            stable_signature = None
+            seek_to_frame(local_cap, rewind_frame, stats)
+            frame_number = rewind_frame
+            continue
+        if signature is not None:
+            if stable_run_start is None or signature != stable_signature:
+                stable_run_start = int(frame_number)
+                stable_run_count = 1
+                stable_signature = signature
+            else:
+                stable_run_count += 1
+            if stable_run_count >= stable_frames_required:
+                return int(frame_number)
+        else:
+            stable_run_start = None
+            stable_run_count = 0
+            stable_signature = None
+        frame_number += 1
+    return None
 
 
 def count_visible_position_rows(frame_image, score_layout_id=None):
@@ -397,23 +633,25 @@ def analyze_score_window_task(task, frame_to_timecode):
     end_frame = frame_number + int(13 * fps)
     race_score_frame = 0
     total_score_frame = 0
-    player12 = 0
-    check_player_12 = 0
     twelfth_template_detected = False
     drop_start_frame = None
+    selected_points_anchor_frame = None
+    transition_frame = None
     debug_rows = []
     stats = {}
     from collections import defaultdict
 
     stats = defaultdict(float)
-
     local_cap = cv2.VideoCapture(video_path)
     if not local_cap.isOpened():
         return {"candidate": task, "race_score_frame": 0, "total_score_frame": 0, "debug_rows": [], "stats": stats}
 
+    coarse_search_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
+    coarse_search_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
     detail_frame_number = start_frame
     seek_to_frame(local_cap, detail_frame_number, stats)
     while detail_frame_number < end_frame:
+        stats["score_detail_frames"] += 1
         ret, frame = read_video_frame(local_cap, stats)
         if not ret:
             break
@@ -425,9 +663,94 @@ def analyze_score_window_task(task, frame_to_timecode):
         gray_image = cv2.cvtColor(upscaled_image, cv2.COLOR_BGR2GRAY)
         add_timing(stats, "score_detail_frame_prepare_s", frame_prepare_start)
 
-        stage_start = time.perf_counter()
-        max_val, rejected_as_blank, detected_layout_id = _match_score_target_layouts(upscaled_image, templates, stats)
-        add_timing(stats, "score_detail_match_score_s", stage_start)
+        if race_score_frame == 0:
+            ignore_match = _match_ignore_frame_target_detail(gray_image, templates, stats)
+            if (
+                not ignore_match["rejected_as_blank"]
+                and ignore_match["max_val"] > ignore_match["match_threshold"]
+                and not np.isinf(ignore_match["max_val"])
+            ):
+                stats["score_ignore_rejects"] += 1
+                timecode = frame_to_timecode(detail_frame_number, fps)
+                debug_rows.append(
+                    [
+                        os.path.basename(video_path),
+                        str(ignore_match["label"] or "Ignore"),
+                        detail_frame_number,
+                        float(ignore_match["max_val"]),
+                        timecode,
+                    ]
+                )
+                local_cap.release()
+                return {
+                    "candidate": task,
+                    "race_score_frame": 0,
+                    "total_score_frame": 0,
+                    "debug_rows": debug_rows,
+                    "stats": stats,
+                    "ignored_candidate": True,
+                    "ignore_label": str(ignore_match["label"] or ""),
+                }
+
+        fast_prefix_gate = _fast_prefix_gate_score(
+            upscaled_image,
+            score_layout_id=score_layout.layout_id,
+            min_players=POSITION_SCAN_MIN_PLAYERS,
+            stats=stats,
+        )
+        if fast_prefix_gate:
+            stats["score_prefix_gate_pass_calls"] += 1
+        else:
+            stats["score_prefix_gate_fail_calls"] += 1
+            max_val = 0.0
+            rejected_as_blank = False
+            detected_layout_id = score_layout.layout_id
+            layout_metrics = {}
+            timecode = frame_to_timecode(detail_frame_number, fps)
+            debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, 0.0, timecode])
+            if race_score_frame != 0:
+                if drop_start_frame is None:
+                    drop_start_frame = int(detail_frame_number)
+                drop_duration_frames = int(detail_frame_number) - int(drop_start_frame) + 1
+                if drop_duration_frames >= max(1, int(round(TOTAL_SCORE_TRANSITION_DROP_SECONDS * max(float(fps), 1.0)))):
+                    total_score_frame = int(drop_start_frame) - int(2.7 * fps)
+                    break
+            if race_score_frame == 0 and coarse_search_step > 1:
+                next_frame = min(end_frame, int(detail_frame_number) + coarse_search_step)
+                if next_frame <= int(detail_frame_number):
+                    break
+                detail_frame_number = next_frame
+                seek_to_frame(local_cap, detail_frame_number, stats)
+                continue
+            detail_frame_number += 1
+            continue
+
+        layout_metrics = {}
+        detected_layout_id = score_layout.layout_id
+        if race_score_frame == 0:
+            stage_start = time.perf_counter()
+            raw_confirm_passed, raw_confirm_score = _raw_fixed_grid_prefix_confirm(
+                upscaled_image,
+                required_players=POSITION_SCAN_MIN_PLAYERS,
+                score_layout_id=score_layout.layout_id,
+                stats=stats,
+            )
+            add_timing(stats, "score_detail_match_score_s", stage_start)
+            stats["score_detail_score_match_calls"] += 1
+            max_val = float(raw_confirm_score)
+            rejected_as_blank = not bool(raw_confirm_passed)
+        else:
+            stage_start = time.perf_counter()
+            max_val, rejected_as_blank, detected_layout_id, layout_metrics = _match_score_target_layouts(
+                upscaled_image,
+                templates,
+                stats,
+                return_layout_metrics=True,
+                preferred_layout_ids=[score_layout.layout_id],
+                stats_scope="detail",
+            )
+            add_timing(stats, "score_detail_match_score_s", stage_start)
+            stats["score_detail_score_match_calls"] += 1
         timecode = frame_to_timecode(detail_frame_number, fps)
         debug_rows.append([os.path.basename(video_path), "Score", detail_frame_number, 0 if rejected_as_blank else max_val, timecode])
 
@@ -439,39 +762,72 @@ def analyze_score_window_task(task, frame_to_timecode):
                 if drop_duration_frames >= max(1, int(round(TOTAL_SCORE_TRANSITION_DROP_SECONDS * max(float(fps), 1.0)))):
                     total_score_frame = int(drop_start_frame) - int(2.7 * fps)
                     break
+            if race_score_frame == 0 and coarse_search_step > 1:
+                next_frame = min(end_frame, int(detail_frame_number) + coarse_search_step)
+                if next_frame <= int(detail_frame_number):
+                    break
+                detail_frame_number = next_frame
+                seek_to_frame(local_cap, detail_frame_number, stats)
+                continue
             detail_frame_number += 1
             continue
 
         if max_val > 0.3 and not np.isinf(max_val) and race_score_frame == 0:
-            race_score_frame = detail_frame_number + int(0.6 * fps)
+            if coarse_search_step > 1:
+                coarse_search_step = 1
+                detail_frame_number = max(start_frame, int(detail_frame_number) - coarse_search_rewind)
+                seek_to_frame(local_cap, detail_frame_number, stats)
+                continue
+            score_hit_frame = int(detail_frame_number)
+            race_score_frame = score_hit_frame + int(0.7 * fps)
             score_layout = get_score_layout(detected_layout_id or score_layout.layout_id)
-            check_player_12 = 1
             drop_start_frame = None
+            transition_search_end = min(
+                end_frame,
+                score_hit_frame + max(1, int(round(POINTS_TRANSITION_SEARCH_END_SECONDS * max(float(fps), 1.0)))),
+            )
+            transition_frame, selected_points_anchor_frame = _find_points_transition_frame(
+                local_cap,
+                int(race_score_frame),
+                int(transition_search_end),
+                left,
+                top,
+                crop_width,
+                crop_height,
+                score_layout.layout_id,
+                stats,
+            )
+            if transition_frame is not None:
+                if selected_points_anchor_frame is None:
+                    selected_points_anchor_frame = max(0, int(transition_frame) - 2)
+                total_score_frame = _find_total_score_stable_frame(
+                    local_cap,
+                    int(transition_frame),
+                    fps,
+                    left,
+                    top,
+                    crop_width,
+                    crop_height,
+                    score_layout.layout_id,
+                    stats,
+                )
+                if total_score_frame is None:
+                    total_score_frame = int(transition_frame) + int(TOTAL_SCORE_FROM_TRANSITION_SECONDS * fps)
+                break
+            seek_to_frame(local_cap, int(detail_frame_number) + 1, stats)
             continue
 
-        if max_val > 0.3 and not np.isinf(max_val) and check_player_12 == 1:
-            drop_start_frame = None
-            max_val2 = _match_twelfth_presence(gray_image, templates, score_layout, stats)
-
-            if max_val2 > 0.4 and not np.isinf(max_val2):
-                player12 = 1
-                twelfth_template_detected = True
-
-            if player12 == 1 and max_val2 < 0.1:
-                race_score_frame = detail_frame_number + fps_scaled_frames(16 + RACE_SCORE_EXTRA_DELAY_FRAMES_30FPS, fps)
-                detail_frame_number += int(3.9 * fps)
-                seek_to_frame(local_cap, detail_frame_number, stats)
-                check_player_12 = 2
-                continue
-
         if race_score_frame != 0:
-            if _tie_aware_score_signal_present(
-                upscaled_image,
-                score_layout_id=score_layout.layout_id,
+            selected_layout_metrics = layout_metrics.get(str(score_layout.layout_id), {})
+            selected_position_metrics = selected_layout_metrics.get("position_metrics") or []
+            if selected_position_metrics and _tie_aware_score_signal_present_from_metrics(
+                selected_position_metrics,
                 min_players=POSITION_SCAN_MIN_PLAYERS,
             ):
+                stats["score_tie_aware_reuse_calls"] += 1
                 drop_start_frame = None
             else:
+                stats["score_tie_aware_drop_checks"] += 1
                 if drop_start_frame is None:
                     drop_start_frame = int(detail_frame_number)
                 drop_duration_frames = int(detail_frame_number) - int(drop_start_frame) + 1
@@ -485,6 +841,9 @@ def analyze_score_window_task(task, frame_to_timecode):
     total_score_image = None
     actual_race_score_frame = None
     actual_total_score_frame = None
+    actual_points_anchor_frame = None
+    points_anchor_image = None
+    points_context_frames = []
     race_consensus_frames = []
     total_consensus_frames = []
     if race_score_frame > 0 and total_score_frame > 0:
@@ -503,6 +862,20 @@ def analyze_score_window_task(task, frame_to_timecode):
             total_consensus_frames = collect_consensus_frames_from_capture(
                 local_cap, actual_total_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"]
             )
+        if selected_points_anchor_frame is not None:
+            actual_points_anchor_frame, points_anchor_image = capture_export_frame(
+                local_cap, int(selected_points_anchor_frame), left, top, crop_width, crop_height, scale_x, scale_y, stats
+            )
+            if actual_points_anchor_frame is not None:
+                points_context_frames = collect_frame_range_from_capture(
+                    local_cap,
+                    int(actual_points_anchor_frame) - 3,
+                    int(actual_points_anchor_frame) + 3,
+                    left,
+                    top,
+                    crop_width,
+                    crop_height,
+                )
         add_timing(stats, "output_frame_capture_s", export_stage_start)
 
     local_cap.release()
@@ -516,6 +889,10 @@ def analyze_score_window_task(task, frame_to_timecode):
         "total_score_image": total_score_image,
         "race_consensus_frames": race_consensus_frames,
         "total_consensus_frames": total_consensus_frames,
+        "selected_points_anchor_frame": selected_points_anchor_frame,
+        "actual_points_anchor_frame": actual_points_anchor_frame,
+        "points_anchor_image": points_anchor_image,
+        "points_context_frames": points_context_frames,
         "twelfth_template_detected": twelfth_template_detected,
         "debug_rows": debug_rows,
         "stats": stats,
@@ -568,29 +945,33 @@ def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top,
 def save_score_frames(video_path, video_label, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
                       actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
                       total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None,
-                      score_layout_id=None):
+                      score_layout_id=None, actual_points_anchor_frame=None, points_anchor_image=None,
+                      points_context_frames=None):
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
     score_layout = get_score_layout(score_layout_id)
-    frame_filename = score_bundle_anchor_path(video_label, race_number, "2RaceScore", actual_race_score_frame)
-    write_export_image(frame_filename, race_score_image)
-    for existing_frame_path in Path(frame_filename).parent.glob("frame_*"):
-        try:
-            existing_frame_path.unlink()
-        except OSError:
-            pass
-    for consensus_frame_number, consensus_frame_image in race_consensus_frames:
-        write_export_image(
-            score_bundle_consensus_path(video_label, race_number, "2RaceScore", consensus_frame_number),
-            consensus_frame_image,
-        )
-    draw_score_layout_demo(
-        race_score_image,
-        score_layout.layout_id,
+    frame_filename = score_bundle_anchor_path(
+        video_label,
+        race_number,
         "2RaceScore",
-        score_demo_output_path(video_label, race_number, "2RaceScore", score_layout.layout_id),
+        actual_race_score_frame,
+        score_layout.layout_id,
     )
+    write_export_image(frame_filename, race_score_image)
+    for legacy_pattern in ("frame_*", "12point_*", "12point_frame_*"):
+        for existing_frame_path in Path(frame_filename).parent.glob(legacy_pattern):
+            try:
+                existing_frame_path.unlink()
+            except OSError:
+                pass
+    if APP_CONFIG.write_debug_score_images:
+        draw_score_layout_demo(
+            race_score_image,
+            score_layout.layout_id,
+            "2RaceScore",
+            score_demo_output_path(video_label, race_number, "2RaceScore", score_layout.layout_id),
+        )
     video_stem = video_label
     if race_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "RaceScore")] = [image for _frame, image in race_consensus_frames]
@@ -610,7 +991,33 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
         anchor_path=str(frame_filename),
     )
 
-    frame_filename = score_bundle_anchor_path(video_label, race_number, "3TotalScore", actual_total_score_frame)
+    if actual_points_anchor_frame is not None and points_context_frames:
+        for existing_race_context_path in Path(score_bundle_dir(video_label, race_number, "2RaceScore")).glob(
+            f"Race_{int(race_number):03d}_F*"
+        ):
+            try:
+                existing_race_context_path.unlink()
+            except OSError:
+                pass
+        for context_frame_number, context_frame_image in points_context_frames:
+            write_export_image(
+                score_bundle_race_context_path(
+                    video_label,
+                    race_number,
+                    "2RaceScore",
+                    context_frame_number,
+                    score_layout.layout_id,
+                ),
+                context_frame_image,
+            )
+
+    frame_filename = score_bundle_anchor_path(
+        video_label,
+        race_number,
+        "3TotalScore",
+        actual_total_score_frame,
+        score_layout.layout_id,
+    )
     write_export_image(frame_filename, total_score_image)
     for existing_frame_path in Path(frame_filename).parent.glob("frame_*"):
         try:
@@ -622,12 +1029,13 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
             score_bundle_consensus_path(video_label, race_number, "3TotalScore", consensus_frame_number),
             consensus_frame_image,
         )
-    draw_score_layout_demo(
-        total_score_image,
-        score_layout.layout_id,
-        "3TotalScore",
-        score_demo_output_path(video_label, race_number, "3TotalScore", score_layout.layout_id),
-    )
+    if APP_CONFIG.write_debug_score_images:
+        draw_score_layout_demo(
+            total_score_image,
+            score_layout.layout_id,
+            "3TotalScore",
+            score_demo_output_path(video_label, race_number, "3TotalScore", score_layout.layout_id),
+        )
     if total_consensus_frames:
         consensus_frame_cache[(video_stem, int(race_number), "TotalScore")] = [image for _frame, image in total_consensus_frames]
     log_exported_frame(

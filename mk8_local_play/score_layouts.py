@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -99,6 +100,14 @@ _SCORE_LAYOUTS: Dict[str, ScoreLayout] = {
     ),
 }
 
+_SCORE_LAYOUT_TAGS: Dict[str, str] = {
+    DEFAULT_SCORE_LAYOUT_ID: "2p",
+    LAN1_SCORE_LAYOUT_ID: "1p",
+}
+_SCORE_LAYOUT_IDS_BY_TAG: Dict[str, str] = {
+    tag: layout_id for layout_id, tag in _SCORE_LAYOUT_TAGS.items()
+}
+
 
 def get_score_layout(layout_id: str | None) -> ScoreLayout:
     return _SCORE_LAYOUTS.get(str(layout_id or "").strip(), _SCORE_LAYOUTS[DEFAULT_SCORE_LAYOUT_ID])
@@ -108,13 +117,23 @@ def all_score_layouts() -> List[ScoreLayout]:
     return [_SCORE_LAYOUTS[DEFAULT_SCORE_LAYOUT_ID], _SCORE_LAYOUTS[LAN1_SCORE_LAYOUT_ID]]
 
 
+def score_layout_tag_from_id(layout_id: str | None) -> str:
+    return _SCORE_LAYOUT_TAGS.get(str(layout_id or "").strip(), _SCORE_LAYOUT_TAGS[DEFAULT_SCORE_LAYOUT_ID])
+
+
 def score_layout_id_from_filename(image_path: str | os.PathLike[str] | None) -> str:
     if not image_path:
         return DEFAULT_SCORE_LAYOUT_ID
-    stem_parts = Path(str(image_path)).stem.split("+")
+    stem = Path(str(image_path)).stem
+    stem_parts = re.split(r"[+_]", stem)
     for part in reversed(stem_parts):
         if part in _SCORE_LAYOUTS:
             return part
+        if part in _SCORE_LAYOUT_IDS_BY_TAG:
+            return _SCORE_LAYOUT_IDS_BY_TAG[part]
+    for layout_id in _SCORE_LAYOUTS:
+        if layout_id in stem:
+            return layout_id
     return DEFAULT_SCORE_LAYOUT_ID
 
 

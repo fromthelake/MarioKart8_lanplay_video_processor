@@ -36,6 +36,10 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Headless CLI runs now accept `--debug`, which turns on debug CSV, debug workbook, and score-layout image output for that run without changing the normal default behavior.
+- Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.
+- Second-pass score selection now uses coarse `+10` frame stepping with rewind before the first RaceScore hit and again during TotalScore stabilization, reducing unnecessary frame-by-frame scanning in long candidate windows.
+- RaceScore export windows are now centered on the detected points-rollup transition so the saved `2RaceScore` bundle itself matches the intended OCR split.
 - Connection-reset handling now supports repeated resets within the same video instead of stopping after the first detected reset.
 - Total-score validation now adds a second-pass reset detector for obvious fresh-session patterns where OCR totals collapse back to race-points-scale values across most of the field.
 - Final scoring now applies a late player-drop policy: reduced-player races stay visible in exports, but can be excluded from cumulative totals when later races recover to a higher player count.
@@ -102,6 +106,7 @@ The format is intentionally simple and human-readable.
 - The GUI now includes a `Clear Output Results` action with an `Are you sure?` confirmation before deleting generated output files.
 
 ### Fixed
+- First-race total recomputation now preserves validated non-zero `OldTotalScore` baselines for the players actually present instead of resetting the workbook totals back to zero.
 - Score-layout anchor matching no longer incorrectly reports `rejected_as_blank` when one supported layout is blank but another layout matches strongly.
 - Session-level character relabeling now supports Mii fallback when one player repeatedly produces weak, near-tied, unstable non-Mii character matches across the saved `2RaceScore` frames.
 - Mii fallback rows now keep a short explicit review note: `mii_fallback_unstable_character_match`.

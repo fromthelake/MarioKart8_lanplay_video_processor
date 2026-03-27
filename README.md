@@ -12,6 +12,11 @@ Current output set for a normal run:
 - `*_Tournament_Results.xlsx`
 - `*_Tournament_Results.csv`
 - `*_Final_Standings.csv`
+
+Debug outputs can be enabled for a scoped headless run with:
+- `.\.venv\Scripts\mk8-local-play.exe --selection --debug --video <video-name>`
+
+When `--debug` is enabled, the run also writes:
 - `Debug/*_Tournament_Results_Debug.xlsx`
 - `Debug/*_Tournament_Results_Debug.csv`
 
@@ -20,11 +25,15 @@ Recent scoring and validation behavior:
 - reset detection now has a second pass for obvious fresh-session total-score patterns where the displayed totals collapse back to race-points-scale values across most of the field
 - temporary player-drop races can stay visible in the workbook while being excluded from tournament totals when a later race recovers to a higher player count
 - user exports now include `Counts Toward Totals` and `Scoring Note` at the end of the table when that late scoring policy applies
+- first-race scoring recompute now preserves a valid non-zero `OldTotalScore` baseline for the players actually present instead of resetting those totals back to zero
 - recursive runs now skip any videos under a folder named `corrupt` or `exclude`
 - final-race duplicate-name ambiguity notes now only mark the rows that are still truly interchangeable, and the note names the conflicting identity label(s)
 - score detection now uses the left-side row-box position signal for the required visible-player prefix instead of relying on a standalone score-strip template match
+- initial score confirmation now treats rows `2..6` as the required visible-player prefix, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score candidates
 - 12th-place checks now support both the legacy and Dutch templates during score selection
 - TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
+- second-pass score selection now uses a coarse search with rewind before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
+- RaceScore export bundles are now centered on the detected score-transition frame, and the saved `2RaceScore` frames are reused directly by OCR
 
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts
@@ -194,6 +203,10 @@ Screenshot export format:
 - the current default is `jpg` for smaller exported frame files
 - use `png` if you want lossless frame exports for troubleshooting or comparison work
 - `MK8_EXPORT_IMAGE_FORMAT` can still override the config for a single run
+
+Headless debug toggle:
+- normal CLI runs can stay lean and skip debug workbook/image output
+- use `--debug` on `mk8-local-play.exe` or `python -m mk8_local_play.main` when you explicitly want debug CSV, debug workbook, and score-layout images for investigation
 
 Runtime GPU mode defaults:
 - `config/app_config.json` now defaults `execution_mode` to `cpu` and `easyocr_gpu_mode` to `auto`

@@ -24,7 +24,7 @@ Runtime baseline:
 ### Entry points
 
 - `mk8_local_play/main.py`
-  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, runtime-setting persistence, overlap full-run orchestration, and end-to-end orchestration.
+  Main CLI and optional Tk GUI entrypoint. Also performs runtime checks, output cleanup, selection scoping, per-run logger reset, runtime-setting persistence, overlap full-run orchestration, a scoped `--debug` override for headless runs, and end-to-end orchestration.
 - `mk8_local_play/console_logging.py`
   Shared console logger and resource monitor for CLI/GUI output. Owns elapsed-time formatting, summary blocks, resource peaks, and the per-run timer reset behavior.
 - `pyproject.toml`
@@ -35,9 +35,9 @@ Runtime baseline:
 - `mk8_local_play/extract_frames.py`
   Extraction orchestrator. Loads videos, determines crop/upscale geometry, runs initial scan, runs score-screen selection, exports frames, and builds extraction summaries.
 - `mk8_local_play/extract_initial_scan.py`
-  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, and multiple race-number template/ROI variants.
+  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, a row `2..6` confirmation prefix for score candidates, and multiple race-number template/ROI variants.
 - `mk8_local_play/extract_score_screen_selection.py`
-  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains FPS-scaled timing logic, 12th-place/template recovery, and tie-aware sustained-drop logic for TotalScore timing.
+  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains coarse-to-fine search, transition-centered RaceScore bundle export, FPS-scaled timing logic, 12th-place/template recovery, and tie-aware sustained-drop logic for TotalScore timing.
 - `mk8_local_play/extract_video_io.py`
   Shared seek/read/grab helpers, corrupt-video sampling, and FFmpeg repair flow.
 - `mk8_local_play/extract_common.py`
@@ -94,11 +94,11 @@ Runtime baseline:
 ### Generated outputs
 
 - `Output_Results/Frames/`
-  Per-video race bundles used by OCR. Score-screen folders now persist the full OCR bundle as `anchor_<frame>` plus `consensus_<frame>` images.
+  Per-video race bundles used by OCR. Score-screen folders now persist the OCR bundle as `anchor_<frame>`, `consensus_<frame>`, and transition-centered `2RaceScore` context frames so `--selection` and `--ocr` reuse the same saved bundle intent.
 - `Output_Results/*.xlsx` and `Output_Results/*.csv`
   Timestamped tournament outputs.
 - `Output_Results/Debug/`
-  Debug workbooks, CSVs, score-frame annotations, and score-layout demo images.
+  Debug workbooks, CSVs, score-frame annotations, and score-layout demo images when debug output is enabled.
   Per-race debug images now mirror the `Frames/` video/race/bundle folder structure under `Debug/Score_Frames/<Video>/Race_###/<2RaceScore|3TotalScore>/`.
 
 ### Helper tools and scripts
@@ -140,6 +140,7 @@ Notes:
 - Child scripts are expected to run through the repo-local `.venv`.
 - The first curated baseline is `benchmarks/baselines/demo_capturecard_race/` and must be validated with both `--prefix Demo_CaptureCard_Race` and `--race-class Demo_CaptureCard_Race`.
 - With EasyOCR CUDA enabled and more than one selected input video, overlap `auto` now defaults to streamed per-race OCR with two consumers. Explicit `video` / `race` mode overrides and higher consumer counts remain available for experiments.
+- For headless debugging, `mk8-local-play.exe --selection --debug --video <video-name>` enables debug workbook/CSV and score-layout image output without changing normal CLI defaults.
 
 ## Major Dependencies
 

@@ -48,7 +48,7 @@ class ExtractInitialScanTests(unittest.TestCase):
                 defaultdict(float),
             )
 
-        self.assertAlmostEqual(max_val, 0.8716666666666667)
+        self.assertAlmostEqual(max_val, 0.8640000000000001)
         self.assertFalse(rejected_as_blank)
         self.assertEqual(layout_id, "match_layout")
 
@@ -84,6 +84,38 @@ class ExtractInitialScanTests(unittest.TestCase):
         self.assertAlmostEqual(max_val, 0.0)
         self.assertFalse(rejected_as_blank)
         self.assertEqual(layout_id, extract_initial_scan.DEFAULT_SCORE_LAYOUT_ID)
+
+    def test_match_score_target_layouts_allows_row_one_overlay_when_rows_two_to_six_match(self):
+        gray_image = np.full((720, 1280), 255, dtype=np.uint8)
+        templates = []
+        layouts = [
+            SimpleNamespace(layout_id="layout_a", score_anchor_roi=(0, 0, 52, 610)),
+        ]
+        with (
+            mock.patch.object(extract_initial_scan, "all_score_layouts", return_value=layouts),
+            mock.patch.object(extract_initial_scan, "process_image", return_value=np.zeros((10, 10, 3), dtype=np.uint8)),
+            mock.patch.object(
+                extract_initial_scan,
+                "build_position_signal_metrics",
+                return_value=[
+                    {"best_position_template": 0, "best_position_score": 0.05},
+                    {"best_position_template": 2, "best_position_score": 0.91},
+                    {"best_position_template": 3, "best_position_score": 0.88},
+                    {"best_position_template": 4, "best_position_score": 0.87},
+                    {"best_position_template": 5, "best_position_score": 0.90},
+                    {"best_position_template": 6, "best_position_score": 0.85},
+                ],
+            ),
+        ):
+            max_val, rejected_as_blank, layout_id = extract_initial_scan._match_score_target_layouts(
+                gray_image,
+                templates,
+                defaultdict(float),
+            )
+
+        self.assertAlmostEqual(max_val, 0.882)
+        self.assertFalse(rejected_as_blank)
+        self.assertEqual(layout_id, "layout_a")
 
     def test_match_initial_scan_target_accepts_alternate_roi(self):
         gray_image = np.full((720, 1280), 255, dtype=np.uint8)

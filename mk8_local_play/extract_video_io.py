@@ -31,6 +31,11 @@ def add_timing(stats, key, start_time):
     stats[key] += time.perf_counter() - start_time
 
 
+def increment_counter(stats, key, amount=1):
+    """Accumulate a named integer counter inside the shared stats dict."""
+    stats[key] += int(amount)
+
+
 def seek_to_frame(capture, frame_number, stats):
     """Seek to a frame and record the seek cost."""
     start_time = time.perf_counter()

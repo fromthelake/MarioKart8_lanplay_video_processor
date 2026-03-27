@@ -69,6 +69,15 @@ OCR_TRACE_DIR = DEBUG_DIR / "OCR_Tracing"
 SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
 
 
+def configure_headless_debug_outputs(enabled: bool | None) -> None:
+    if enabled is None:
+        return
+    value = "1" if enabled else "0"
+    os.environ["MK8_WRITE_DEBUG_CSV"] = value
+    os.environ["MK8_WRITE_DEBUG_SCORE_IMAGES"] = value
+    os.environ["MK8_WRITE_DEBUG_LINKING_EXCEL"] = value
+
+
 def _workflow_sorted_source_summaries(video_files: list[Path], *, include_subfolders: bool) -> tuple[list[tuple[str, str]], float]:
     workflow_plan, total_source_seconds = extract_frames.build_workflow_video_plan(
         video_files,
@@ -521,7 +530,8 @@ def merge_videos() -> None:
             temp_file.unlink()
 
 
-def run_extract(selected_video: str | None = None, *, include_subfolders: bool = False) -> None:
+def run_extract(selected_video: str | None = None, *, include_subfolders: bool = False, debug: bool | None = None) -> None:
+    configure_headless_debug_outputs(debug)
     ensure_runtime_or_raise()
     video_files = selected_input_video_files(
         selected_video=selected_video,
@@ -544,7 +554,9 @@ def run_ocr(
     *,
     include_subfolders: bool = False,
     selection_mode: bool = False,
+    debug: bool | None = None,
 ) -> None:
+    configure_headless_debug_outputs(debug)
     ensure_runtime_or_raise()
     extra_args = []
     if selection_mode:
@@ -1450,8 +1462,15 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     )
 
 
-def run_all(selected_video: str | None = None, selection_mode: bool = False, *, include_subfolders: bool = False) -> None:
+def run_all(
+    selected_video: str | None = None,
+    selection_mode: bool = False,
+    *,
+    include_subfolders: bool = False,
+    debug: bool | None = None,
+) -> None:
     LOGGER.reset()
+    configure_headless_debug_outputs(debug)
     ensure_runtime_or_raise()
     from . import extract_frames, extract_text
     runtime_config = load_app_config()
@@ -1643,12 +1662,12 @@ def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: in
             stats.print_callers(pattern)
 
 
-def run_profiled_all(selected_video: str | None = None) -> None:
+def run_profiled_all(selected_video: str | None = None, *, debug: bool | None = None) -> None:
     LOGGER.reset()
     profiler = cProfile.Profile()
     profiler.enable()
     try:
-        run_all(selected_video=selected_video)
+        run_all(selected_video=selected_video, debug=debug)
     finally:
         profiler.disable()
         write_profile_report(profiler, PROFILE_OUTPUT)
@@ -2424,6 +2443,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", action="store_true", help="Run extraction and OCR only for the videos currently selected in Input_Videos")
     parser.add_argument("--subfolders", action="store_true", help="Include supported videos from subfolders under Input_Videos during headless runs")
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
+    parser.add_argument("--debug", action="store_true", help="Enable debug CSV/images/linking outputs for this headless run")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     return parser.parse_args()
 
@@ -2440,26 +2460,27 @@ def main() -> int:
             print("Cancelled.")
         return 0
     if args.extract:
-        run_extract(selected_video=args.video, include_subfolders=args.subfolders)
+        run_extract(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.scan_test:
-        run_extract(selected_video=args.video, include_subfolders=args.subfolders)
+        run_extract(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.ocr:
         run_ocr(
             selected_video=args.video,
             include_subfolders=args.subfolders,
             selection_mode=args.selection,
+            debug=args.debug,
         )
         return 0
     if args.all:
         if args.profile:
-            run_profiled_all(selected_video=args.video)
+            run_profiled_all(selected_video=args.video, debug=args.debug)
         else:
-            run_all(selected_video=args.video, include_subfolders=args.subfolders)
+            run_all(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.selection:
-        run_all(selected_video=args.video, selection_mode=True, include_subfolders=args.subfolders)
+        run_all(selected_video=args.video, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     return launch_gui()
 

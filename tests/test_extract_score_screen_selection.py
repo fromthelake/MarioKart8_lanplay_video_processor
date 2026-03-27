@@ -79,6 +79,158 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
 
         self.assertEqual(expanded["race_consensus_frames"], ["keep"])
 
+    def test_find_points_transition_frame_uses_multi_row_transition_and_centers_on_transition(self):
+        capture = mock.Mock()
+        stats = defaultdict(float)
+        observations = [
+            {
+                "race_points": ["15", "12", "10", "9", "8", "7"],
+                "total_points": ["303", "220", "198", "134", "248", "154"],
+            },
+            {
+                "race_points": ["15", "12", "10", "9", "8", "7"],
+                "total_points": ["303", "220", "198", "134", "249", "154"],
+            },
+            {
+                "race_points": ["15", "11", "9", "9", "7", "6"],
+                "total_points": ["309", "221", "198", "135", "249", "155"],
+            },
+        ]
+
+        with (
+            mock.patch.object(extract_score_screen_selection, "seek_to_frame"),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "read_video_frame",
+                side_effect=[(True, np.zeros((10, 10, 3), dtype=np.uint8))] * len(observations),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "crop_and_upscale_image",
+                return_value=np.zeros((10, 10, 3), dtype=np.uint8),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "extract_points_transition_observation",
+                side_effect=observations,
+            ),
+        ):
+            transition_frame, selected_points_anchor_frame = extract_score_screen_selection._find_points_transition_frame(
+                capture,
+                5895,
+                5897,
+                0,
+                0,
+                10,
+                10,
+                "lan2_split_2p",
+                stats,
+            )
+
+        self.assertEqual(transition_frame, 5897)
+        self.assertEqual(selected_points_anchor_frame, 5897)
+
+    def test_find_total_score_stable_frame_uses_coarse_search_then_rewinds(self):
+        capture = mock.Mock()
+        stats = defaultdict(float)
+        signatures = [
+            None,
+            (1, 2, 3),
+            None,
+            None,
+            (4, 5, 6),
+            (4, 5, 6),
+            (4, 5, 6),
+        ]
+
+        with (
+            mock.patch.object(extract_score_screen_selection, "fps_scaled_frames", return_value=3),
+            mock.patch.object(extract_score_screen_selection, "seek_to_frame") as seek_mock,
+            mock.patch.object(
+                extract_score_screen_selection,
+                "read_video_frame",
+                side_effect=[(True, np.zeros((10, 10, 3), dtype=np.uint8))] * len(signatures),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "crop_and_upscale_image",
+                return_value=np.zeros((10, 10, 3), dtype=np.uint8),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_extract_total_score_stable_signature",
+                side_effect=signatures,
+            ),
+        ):
+            stable_frame = extract_score_screen_selection._find_total_score_stable_frame(
+                capture,
+                100,
+                30.0,
+                0,
+                0,
+                10,
+                10,
+                "lan2_split_2p",
+                stats,
+            )
+
+        self.assertEqual(stable_frame, 104)
+        seek_targets = [call.args[1] for call in seek_mock.call_args_list]
+        self.assertIn(110, seek_targets)
+        self.assertIn(100, seek_targets)
+
+    def test_analyze_score_window_task_rejects_ignore_candidate_early(self):
+        task = {
+            "video_path": "dummy.mp4",
+            "frame_number": 100,
+            "fps": 30.0,
+            "templates": [(np.zeros((5, 5), dtype=np.uint8), None)] * 9,
+            "left": 0,
+            "top": 0,
+            "crop_width": 10,
+            "crop_height": 10,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "score_layout_id": "lan2_split_2p",
+            "ocr_consensus_frames": 7,
+            "race_number": 1,
+        }
+        capture = mock.Mock()
+        capture.isOpened.return_value = True
+
+        with (
+            mock.patch.object(extract_score_screen_selection.cv2, "VideoCapture", return_value=capture),
+            mock.patch.object(extract_score_screen_selection, "seek_to_frame"),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "read_video_frame",
+                side_effect=[(True, np.zeros((10, 10, 3), dtype=np.uint8))],
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "crop_and_upscale_image",
+                return_value=np.zeros((720, 1280, 3), dtype=np.uint8),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_match_ignore_frame_target_detail",
+                return_value={
+                    "label": "IgnoreAlbumGallery",
+                    "max_val": 0.95,
+                    "match_threshold": 0.62,
+                    "rejected_as_blank": False,
+                },
+            ),
+            mock.patch.object(extract_score_screen_selection, "_fast_prefix_gate_score") as gate_mock,
+        ):
+            result = extract_score_screen_selection.analyze_score_window_task(task, lambda frame_number, fps: "00:00:00")
+
+        self.assertEqual(result["race_score_frame"], 0)
+        self.assertEqual(result["total_score_frame"], 0)
+        self.assertTrue(result.get("ignored_candidate"))
+        self.assertEqual(result.get("ignore_label"), "IgnoreAlbumGallery")
+        gate_mock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

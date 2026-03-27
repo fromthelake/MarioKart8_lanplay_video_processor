@@ -40,6 +40,45 @@ def _race_level_player_count(race_rows: pd.DataFrame) -> int:
     return visible_rows
 
 
+def _seed_session_baseline_from_first_race(
+    race_rows: pd.DataFrame,
+    tournament_totals: dict[str, int],
+    session_totals: dict[str, int],
+) -> None:
+    """Preserve a validated first-race old-total baseline when all present rows have one.
+
+    This keeps the scoring-policy recompute aligned with the validation rule that a
+    video/session may start mid-tournament when the first RaceScore frame already
+    shows prior totals for the players actually present.
+    """
+    if race_rows.empty:
+        return
+
+    present_players = max(0, _race_level_player_count(race_rows))
+    if present_players <= 0:
+        return
+
+    candidate_rows = race_rows.sort_values("RacePosition", kind="stable").head(present_players).copy()
+    if candidate_rows.empty or len(candidate_rows) < present_players:
+        return
+
+    old_totals = pd.to_numeric(candidate_rows.get("OldTotalScore"), errors="coerce")
+    session_old_totals = pd.to_numeric(candidate_rows.get("SessionOldTotalScore"), errors="coerce")
+
+    if old_totals.isna().any() or (old_totals <= 0).any():
+        return
+
+    for row_index, row in candidate_rows.iterrows():
+        player_key = str(row.get("FixPlayerName") or "").strip()
+        if not player_key:
+            continue
+        tournament_totals[player_key] = int(old_totals.loc[row_index])
+        if row_index in session_old_totals.index and not pd.isna(session_old_totals.loc[row_index]):
+            session_totals[player_key] = int(session_old_totals.loc[row_index])
+        else:
+            session_totals[player_key] = int(old_totals.loc[row_index])
+
+
 def _mark_temporary_player_drop_races(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if "CountsTowardTotals" not in df.columns:
@@ -120,6 +159,7 @@ def _recompute_scoring_totals(df: pd.DataFrame) -> pd.DataFrame:
             if current_session_index is None or race_session_index != current_session_index:
                 session_totals = defaultdict(int)
                 current_session_index = race_session_index
+                _seed_session_baseline_from_first_race(race_rows, tournament_totals, session_totals)
             for index, row in race_rows.iterrows():
                 player_key = str(row.get("FixPlayerName") or "")
                 old_total = int(tournament_totals[player_key])
