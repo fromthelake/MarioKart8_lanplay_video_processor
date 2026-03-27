@@ -1696,7 +1696,13 @@ def build_grouped_race_images(
         total_score_path = find_score_bundle_anchor_path(race_class, race_id_number, "3TotalScore")
         if total_score_path is not None:
             grouped_images[key].append(("3TotalScore", str(total_score_path)))
-    return sorted(grouped_images.items(), key=lambda item: item[0])
+    grouped_items = []
+    for key, images in sorted(grouped_images.items(), key=lambda item: item[0]):
+        has_race_score = any(frame_content == "2RaceScore" for frame_content, _ in images)
+        if not has_race_score:
+            continue
+        grouped_items.append((key, images))
+    return grouped_items
 
 
 def build_grouped_race_item(

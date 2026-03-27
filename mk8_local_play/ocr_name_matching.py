@@ -211,26 +211,56 @@ def _visual_similarity(identity_visual_refs, row_visual_roi) -> float:
     return max(_compare_visual_identity_roi(reference_roi, row_visual_roi) for reference_roi in reference_rois)
 
 
-def _build_match_candidates(identity_state, race_rows, visual_features):
+def _build_case_distinct_name_keys(group: pd.DataFrame) -> set[str]:
+    """Preserve visibly distinct names like 'Floris' and 'floris' when they coexist in one race."""
+    protected_keys: set[str] = set()
+    for _race_id, race_rows in group.groupby("RaceIDNumber", sort=False):
+        by_normalized: dict[str, set[str]] = defaultdict(set)
+        for _, row in race_rows.iterrows():
+            visible_name = normalize_name_for_vote(str(row.get("PlayerName") or ""))
+            normalized_name = preprocess_name(visible_name)
+            if not visible_name or not normalized_name:
+                continue
+            by_normalized[normalized_name].add(visible_name)
+        for normalized_name, visible_names in by_normalized.items():
+            if len(visible_names) > 1:
+                protected_keys.add(normalized_name)
+    return protected_keys
+
+
+def _build_match_candidates(identity_state, race_rows, visual_features, protected_case_keys=None):
+    protected_case_keys = protected_case_keys or set()
     candidates = []
     for row_position, (row_index, row) in enumerate(race_rows, start=1):
         row_name = str(row["PlayerName"] or "")
+        visible_row_name = normalize_name_for_vote(row_name)
+        normalized_row_name = preprocess_name(row_name)
         row_character_index = row.get("CharacterIndex")
         row_detected_total = row.get("DetectedTotalScore")
         row_visual_roi = visual_features.get(row_index)
         row_is_unreliable = _row_name_is_unreliable(row)
         for identity_id, identity in identity_state.items():
+            identity_name = str(identity["canonical_name"] or "")
+            visible_identity_name = normalize_name_for_vote(identity_name)
             name_similarity = weighted_similarity(identity["canonical_name"], row_name)
             character_similarity = _character_similarity(identity["character_index"], row_character_index)
             total_similarity = _detected_total_similarity(identity["last_detected_total"], row_detected_total)
             visual_similarity = _visual_similarity(identity.get("visual_refs", []), row_visual_roi)
+            protected_case_conflict = (
+                normalized_row_name in protected_case_keys
+                and visible_row_name
+                and visible_identity_name
+                and visible_row_name != visible_identity_name
+            )
+            if protected_case_conflict and not row_is_unreliable:
+                continue
             combined_score = (
                 (name_similarity * 0.50)
                 + (total_similarity * 0.25)
                 + (visual_similarity * 0.20)
                 + (character_similarity * 0.05)
             )
-            exact_name_match = preprocess_name(identity["canonical_name"]) == preprocess_name(row_name)
+            exact_name_match = visible_identity_name == visible_row_name and bool(visible_row_name)
             fallback_match = row_is_unreliable and (
                 (visual_similarity >= 0.72 and name_similarity >= 0.50)
                 or (total_similarity >= 0.7 and name_similarity >= 0.45)
@@ -295,13 +325,14 @@ def standardize_player_names(df, output_folder, write_debug_linking_excel=False)
     for race_class, group in df.groupby("RaceClass", sort=False):
         group = group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable").copy()
         visual_features = _prepare_visual_identity_features(group)
+        protected_case_keys = _build_case_distinct_name_keys(group)
         identity_state = {}
         row_identity_assignments = {}
         identity_debug_rows = []
 
         for race_id, race_rows_df in group.groupby("RaceIDNumber", sort=True):
             race_rows = list(race_rows_df.iterrows())
-            candidates = _build_match_candidates(identity_state, race_rows, visual_features)
+            candidates = _build_match_candidates(identity_state, race_rows, visual_features, protected_case_keys)
             used_identity_ids = set()
             used_row_indices = set()
 

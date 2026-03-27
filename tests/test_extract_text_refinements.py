@@ -5,10 +5,31 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from mk8_local_play.extract_text import refine_black_blue_character_variants, rescue_placeholder_identity_names
+from mk8_local_play.extract_text import (
+    build_grouped_race_images,
+    refine_black_blue_character_variants,
+    rescue_placeholder_identity_names,
+)
 
 
 class TestExtractTextRefinements(TestCase):
+    def test_build_grouped_race_images_skips_incomplete_races_without_race_score(self):
+        with patch("mk8_local_play.extract_text.iter_video_race_dirs", return_value=[("VideoA", 1, "Race_001"), ("VideoA", 2, "Race_002")]):
+            with patch("mk8_local_play.extract_text.find_anchor_frame_path", side_effect=[None, None]):
+                with patch(
+                    "mk8_local_play.extract_text.find_score_bundle_anchor_path",
+                    side_effect=[
+                        "race1_score.jpg",
+                        "race1_total.jpg",
+                        None,
+                        None,
+                    ],
+                ):
+                    grouped = build_grouped_race_images("dummy")
+
+        self.assertEqual(len(grouped), 1)
+        self.assertEqual(grouped[0][0], ("VideoA", 1))
+
     def test_rescue_placeholder_identity_names_promotes_supported_name(self):
         df = pd.DataFrame(
             [

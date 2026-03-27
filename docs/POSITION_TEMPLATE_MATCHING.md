@@ -19,28 +19,31 @@ It does **not** replace the rest of OCR by itself, but it now drives:
 
 ## Current ROI
 
-Each row uses the same window structure as `Score_template.png`.
+The default path now uses the black/white tile templates, not the old strip-derived row slices.
 
-- Template size: `56 x 36`
-- Match ROI size: `58 x 41`
-- Horizontal padding: `1 px` left and `1 px` right
-- Vertical padding: `1 px` above and `4 px` below
+- Tile size: `52 x 52`
+- Match ROI size: `52 x 52`
+- The tile ROI is anchored from the same left-side position strip and shifted into the fixed tile grid used by the templates
+- Each lower row advances by `52 px`
 
-The row starts come from the fixed template slicing:
-
-- `0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570`
+Legacy strip fallback is still available for comparison with:
+- `MK8_POSITION_TEMPLATE_USE_BLACK_WHITE=0`
 
 ## Template source
 
-The current position templates are sliced from:
+The default position templates are loaded from:
 
-- `assets/templates/Score_template.png`
+- `assets/templates/Score_template_white.png`
+- `assets/templates/Score_template_black.png`
 
-Each exported `template_row_*.png` is `56 x 36`.
+The matcher tries:
+- white tile first
+- black tile second
+- then keeps the better masked match score for that row
 
 ## Metrics
 
-For every row ROI, the code compares that row against all 12 `template_row_*.png` images.
+For every row ROI, the code compares that row against the matching row number and the monotone fallback candidate from both tile sets.
 
 The report shows three scores:
 
@@ -108,8 +111,10 @@ This is intentionally simple and strict. It prevents weak OCR noise on the lower
 
 Once a row passed the presence gate, the official template-ranking method is:
 
-1. shortlist the top 3 templates by `Coeff`
-2. choose the best of those 3 by `Weighted White IoU`
+1. evaluate the expected row rank and the monotone fallback rank
+2. for each candidate, compare both the white and black tiles
+3. keep the stronger masked match for that candidate
+4. keep the best monotone-consistent candidate overall
 
 This is now implemented as the official position-guided template ranking.
 

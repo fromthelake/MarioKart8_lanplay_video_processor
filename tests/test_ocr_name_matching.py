@@ -1,10 +1,12 @@
 import unittest
 
 import pandas as pd
+from unittest import mock
 
 from mk8_local_play.ocr_name_matching import (
     append_identity_ambiguity_review_notes,
     resolve_duplicate_name_identity_chains,
+    standardize_player_names,
 )
 
 
@@ -64,6 +66,28 @@ class OcrNameMatchingTests(unittest.TestCase):
         self.assertEqual(notes["Same_1"], "")
         self.assertIn("Identity ambiguous with Same_3", notes["Same_2"])
         self.assertIn("Identity ambiguous with Same_2", notes["Same_3"])
+
+    def test_standardize_player_names_preserves_case_distinct_players_seen_together(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 1, "PlayerName": "Floris", "CharacterIndex": 10, "DetectedTotalScore": 12, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 2, "PlayerName": "floris", "CharacterIndex": 20, "DetectedTotalScore": 9, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 1, "PlayerName": "Floris", "CharacterIndex": 10, "DetectedTotalScore": 27, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 2, "PlayerName": "floris", "CharacterIndex": 20, "DetectedTotalScore": 18, "ScoreLayoutId": "lan2_split_2p"},
+            ]
+        )
+
+        with (
+            mock.patch("mk8_local_play.ocr_name_matching.find_score_bundle_anchor_path", return_value=None),
+            mock.patch("mk8_local_play.ocr_name_matching._prepare_visual_identity_features", return_value={}),
+        ):
+            standardized = standardize_player_names(df, output_folder=".", write_debug_linking_excel=False)
+
+        race1 = standardized.loc[standardized["RaceIDNumber"] == 1].sort_values("RacePosition")
+        race2 = standardized.loc[standardized["RaceIDNumber"] == 2].sort_values("RacePosition")
+
+        self.assertEqual(list(race1["FixPlayerName"]), ["Floris", "floris"])
+        self.assertEqual(list(race2["FixPlayerName"]), ["Floris", "floris"])
 
 
 if __name__ == "__main__":

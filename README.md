@@ -26,6 +26,8 @@ Recent scoring and validation behavior:
 - temporary player-drop races can stay visible in the workbook while being excluded from tournament totals when a later race recovers to a higher player count
 - user exports now include `Counts Toward Totals` and `Scoring Note` at the end of the table when that late scoring policy applies
 - first-race scoring recompute now preserves a valid non-zero `OldTotalScore` baseline for the players actually present instead of resetting those totals back to zero
+- overlap OCR finalization now ignores incomplete race folders that never exported a `2RaceScore` bundle, so partially scanned tail races no longer block a whole video's workbook rows from appearing in full multi-video runs
+- identity standardization now preserves visibly distinct case-only names when they coexist in the same race, so players such as `Floris` and `floris` are not merged into one identity chain
 - recursive runs now skip any videos under a folder named `corrupt` or `exclude`
 - final-race duplicate-name ambiguity notes now only mark the rows that are still truly interchangeable, and the note names the conflicting identity label(s)
 - score detection now uses the left-side row-box position signal for the required visible-player prefix instead of relying on a standalone score-strip template match
@@ -34,6 +36,7 @@ Recent scoring and validation behavior:
 - TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
 - second-pass score selection now uses a coarse search with rewind before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
 - RaceScore export bundles are now centered on the detected score-transition frame, and the saved `2RaceScore` frames are reused directly by OCR
+- the default OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path, with the old `Score_template.png` strip path retained as an env-controlled fallback
 
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts
