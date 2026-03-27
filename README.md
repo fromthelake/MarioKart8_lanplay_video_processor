@@ -36,7 +36,7 @@ Recent scoring and validation behavior:
 - TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
 - second-pass score selection now uses a coarse search with rewind before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
 - RaceScore export bundles are now centered on the detected score-transition frame, and the saved `2RaceScore` frames are reused directly by OCR
-- the default OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path, with the old `Score_template.png` strip path retained as an env-controlled fallback
+- the OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only
 
 Current score-screen support:
 - LAN 2 two-player split-screen score layouts

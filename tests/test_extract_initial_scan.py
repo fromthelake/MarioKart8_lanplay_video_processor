@@ -10,11 +10,11 @@ from mk8_local_play import extract_initial_scan
 
 class ExtractInitialScanTests(unittest.TestCase):
     def test_initial_scan_template_indexes_match_extract_frame_load_order(self):
-        self.assertEqual(extract_initial_scan.INITIAL_SCAN_TARGETS[1]["template_index"], 1)
-        self.assertEqual(extract_initial_scan.INITIAL_SCAN_TARGETS[2]["template_index"], 2)
-        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[0]["template_index"], 4)
-        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[1]["template_index"], 5)
-        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[2]["template_index"], 6)
+        self.assertEqual(extract_initial_scan.INITIAL_SCAN_TARGETS[1]["template_index"], 0)
+        self.assertEqual(extract_initial_scan.INITIAL_SCAN_TARGETS[2]["template_index"], 1)
+        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[0]["template_index"], 3)
+        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[1]["template_index"], 4)
+        self.assertEqual(extract_initial_scan.IGNORE_FRAME_TARGETS[2]["template_index"], 5)
 
     def test_match_score_target_layouts_does_not_report_blank_when_any_layout_matches(self):
         gray_image = np.full((720, 1280), 255, dtype=np.uint8)
@@ -123,11 +123,10 @@ class ExtractInitialScanTests(unittest.TestCase):
             "kind": "race",
             "label": "RaceNumber",
             "roi": (10, 10, 20, 20),
-            "template_index": 2,
-            "alternate_matches": ({"roi": (40, 40, 20, 20), "template_index": 2},),
+            "template_index": 1,
+            "alternate_matches": ({"roi": (40, 40, 20, 20), "template_index": 1},),
         }
         templates = [
-            (np.zeros((5, 5), dtype=np.uint8), None),
             (np.zeros((5, 5), dtype=np.uint8), None),
             (np.zeros((5, 5), dtype=np.uint8), None),
         ]
@@ -156,10 +155,10 @@ class ExtractInitialScanTests(unittest.TestCase):
             "kind": "race",
             "label": "RaceNumber",
             "roi": (10, 10, 20, 20),
-            "template_index": 2,
-            "alternate_matches": ({"roi": (40, 40, 20, 20), "template_index": 7},),
+            "template_index": 1,
+            "alternate_matches": ({"roi": (40, 40, 20, 20), "template_index": 6},),
         }
-        templates = [(np.zeros((5, 5), dtype=np.uint8), None) for _ in range(8)]
+        templates = [(np.zeros((5, 5), dtype=np.uint8), None) for _ in range(7)]
         blank_roi = np.zeros((20, 20), dtype=np.uint8)
         alternate_roi = np.full((20, 20), 255, dtype=np.uint8)
         with (

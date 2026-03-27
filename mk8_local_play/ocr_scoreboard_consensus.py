@@ -48,17 +48,10 @@ POSITION_STRIP_PADDING_Y = 2
 POSITION_ROW_PADDING_X = 1
 POSITION_ROW_PADDING_TOP = 1
 POSITION_ROW_PADDING_BOTTOM = 4
-POSITION_TEMPLATE_FILENAME = "Score_template.png"
-POSITION_TEMPLATE_WIDTH = 56
-POSITION_TEMPLATE_HEIGHT = 36
-POSITION_TEMPLATE_ROW_STARTS = [0, 50, 102, 154, 206, 258, 310, 362, 414, 466, 518, 570]
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
 POSITION_PRESENT_COEFF_THRESHOLD = 0.60
 POSITION_PRESENT_ROW1_COEFF_THRESHOLD = 0.40
-POSITION_TEMPLATE_FAST_PATH_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_FAST_PATH_ENABLED", "1").lower() not in {"0", "false", "no"}
 POSITION_TEMPLATE_BEAM_WIDTH = max(1, int(os.environ.get("MK8_POSITION_TEMPLATE_BEAM_WIDTH", "3")))
-POSITION_TEMPLATE_COMPARE_BLACK_WHITE_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_COMPARE_BLACK_WHITE", "0").lower() in {"1", "true", "yes", "on"}
-POSITION_TEMPLATE_USE_BLACK_WHITE_ENABLED = os.environ.get("MK8_POSITION_TEMPLATE_USE_BLACK_WHITE", "1").lower() not in {"0", "false", "no"}
 POSITION_TEMPLATE_TILE_WIDTH = 52
 POSITION_TEMPLATE_TILE_HEIGHT = 52
 POSITION_TEMPLATE_TILE_X_OFFSET = -2
@@ -321,11 +314,6 @@ def normalize_binary_foreground(binary_image: np.ndarray) -> np.ndarray:
     return binary_image
 
 
-def position_template_row_windows() -> List[Tuple[int, int]]:
-    """Return the fixed row windows used by the template strip itself."""
-    return [(start_y, start_y + POSITION_TEMPLATE_HEIGHT) for start_y in POSITION_TEMPLATE_ROW_STARTS]
-
-
 def position_template_tile_windows() -> List[Tuple[int, int]]:
     """Return the 52 px row windows used by the black/white tile templates."""
     return [
@@ -335,60 +323,6 @@ def position_template_tile_windows() -> List[Tuple[int, int]]:
         )
         for row_index in range(12)
     ]
-
-
-def split_strip_into_rows(strip_image: np.ndarray) -> List[np.ndarray]:
-    """Split a position strip using the same row windows as the position templates."""
-    row_images = []
-    strip_height = strip_image.shape[0]
-    for start_y, end_y in position_template_row_windows():
-        clipped_start = max(0, min(strip_height, start_y))
-        clipped_end = max(clipped_start, min(strip_height, end_y))
-        row_images.append(strip_image[clipped_start:clipped_end, :])
-    return row_images
-
-
-def normalize_position_rows(strip_image: np.ndarray) -> List[np.ndarray]:
-    """Normalize foreground polarity per scoreboard row instead of per full strip.
-
-    This mirrors how player names and score cells are handled: each ROI decides its own
-    inversion based on its own black/white balance. Empty bottom rows should not be able
-    to inherit the polarity choice from busy rows above them.
-    """
-    return [normalize_binary_foreground(row_image) for row_image in split_strip_into_rows(strip_image)]
-
-
-def slice_position_templates(template_binary: np.ndarray) -> List[np.ndarray]:
-    """Slice the template strip using fixed designer-approved row windows.
-
-    Each template row keeps the full 56 px width and a fixed 36 px height.
-    The top positions come from the manually tuned row starts provided for
-    Score_template.png: 0, 50, 102, 154, ... with 52 px spacing after row 1.
-    """
-    template_rows = []
-    image_height, image_width = template_binary.shape[:2]
-    crop_width = min(POSITION_TEMPLATE_WIDTH, image_width)
-    for start_y in POSITION_TEMPLATE_ROW_STARTS:
-        end_y = min(image_height, start_y + POSITION_TEMPLATE_HEIGHT)
-        row_crop = template_binary[start_y:end_y, :crop_width]
-        template_rows.append(normalize_binary_foreground(row_crop))
-    return template_rows
-
-
-def combine_position_rows(row_images: List[np.ndarray], score_layout_id: str | None = None) -> np.ndarray:
-    """Rebuild the full strip after per-row normalization using the template row windows."""
-    if not row_images:
-        return np.zeros((0, 0), dtype=np.uint8)
-    strip_width = row_images[0].shape[1]
-    strip_height = position_strip_roi(score_layout_id=score_layout_id)[1][1] - position_strip_roi(score_layout_id=score_layout_id)[0][1]
-    combined = np.zeros((strip_height, strip_width), dtype=np.uint8)
-    for row_image, (start_y, end_y) in zip(row_images, position_template_row_windows()):
-        clipped_start = max(0, min(strip_height, start_y))
-        clipped_end = max(clipped_start, min(strip_height, end_y))
-        height = min(row_image.shape[0], clipped_end - clipped_start)
-        combined[clipped_start:clipped_start + height, :] = row_image[:height, :]
-    return combined
-
 
 def stack_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
     """Stack row crops into one compact vertical strip for cheap prefix gating."""
@@ -411,50 +345,6 @@ def stack_position_rows(row_images: List[np.ndarray]) -> np.ndarray:
             )
         normalized_rows.append(row)
     return np.vstack(normalized_rows)
-
-
-def extract_position_row_match_crops(
-    processed_image: np.ndarray,
-    score_layout_id: str | None = None,
-    *,
-    max_rows: int | None = None,
-    stats: dict | None = None,
-    stats_prefix: str = "score",
-) -> List[np.ndarray]:
-    """Extract per-row position ROIs based on the template row windows.
-
-    The core template area is 56x36. We keep just 1 px padding around it so the
-    matcher can adjust slightly inside a tight 58x38 ROI.
-    """
-    (x1, y1), (x2, y2) = position_strip_roi(score_layout_id=score_layout_id)
-    image_height, image_width = processed_image.shape[:2]
-    if len(processed_image.shape) == 3:
-        grayscale_image = cv2.cvtColor(processed_image, cv2.COLOR_BGR2GRAY)
-    else:
-        grayscale_image = processed_image
-
-    extract_start = time.perf_counter()
-    row_crops = []
-    row_windows = position_template_row_windows()
-    if max_rows is not None:
-        row_windows = row_windows[:max(0, int(max_rows))]
-    requested_rows = len(row_windows)
-    for row_start_offset, row_end_offset in row_windows:
-        row_start = y1 + int(row_start_offset)
-        row_end = y1 + int(row_end_offset)
-        crop_x1 = max(0, x1 - POSITION_ROW_PADDING_X)
-        crop_y1 = max(0, row_start - POSITION_ROW_PADDING_TOP)
-        crop_x2 = min(image_width, x2 + POSITION_ROW_PADDING_X)
-        crop_y2 = min(image_height, row_end + POSITION_ROW_PADDING_BOTTOM)
-        row_crop = grayscale_image[crop_y1:crop_y2, crop_x1:crop_x2]
-        _, row_crop = cv2.threshold(row_crop, 180, 255, cv2.THRESH_BINARY)
-        row_crops.append(normalize_binary_foreground(row_crop))
-    if stats is not None:
-        stats[f"{stats_prefix}_position_row_crop_calls"] += 1
-        stats[f"{stats_prefix}_position_rows_requested"] += int(requested_rows)
-        stats[f"{stats_prefix}_position_rows_extracted"] += int(len(row_crops))
-        stats[f"{stats_prefix}_position_row_crop_s"] += time.perf_counter() - extract_start
-    return row_crops
 
 
 def extract_position_tile_match_crops(
@@ -492,17 +382,6 @@ def extract_position_tile_match_crops(
 
 
 @lru_cache(maxsize=1)
-def load_position_row_templates() -> List[np.ndarray]:
-    """Slice the score-screen position strip template into 12 fixed row templates."""
-    template_path = resolve_asset_file("templates", POSITION_TEMPLATE_FILENAME)
-    template_image = cv2.imread(str(template_path), cv2.IMREAD_GRAYSCALE)
-    if template_image is None:
-        raise FileNotFoundError(f"Position template image not found: {template_path}")
-    _, template_binary = cv2.threshold(template_image, 180, 255, cv2.THRESH_BINARY)
-    return slice_position_templates(template_binary)
-
-
-@lru_cache(maxsize=1)
 def load_position_row_template_tiles() -> Dict[str, List[Tuple[np.ndarray, np.ndarray | None]]]:
     """Load the black/white per-row tile templates with alpha masks."""
     templates_by_variant: Dict[str, List[Tuple[np.ndarray, np.ndarray | None]]] = {}
@@ -531,26 +410,6 @@ def load_position_row_template_tiles() -> Dict[str, List[Tuple[np.ndarray, np.nd
             variant_tiles.append((tile_binary, alpha_mask))
         templates_by_variant[variant_name] = variant_tiles
     return templates_by_variant
-
-
-@lru_cache(maxsize=12)
-def load_position_prefix_template_stack(prefix_rows: int) -> np.ndarray:
-    """Return a compact stacked template for the first N score-position rows."""
-    prefix_count = max(1, min(12, int(prefix_rows)))
-    padded_templates = []
-    for template in load_position_row_templates()[:prefix_count]:
-        padded_templates.append(
-            cv2.copyMakeBorder(
-                template,
-                POSITION_ROW_PADDING_TOP,
-                POSITION_ROW_PADDING_BOTTOM,
-                POSITION_ROW_PADDING_X,
-                POSITION_ROW_PADDING_X,
-                cv2.BORDER_CONSTANT,
-                value=0,
-            )
-        )
-    return stack_position_rows(padded_templates)
 
 
 @lru_cache(maxsize=1)
@@ -963,92 +822,63 @@ def build_position_signal_metrics(
 ) -> List[Dict[str, float]]:
     """Measure whether each row still shows a position number in the fixed left strip."""
     total_start = time.perf_counter()
-    if POSITION_TEMPLATE_USE_BLACK_WHITE_ENABLED:
-        bw_start = time.perf_counter()
-        position_tiles = extract_position_tile_match_crops(
-            processed_image,
-            score_layout_id=score_layout_id,
-            max_rows=max_rows,
-        )
-        variant_templates = load_position_row_template_tiles()
-        metrics = _build_position_signal_metrics_black_white(position_tiles, variant_templates)
-        if stats is not None:
-            stats[f"{stats_prefix}_position_metrics_black_white_calls"] += 1
-            stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_tiles))
-            stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(
-                sum(1 if row_index == 0 else 2 for row_index in range(len(position_tiles)))
-            )
-            stats[f"{stats_prefix}_position_metrics_black_white_s"] += time.perf_counter() - bw_start
-            stats[f"{stats_prefix}_position_metrics_total_calls"] += 1
-            stats[f"{stats_prefix}_position_metrics_total_s"] += time.perf_counter() - total_start
-        return metrics
-    position_rows = extract_position_row_match_crops(
+    bw_start = time.perf_counter()
+    position_tiles = extract_position_tile_match_crops(
         processed_image,
         score_layout_id=score_layout_id,
         max_rows=max_rows,
-        stats=stats,
-        stats_prefix=stats_prefix,
     )
-    templates = load_position_row_templates()
-    if POSITION_TEMPLATE_FAST_PATH_ENABLED:
-        fast_start = time.perf_counter()
-        metrics = _build_position_signal_metrics_fast(position_rows, templates)
-        if POSITION_TEMPLATE_COMPARE_BLACK_WHITE_ENABLED:
-            _compare_black_white_position_path(
-                processed_image,
-                metrics,
-                score_layout_id=score_layout_id,
-                max_rows=max_rows,
-                stats=stats,
-                stats_prefix=stats_prefix,
-            )
-        if stats is not None:
-            stats[f"{stats_prefix}_position_metrics_fast_calls"] += 1
-            stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_rows))
-            stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(
-                sum(1 if row_index == 0 else 2 for row_index in range(len(position_rows)))
-            )
-            stats[f"{stats_prefix}_position_metrics_fast_s"] += time.perf_counter() - fast_start
-            stats[f"{stats_prefix}_position_metrics_total_calls"] += 1
-            stats[f"{stats_prefix}_position_metrics_total_s"] += time.perf_counter() - total_start
-        return metrics
-    metrics = []
-    slow_start = time.perf_counter()
-    template_eval_count = 0
-    for row_index, row_image in enumerate(position_rows):
-        template_scores = [
-            _evaluate_position_template(row_image, template_index, template)
-            for template_index, template in enumerate(templates, start=1)
-        ]
-        template_eval_count += len(template_scores)
-        metrics.append(_build_position_metrics_from_template_scores(row_index, template_scores))
-    if POSITION_TEMPLATE_COMPARE_BLACK_WHITE_ENABLED:
-        _compare_black_white_position_path(
-            processed_image,
-            metrics,
-            score_layout_id=score_layout_id,
-            max_rows=max_rows,
-            stats=stats,
-            stats_prefix=stats_prefix,
-        )
+    variant_templates = load_position_row_template_tiles()
+    metrics = _build_position_signal_metrics_black_white(position_tiles, variant_templates)
     if stats is not None:
-        stats[f"{stats_prefix}_position_metrics_slow_calls"] += 1
-        stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_rows))
-        stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(template_eval_count)
-        stats[f"{stats_prefix}_position_metrics_slow_s"] += time.perf_counter() - slow_start
+        stats[f"{stats_prefix}_position_metrics_black_white_calls"] += 1
+        stats[f"{stats_prefix}_position_metrics_rows_processed"] += int(len(position_tiles))
+        stats[f"{stats_prefix}_position_metrics_template_candidates"] += int(
+            sum(1 if row_index == 0 else 2 for row_index in range(len(position_tiles)))
+        )
+        stats[f"{stats_prefix}_position_metrics_black_white_s"] += time.perf_counter() - bw_start
         stats[f"{stats_prefix}_position_metrics_total_calls"] += 1
         stats[f"{stats_prefix}_position_metrics_total_s"] += time.perf_counter() - total_start
     return metrics
 
 
 def build_normalized_position_strip(processed_image: np.ndarray, score_layout_id: str | None = None) -> np.ndarray:
-    """Return the position strip with the same binary polarity normalization used for matching."""
-    (x1, y1), (x2, y2) = position_strip_roi(score_layout_id=score_layout_id)
-    position_strip = processed_image[y1:y2, x1:x2]
-    if len(position_strip.shape) == 3:
-        position_strip = cv2.cvtColor(position_strip, cv2.COLOR_BGR2GRAY)
-    _, position_strip = cv2.threshold(position_strip, 180, 255, cv2.THRESH_BINARY)
-    return combine_position_rows(normalize_position_rows(position_strip), score_layout_id=score_layout_id)
+    """Return a legacy-sized strip view populated from the current black/white tiles."""
+    layout = get_score_layout(score_layout_id)
+    (strip_x1, strip_y1), (strip_x2, strip_y2) = position_strip_roi(score_layout_id=score_layout_id)
+    strip_height = max(0, int(strip_y2 - strip_y1))
+    strip_width = max(0, int(strip_x2 - strip_x1))
+    normalized_strip = np.zeros((strip_height, strip_width), dtype=np.uint8)
+    row_tiles = extract_position_tile_match_crops(processed_image, score_layout_id=score_layout_id)
+    tile_x1 = int(layout.base_position_strip_roi[0][0]) + int(POSITION_TEMPLATE_TILE_X_OFFSET)
+
+    for row_index, row_tile in enumerate(row_tiles):
+        tile = row_tile
+        if len(tile.shape) == 3:
+            tile = cv2.cvtColor(tile, cv2.COLOR_BGR2GRAY)
+        _, tile = cv2.threshold(tile, 180, 255, cv2.THRESH_BINARY)
+        tile = normalize_binary_foreground(tile)
+
+        absolute_y1 = int(layout.base_position_strip_roi[0][1]) + int(POSITION_TEMPLATE_TILE_Y_OFFSET) + (row_index * int(POSITION_TEMPLATE_TILE_HEIGHT))
+        relative_x1 = int(tile_x1 - strip_x1)
+        relative_y1 = int(absolute_y1 - strip_y1)
+        relative_x2 = relative_x1 + tile.shape[1]
+        relative_y2 = relative_y1 + tile.shape[0]
+
+        dest_x1 = max(0, relative_x1)
+        dest_y1 = max(0, relative_y1)
+        dest_x2 = min(strip_width, relative_x2)
+        dest_y2 = min(strip_height, relative_y2)
+        if dest_x2 <= dest_x1 or dest_y2 <= dest_y1:
+            continue
+
+        src_x1 = dest_x1 - relative_x1
+        src_y1 = dest_y1 - relative_y1
+        src_x2 = src_x1 + (dest_x2 - dest_x1)
+        src_y2 = src_y1 + (dest_y2 - dest_y1)
+        normalized_strip[dest_y1:dest_y2, dest_x1:dest_x2] = tile[src_y1:src_y2, src_x1:src_x2]
+
+    return normalized_strip
 
 
 def build_character_match_metrics(

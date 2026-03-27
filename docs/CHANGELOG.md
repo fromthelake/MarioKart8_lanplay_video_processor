@@ -40,7 +40,7 @@ The format is intentionally simple and human-readable.
 - Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.
 - Second-pass score selection now uses coarse `+10` frame stepping with rewind before the first RaceScore hit and again during TotalScore stabilization, reducing unnecessary frame-by-frame scanning in long candidate windows.
 - RaceScore export windows are now centered on the detected points-rollup transition so the saved `2RaceScore` bundle itself matches the intended OCR split.
-- The default OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path. The older `Score_template.png` strip path remains available through `MK8_POSITION_TEMPLATE_USE_BLACK_WHITE=0` as a fallback.
+- The OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only; the older `Score_template.png` strip fallback has been removed.
 - Connection-reset handling now supports repeated resets within the same video instead of stopping after the first detected reset.
 - Total-score validation now adds a second-pass reset detector for obvious fresh-session patterns where OCR totals collapse back to race-points-scale values across most of the field.
 - Final scoring now applies a late player-drop policy: reduced-player races stay visible in exports, but can be excluded from cumulative totals when later races recover to a higher player count.

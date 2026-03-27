@@ -35,9 +35,7 @@ from .ocr_scoreboard_consensus import (
     POSITION_PRESENT_ROW1_COEFF_THRESHOLD,
     _template_match_score,
     build_position_signal_metrics,
-    extract_position_row_match_crops,
     extract_points_transition_observation,
-    load_position_prefix_template_stack,
     parse_detected_int,
     process_image,
     stack_position_rows,
@@ -81,8 +79,8 @@ RACE_SCORE_LATE_EXPANSION_FRAMES = 6
 TOTAL_SCORE_TRANSITION_DROP_SECONDS = 5.0
 STATIC_GALLERY_RACE_MIN_FIRST_FRAME_COEFF = 0.995
 STATIC_GALLERY_RACE_AVG_FIRST_FRAME_COEFF = 0.997
-TWELFTH_TEMPLATE_INDEX = 3
-TWELFTH_TEMPLATE_NL_INDEX = 8
+TWELFTH_TEMPLATE_INDEX = 2
+TWELFTH_TEMPLATE_NL_INDEX = 7
 TWELFTH_NL_CHECK_ROI = (306, 658, 670, 41)
 POSITION_PREFIX_GATE_MIN_COEFF = 0.20
 POINTS_TRANSITION_SEARCH_END_SECONDS = 6.0

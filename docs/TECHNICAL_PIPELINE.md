@@ -60,7 +60,6 @@ This means:
 ## 3. Initial Scan Templates
 
 Initial detection templates live in:
-- `assets/templates/Score_template.png`
 - `assets/templates/Score_template_white.png`
 - `assets/templates/Score_template_black.png`
 - `assets/templates/Trackname_template.png`
@@ -113,7 +112,7 @@ The matcher expands each ROI slightly before template matching to tolerate small
 Current score-screen detection behavior:
 - the initial scan checks both supported score layouts on each score-target frame
 - score detection is now driven by the left-side row-box position signal, not by a plain score-template coefficient
-- that left-side signal is evaluated against the masked `Score_template_white.png` / `Score_template_black.png` row tiles instead of the old strip-derived `Score_template.png` rows
+- that left-side signal is evaluated against the masked `Score_template_white.png` / `Score_template_black.png` row tiles
 - the required prefix length comes from `POSITION_SCAN_MIN_PLAYERS`, currently defaulting to `6`
 - the scan confirmation prefix now starts at row `2`, so rows `2..6` must match their own rank and the prefix average must clear the configured average floor
 - row `1` is intentionally excluded from this confirmation prefix because Nintendo `Capture taken.` overlays can obscure first place while the rest of the scoreboard is still valid
@@ -253,10 +252,6 @@ Current tile windows:
 - LAN 2 tile ROI starts at about `(313, 46)`
 - LAN 1 tile ROI starts at about `(563, 46)`
 - row step: `52`
-
-Legacy fallback:
-- `assets/templates/Score_template.png`
-- enabled only when `MK8_POSITION_TEMPLATE_USE_BLACK_WHITE=0`
 
 Current row-count gating notes:
 - the normal position-template presence threshold stays at `Coeff >= 0.60`

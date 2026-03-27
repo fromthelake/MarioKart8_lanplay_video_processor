@@ -27,8 +27,6 @@ from .extract_common import (
 from .ocr_scoreboard_consensus import (
     _template_match_score,
     build_position_signal_metrics,
-    extract_position_row_match_crops,
-    load_position_row_templates,
     process_image,
 )
 from .project_paths import PROJECT_ROOT
@@ -62,7 +60,7 @@ INITIAL_SCAN_TARGETS = (
         "match_threshold": 0.6,
         "skip_seconds": 0,
         "roi": (141, 607, 183, 101),
-        "template_index": 1,
+        "template_index": 0,
     },
     {
         "kind": "race",
@@ -70,10 +68,10 @@ INITIAL_SCAN_TARGETS = (
         "match_threshold": 0.6,
         "skip_seconds": 60,
         "roi": (540, 590, 144, 48),
-        "template_index": 2,
+        "template_index": 1,
         "alternate_matches": (
-            {"roi": (640, 590, 144, 48), "template_index": 2},
-            {"roi": (694, 594, 130, 40), "template_index": 7},
+            {"roi": (640, 590, 144, 48), "template_index": 1},
+            {"roi": (694, 594, 130, 40), "template_index": 6},
         ),
     },
 )
@@ -85,7 +83,7 @@ IGNORE_FRAME_TARGETS = (
         "match_threshold": 0.75,
         "skip_seconds": 5,
         "roi": (413, 667, 808, 36),
-        "template_index": 4,
+        "template_index": 3,
     },
     {
         "kind": "ignore",
@@ -94,7 +92,7 @@ IGNORE_FRAME_TARGETS = (
         "skip_seconds": 5,
         # User-provided ROI (662, 669, 557, 29), expanded by 2 pixels on all sides.
         "roi": (660, 667, 561, 33),
-        "template_index": 5,
+        "template_index": 4,
     },
     {
         "kind": "ignore",
@@ -103,7 +101,7 @@ IGNORE_FRAME_TARGETS = (
         "skip_seconds": 5,
         # User-provided ROI (558, 669, 660, 30), expanded by 2 pixels on all sides.
         "roi": (556, 667, 664, 34),
-        "template_index": 6,
+        "template_index": 5,
     },
 )
 

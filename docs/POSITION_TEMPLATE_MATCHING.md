@@ -26,9 +26,6 @@ The default path now uses the black/white tile templates, not the old strip-deri
 - The tile ROI is anchored from the same left-side position strip and shifted into the fixed tile grid used by the templates
 - Each lower row advances by `52 px`
 
-Legacy strip fallback is still available for comparison with:
-- `MK8_POSITION_TEMPLATE_USE_BLACK_WHITE=0`
-
 ## Template source
 
 The default position templates are loaded from:
