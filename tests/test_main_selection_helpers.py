@@ -35,6 +35,13 @@ def _make_case_dir(case_name: str) -> Path:
 
 
 class MainSelectionHelpersTests(unittest.TestCase):
+    def test_parse_args_accepts_multiple_video_paths(self):
+        with mock.patch("sys.argv", ["mk8", "--all", "--subfolders", "--videos", "a.mp4", "b.mp4"]):
+            args = main.parse_args()
+        self.assertEqual(args.videos, ["a.mp4", "b.mp4"])
+        self.assertTrue(args.all)
+        self.assertTrue(args.subfolders)
+
     def test_normalize_export_image_format_defaults_to_png_and_accepts_jpeg_aliases(self):
         self.assertEqual(normalize_export_image_format(None), "png")
         self.assertEqual(normalize_export_image_format("png"), "png")
@@ -126,7 +133,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
                         "League 1/Demo_CaptureCard_Race.mp4",
                         include_subfolders=True,
                     ),
-                    [expected_a, expected_b],
+                    [expected_a],
                 )
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)
@@ -159,6 +166,45 @@ class MainSelectionHelpersTests(unittest.TestCase):
                 self.assertEqual(
                     main.selected_race_classes_for_videos(video_paths, include_subfolders=True),
                     ["Division_A__Demo_One", "Division_B__Demo_Two"],
+                )
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_selected_input_video_files_accepts_multiple_explicit_relative_paths(self):
+        case_dir = _make_case_dir("select_multiple_relative")
+        try:
+            input_dir = case_dir / "Input_Videos"
+            expected_a = _touch(input_dir / "2026-03-28" / "Kampioen_2026-03-27 21-50-56.mp4")
+            expected_b = _touch(input_dir / "2026-03-28" / "Talent_2026-03-27 21-50-56.mp4")
+            with mock.patch.object(main, "INPUT_DIR", input_dir):
+                self.assertEqual(
+                    main.selected_input_video_files(
+                        [
+                            "2026-03-28/Kampioen_2026-03-27 21-50-56.mp4",
+                            "2026-03-28/Talent_2026-03-27 21-50-56.mp4",
+                        ],
+                        include_subfolders=True,
+                    ),
+                    [expected_a, expected_b],
+                )
+        finally:
+            shutil.rmtree(case_dir, ignore_errors=True)
+
+    def test_selected_input_video_files_deduplicates_multi_match_results(self):
+        case_dir = _make_case_dir("select_multiple_dedupe")
+        try:
+            input_dir = case_dir / "Input_Videos"
+            expected = _touch(input_dir / "2026-03-28" / "Kampioen_2026-03-27 21-50-56.mp4")
+            with mock.patch.object(main, "INPUT_DIR", input_dir):
+                self.assertEqual(
+                    main.selected_input_video_files(
+                        [
+                            "2026-03-28/Kampioen_2026-03-27 21-50-56.mp4",
+                            "Kampioen_2026-03-27 21-50-56.mp4",
+                        ],
+                        include_subfolders=True,
+                    ),
+                    [expected],
                 )
         finally:
             shutil.rmtree(case_dir, ignore_errors=True)

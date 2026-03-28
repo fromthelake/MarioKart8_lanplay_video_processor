@@ -71,6 +71,25 @@ class OcrScoringPolicyTests(unittest.TestCase):
         self.assertEqual(player_rows["OldTotalScore"].tolist(), [0, 7, 7, 13])
         self.assertEqual(player_rows["NewTotalScore"].tolist(), [7, 7, 13, 19])
 
+    def test_recomputed_totals_reset_per_video_even_when_names_repeat(self):
+        left = _build_policy_df([3])
+        left["RaceClass"] = "VideoA"
+        left.loc[left["FixPlayerName"] == "P1", "FixPlayerName"] = "Shared"
+
+        right = _build_policy_df([3])
+        right["RaceClass"] = "VideoB"
+        right.loc[right["FixPlayerName"] == "P1", "FixPlayerName"] = "Shared"
+
+        adjusted = apply_temporary_player_drop_scoring_policy(pd.concat([left, right], ignore_index=True))
+
+        shared_rows = adjusted.loc[adjusted["FixPlayerName"] == "Shared"].sort_values(
+            ["RaceClass", "RaceIDNumber", "RacePosition"],
+            kind="stable",
+        )
+
+        self.assertEqual(shared_rows["OldTotalScore"].tolist(), [0, 0])
+        self.assertEqual(shared_rows["NewTotalScore"].tolist(), [3, 3])
+
 
 if __name__ == "__main__":
     unittest.main()

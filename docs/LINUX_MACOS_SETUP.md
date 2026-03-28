@@ -195,10 +195,18 @@ Terminal Command:
 .venv/bin/mk8-local-play --selection --subfolders
 --------------
 
+Process a specific multi-video set by explicit relative file path:
+
+Terminal Command:
+-------------
+.venv/bin/mk8-local-play --selection --subfolders --videos "2026-03-28/Kwalificatie_Groep_1_2026-03-27 20-00-33.mkv" "2026-03-28/Kwalificatie_Groep_2_2026-03-27 20-00-33.mp4"
+-------------
+
 When `--subfolders` is used:
 - supported videos are discovered recursively under `./Input_Videos/`
 - exported frame bundles and Excel/CSV `Video` names include a sanitized relative folder path
 - this avoids naming conflicts when different folders contain files with the same base filename
+- with `--videos`, explicit relative paths are matched exactly before filename fallback is attempted
 
 Process only the current selected input set:
 
@@ -341,6 +349,13 @@ What it does:
 Recommended use:
 - use this when you want a true one-video run
 - prefer this over `--all --video ...`, because `--all` can still include older frame groups during OCR
+
+Run several exact videos together with scoped OCR:
+
+Terminal Command:
+-------------
+.venv/bin/mk8-local-play --selection --subfolders --videos "2026-03-28/Kampioen_2026-03-27 21-50-56.mp4" "2026-03-28/Talent_2026-03-27 21-50-56.mp4" "2026-03-28/Wild_2026-03-27 21-50-56.mp4"
+-------------
 
 ## Troubleshooting
 

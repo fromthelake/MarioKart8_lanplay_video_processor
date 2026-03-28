@@ -145,9 +145,9 @@ def _mark_temporary_player_drop_races(df: pd.DataFrame) -> pd.DataFrame:
 
 def _recompute_scoring_totals(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    tournament_totals: dict[str, int] = defaultdict(int)
 
     for race_class, race_group in df.groupby("RaceClass", sort=False):
+        tournament_totals: dict[str, int] = defaultdict(int)
         session_totals: dict[str, int] = defaultdict(int)
         current_session_index = None
         for race_id in sorted(race_group["RaceIDNumber"].unique()):

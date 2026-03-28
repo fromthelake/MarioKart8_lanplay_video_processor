@@ -15,12 +15,16 @@ Current output set for a normal run:
 
 Debug outputs can be enabled for a scoped headless run with:
 - `.\.venv\Scripts\mk8-local-play.exe --selection --debug --video <video-name>`
+- `.\.venv\Scripts\mk8-local-play.exe --selection --subfolders --videos "2026-03-28/VideoA.mp4" "2026-03-28/VideoB.mp4"`
 
 When `--debug` is enabled, the run also writes:
 - `Debug/*_Tournament_Results_Debug.xlsx`
 - `Debug/*_Tournament_Results_Debug.csv`
 
 Recent scoring and validation behavior:
+- explicit multi-video CLI selection is now available through `--videos`, so you can process several exact file paths together in one scoped run
+- when `--subfolders` is combined with explicit relative paths in `--videos`, each requested path now resolves exactly instead of also pulling same-named files from other folders such as `backup/`
+- score recomputation now resets running tournament totals per video / race class, so repeated player names across separate captures no longer inherit totals from earlier videos
 - videos can now contain multiple connection resets; later resets in the same source video are detected and segmented correctly
 - reset detection now has a second pass for obvious fresh-session total-score patterns where the displayed totals collapse back to race-points-scale values across most of the field
 - temporary player-drop races can stay visible in the workbook while being excluded from tournament totals when a later race recovers to a higher player count
@@ -289,10 +293,18 @@ PowerShell Command:
 .\.venv\Scripts\mk8-local-play.exe --selection --subfolders
 --------------
 
+Process a specific multi-video set by explicit relative file path:
+
+PowerShell Command:
+-------------
+.\.venv\Scripts\mk8-local-play.exe --selection --subfolders --videos "2026-03-28/Kwalificatie_Groep_1_2026-03-27 20-00-33.mkv" "2026-03-28/Kwalificatie_Groep_2_2026-03-27 20-00-33.mp4" "2026-03-28/Kwalificatie_Groep_3_2026-03-27 20-00-33.mkv"
+-------------
+
 When `--subfolders` is used:
 - supported videos are discovered recursively under `./Input_Videos/`
 - exported frame bundles and Excel/CSV `Video` names include a sanitized relative folder path
 - this avoids naming conflicts when different folders contain files with the same base filename
+- with `--videos`, explicit relative paths are matched exactly before filename fallback is attempted
 
 Process only the current selected input set:
 
@@ -464,6 +476,18 @@ What it does:
 Recommended use:
 - use this when you want a true one-video run
 - prefer this over `--all --video ...`, because `--all` can still include older frame groups during OCR
+
+Run several exact videos together with scoped OCR:
+
+PowerShell Command:
+-------------
+.\.venv\Scripts\mk8-local-play.exe --selection --subfolders --videos "2026-03-28/Kampioen_2026-03-27 21-50-56.mp4" "2026-03-28/Talent_2026-03-27 21-50-56.mp4" "2026-03-28/Wild_2026-03-27 21-50-56.mp4"
+-------------
+
+What it does:
+- extracts only those explicitly listed files
+- limits OCR/export to those same video classes
+- keeps multi-video overlap OCR available, so CUDA-backed EasyOCR can still process the selected set together
 
 ## If you want more detail
 

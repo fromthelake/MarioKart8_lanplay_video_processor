@@ -132,11 +132,13 @@ Common scoped commands:
 .\.venv\Scripts\python.exe -m mk8_local_play.main --extract --video <video-name>
 .\.venv\Scripts\python.exe -m mk8_local_play.main --ocr --selection --video <video-name>
 .\.venv\Scripts\python.exe -m mk8_local_play.main --all --selection --video <video-name>
+.\.venv\Scripts\python.exe -m mk8_local_play.main --selection --subfolders --videos "2026-03-28/VideoA.mp4" "2026-03-28/VideoB.mp4"
 ```
 
 Notes:
 - `--all` is broader than `--selection`; it can include historical frame groups already present in `Output_Results/Frames`.
 - `--selection` is the safer baseline for scoped verification because OCR stays limited to the selected video classes.
+- `--videos` is the scoped multi-file variant. When combined with `--subfolders`, explicit relative paths are matched exactly before basename/stem fallback.
 - Child scripts are expected to run through the repo-local `.venv`.
 - The first curated baseline is `benchmarks/baselines/demo_capturecard_race/` and must be validated with both `--prefix Demo_CaptureCard_Race` and `--race-class Demo_CaptureCard_Race`.
 - With EasyOCR CUDA enabled and more than one selected input video, overlap `auto` now defaults to streamed per-race OCR with two consumers. Explicit `video` / `race` mode overrides and higher consumer counts remain available for experiments.
@@ -167,6 +169,7 @@ Verified:
 - `.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"` succeeds.
 - The current environment reports EasyOCR importable and FFmpeg available.
 - The repo now has a small stdlib `unittest` regression suite for config loading, output validation helpers, export formatting, session validation, and selection scoping.
+- Scoring recomputation now resets running totals per video/race class, preventing repeated names in separate source videos from leaking tournament totals across exports.
 
 Strong inferences:
 - The practical regression strategy today is reproducible CLI runs plus output comparison, not unit-test-first development.

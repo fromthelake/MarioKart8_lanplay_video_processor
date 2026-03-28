@@ -149,15 +149,22 @@ def discover_input_video_files(*, include_subfolders: bool = False) -> list[Path
     )
 
 
-def selected_input_video_files(selected_video: str | None = None, *, include_subfolders: bool = False) -> list[Path]:
+def _selected_input_video_files_single(selected_video: str | None = None, *, include_subfolders: bool = False) -> list[Path]:
     all_video_files = discover_input_video_files(include_subfolders=include_subfolders)
     if not selected_video:
         return all_video_files
+    selected_relative = selected_video.replace("\\", "/").lower()
+    if include_subfolders and ("/" in selected_relative or "\\" in selected_video):
+        relative_matches = [
+            path for path in all_video_files
+            if str(path.relative_to(INPUT_DIR)).replace("\\", "/").lower() == selected_relative
+        ]
+        if relative_matches:
+            return relative_matches
     selected_name = Path(selected_video).name.lower()
     exact_matches = [path for path in all_video_files if path.name.lower() == selected_name]
     if exact_matches:
         return exact_matches
-    selected_relative = selected_video.replace("\\", "/").lower()
     relative_matches = [
         path for path in all_video_files
         if str(path.relative_to(INPUT_DIR)).replace("\\", "/").lower() == selected_relative
@@ -173,6 +180,39 @@ def selected_input_video_files(selected_video: str | None = None, *, include_sub
         path for path in all_video_files
         if build_video_identity(path, include_subfolders=True).lower() == selected_identity
     ] or stem_matches
+
+
+def selected_input_video_files(
+    selected_video: str | list[str] | None = None,
+    *,
+    include_subfolders: bool = False,
+) -> list[Path]:
+    if isinstance(selected_video, (list, tuple)):
+        resolved_files: list[Path] = []
+        seen_paths: set[str] = set()
+        missing_requests: list[str] = []
+        for requested_video in selected_video:
+            requested_text = str(requested_video or "").strip()
+            if not requested_text:
+                continue
+            matches = _selected_input_video_files_single(
+                requested_text,
+                include_subfolders=include_subfolders,
+            )
+            if not matches:
+                missing_requests.append(requested_text)
+                continue
+            for match in matches:
+                normalized_path = str(match.resolve())
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
+                resolved_files.append(match)
+        if missing_requests:
+            missing_text = ", ".join(missing_requests)
+            raise RuntimeError(f"No supported videos found for selection: {missing_text}")
+        return resolved_files
+    return _selected_input_video_files_single(selected_video, include_subfolders=include_subfolders)
 
 
 def selected_race_classes_for_videos(video_files: list[Path], *, include_subfolders: bool = False) -> list[str]:
@@ -530,7 +570,12 @@ def merge_videos() -> None:
             temp_file.unlink()
 
 
-def run_extract(selected_video: str | None = None, *, include_subfolders: bool = False, debug: bool | None = None) -> None:
+def run_extract(
+    selected_video: str | list[str] | None = None,
+    *,
+    include_subfolders: bool = False,
+    debug: bool | None = None,
+) -> None:
     configure_headless_debug_outputs(debug)
     ensure_runtime_or_raise()
     video_files = selected_input_video_files(
@@ -538,11 +583,9 @@ def run_extract(selected_video: str | None = None, *, include_subfolders: bool =
         include_subfolders=include_subfolders,
     )
     if selected_video:
-        if not video_files:
-            raise RuntimeError(f"No supported videos found for selection: {selected_video}")
         clear_output_results_for_videos(video_files, include_subfolders=include_subfolders)
     extra_args = []
-    if selected_video:
+    if isinstance(selected_video, str) and selected_video:
         extra_args.extend(["--video", selected_video])
     if include_subfolders:
         extra_args.append("--subfolders")
@@ -550,7 +593,7 @@ def run_extract(selected_video: str | None = None, *, include_subfolders: bool =
 
 
 def run_ocr(
-    selected_video: str | None = None,
+    selected_video: str | list[str] | None = None,
     *,
     include_subfolders: bool = False,
     selection_mode: bool = False,
@@ -572,7 +615,7 @@ def run_ocr(
             include_subfolders=include_subfolders,
         ):
             extra_args.extend(["--race-class", race_class])
-    elif selected_video:
+    elif isinstance(selected_video, str) and selected_video:
         selected_identifier = (
             build_video_identity(Path(selected_video), include_subfolders=True)
             if include_subfolders else Path(selected_video).stem
@@ -1465,7 +1508,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
 
 def run_all(
-    selected_video: str | None = None,
+    selected_video: str | list[str] | None = None,
     selection_mode: bool = False,
     *,
     include_subfolders: bool = False,
@@ -1664,7 +1707,7 @@ def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: in
             stats.print_callers(pattern)
 
 
-def run_profiled_all(selected_video: str | None = None, *, debug: bool | None = None) -> None:
+def run_profiled_all(selected_video: str | list[str] | None = None, *, debug: bool | None = None) -> None:
     LOGGER.reset()
     profiler = cProfile.Profile()
     profiler.enable()
@@ -2447,11 +2490,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--debug", action="store_true", help="Enable debug CSV/images/linking outputs for this headless run")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
+    parser.add_argument(
+        "--videos",
+        nargs="+",
+        help="Process multiple explicit video paths together, relative to Input_Videos when using --subfolders",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    selected_videos = args.videos if args.videos else args.video
     if args.check:
         return print_runtime_status()
     if args.clear_output_results:
@@ -2462,14 +2511,14 @@ def main() -> int:
             print("Cancelled.")
         return 0
     if args.extract:
-        run_extract(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
+        run_extract(selected_video=selected_videos, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.scan_test:
-        run_extract(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
+        run_extract(selected_video=selected_videos, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.ocr:
         run_ocr(
-            selected_video=args.video,
+            selected_video=selected_videos,
             include_subfolders=args.subfolders,
             selection_mode=args.selection,
             debug=args.debug,
@@ -2477,12 +2526,12 @@ def main() -> int:
         return 0
     if args.all:
         if args.profile:
-            run_profiled_all(selected_video=args.video, debug=args.debug)
+            run_profiled_all(selected_video=selected_videos, debug=args.debug)
         else:
-            run_all(selected_video=args.video, include_subfolders=args.subfolders, debug=args.debug)
+            run_all(selected_video=selected_videos, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.selection:
-        run_all(selected_video=args.video, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
+        run_all(selected_video=selected_videos, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     return launch_gui()
 

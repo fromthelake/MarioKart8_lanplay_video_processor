@@ -36,6 +36,8 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Scoped CLI runs now support `--videos` for selecting multiple explicit file paths in one run. When combined with `--subfolders`, exact relative paths are matched before basename/stem fallback so sibling folders such as `backup/` do not get pulled in accidentally.
+- Scoring recomputation now resets running tournament totals per video/race class, so repeated player names in separate captures no longer inherit totals from earlier videos in the same export.
 - Headless CLI runs now accept `--debug`, which turns on debug CSV, debug workbook, and score-layout image output for that run without changing the normal default behavior.
 - Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.
 - Second-pass score selection now uses coarse `+10` frame stepping with rewind before the first RaceScore hit and again during TotalScore stabilization, reducing unnecessary frame-by-frame scanning in long candidate windows.
