@@ -5,7 +5,11 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .extract_common import extract_exported_frame_number, find_score_bundle_consensus_paths
+from .extract_common import (
+    extract_exported_frame_number,
+    find_score_bundle_consensus_paths,
+    find_score_bundle_race_context_paths,
+)
 from .score_layouts import DEFAULT_SCORE_LAYOUT_ID
 
 TARGET_WIDTH = 1280
@@ -127,11 +131,12 @@ def load_consensus_frame_entries(image_path: str, metadata_entry, input_videos_f
     if metadata_entry is not None:
         bundle_dir = Path(str(metadata_entry.get("bundle_path", "") or ""))
         if bundle_dir.exists():
-            consensus_paths = find_score_bundle_consensus_paths(
-                str(metadata_entry.get("video_label", "") or ""),
-                int(metadata_entry.get("race", 0) or 0),
-                "2RaceScore" if str(metadata_entry.get("kind", "")).strip() == "RaceScore" else "3TotalScore",
-            )
+            video_label = str(metadata_entry.get("video_label", "") or "")
+            race_number = int(metadata_entry.get("race", 0) or 0)
+            frame_content = "2RaceScore" if str(metadata_entry.get("kind", "")).strip() == "RaceScore" else "3TotalScore"
+            consensus_paths = find_score_bundle_consensus_paths(video_label, race_number, frame_content)
+            if not consensus_paths and frame_content == "2RaceScore":
+                consensus_paths = find_score_bundle_race_context_paths(video_label, race_number, frame_content)
             if consensus_paths:
                 entries = []
                 for path in consensus_paths:
@@ -165,14 +170,14 @@ def load_consensus_frame_entries(image_path: str, metadata_entry, input_videos_f
     video_path = Path(video_value)
     if not video_path.is_absolute():
         video_path = input_videos_folder / video_value
+    actual_frame = int(metadata_entry["actual_frame"])
     if not video_path.exists():
-        return [fallback_image]
+        return [(actual_frame, fallback_image)]
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
-        return [fallback_image]
+        return [(actual_frame, fallback_image)]
 
     radius = max(0, consensus_size // 2)
-    actual_frame = int(metadata_entry["actual_frame"])
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     start_frame = max(0, actual_frame - radius)
     end_frame = min(total_frames, actual_frame + radius + 1)

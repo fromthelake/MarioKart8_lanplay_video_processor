@@ -1285,7 +1285,14 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         raise RuntimeError(f"Overlapped OCR failed: {ocr_errors[0]}")
 
     combined_frames = [item["df"] for item in ocr_results if isinstance(item.get("df"), pd.DataFrame) and not item["df"].empty]
-    combined_df = pd.concat(combined_frames, ignore_index=True) if combined_frames else pd.DataFrame()
+    if combined_frames:
+        combined_columns = list(combined_frames[0].columns)
+        combined_records = []
+        for frame in combined_frames:
+            combined_records.extend(frame.to_dict("records"))
+        combined_df = pd.DataFrame.from_records(combined_records, columns=combined_columns)
+    else:
+        combined_df = pd.DataFrame()
     if not combined_df.empty:
         combined_df = combined_df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable").reset_index(drop=True)
 
@@ -1334,16 +1341,11 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     total_processing_seconds = LOGGER.elapsed_seconds()
     total_source_seconds = 0.0
     source_summaries = []
-    for video_path in video_files:
-        capture = cv2.VideoCapture(str(video_path))
-        if capture.isOpened():
-            fps = capture.get(cv2.CAP_PROP_FPS) or 1
-            frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-            source_length = frame_count / max(fps, 1)
-            total_source_seconds += source_length
-            display_name = str(video_path.relative_to(INPUT_DIR)).replace("\\", "/") if include_subfolders else video_path.name
-            source_summaries.append(f"{display_name} ({extract_frames.format_duration(source_length)})")
-        capture.release()
+    for summary in extract_summary.get("per_video_summaries", []):
+        source_length = float(summary.get("source_length_s", 0.0) or 0.0)
+        total_source_seconds += source_length
+        display_name = str(summary.get("video_name") or "")
+        source_summaries.append(f"{display_name} ({extract_frames.format_duration(source_length)})")
     ratio = total_source_seconds / total_processing_seconds if total_processing_seconds > 0 else 0.0
     total_ocr_work_s = sum(float(value) for value in per_video_durations.values())
     total_corrupt_check_s = float(extract_summary.get('corrupt_check_duration_s', 0.0))

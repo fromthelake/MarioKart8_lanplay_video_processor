@@ -236,7 +236,9 @@ def _build_match_candidates(identity_state, race_rows, visual_features, protecte
         visible_row_name = normalize_name_for_vote(row_name)
         normalized_row_name = preprocess_name(row_name)
         row_character_index = row.get("CharacterIndex")
-        row_detected_total = row.get("DetectedTotalScore")
+        # Identity continuity should compare the prior race's ending total with
+        # the current race's starting total, not the post-race total.
+        row_detected_total = row.get("DetectedOldTotalScore")
         row_visual_roi = visual_features.get(row_index)
         row_is_unreliable = _row_name_is_unreliable(row)
         for identity_id, identity in identity_state.items():
