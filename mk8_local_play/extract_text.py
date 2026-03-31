@@ -90,6 +90,7 @@ from .ocr_scoring_policy import apply_temporary_player_drop_scoring_policy
 from .project_paths import PROJECT_ROOT
 from .score_layouts import get_score_layout, score_layout_id_from_filename
 from .track_metadata import load_track_tuples
+from .game_catalog import load_game_catalog
 
 POSITION_TEMPLATE_COEFF_COLUMNS = [f"PositionTemplate{template_index:02}_Coeff" for template_index in range(1, 13)]
 PLACEHOLDER_NAME_PREFIX = "PlayerNameMissing_"
@@ -111,6 +112,16 @@ BLACK_BLUE_VARIANT_NAMES = {
 }
 BLACK_BLUE_VARIANT_MARGIN = 0.015
 BLACK_BLUE_VARIANT_MIN_SCORE = 0.52
+CHARACTER_VARIANT_FAMILY_ROSTER_NAMES = {
+    7: "Birdo",
+    8: "Yoshi",
+    11: "Shy Guy",
+}
+CHARACTER_VARIANT_FAMILY_ROSTER_INDICES = set(CHARACTER_VARIANT_FAMILY_ROSTER_NAMES.keys())
+VARIANT_FAMILY_REFINEMENT_MIN_SUPPORT = 3
+VARIANT_FAMILY_REFINEMENT_MIN_DOMINANT_RATIO = 0.9
+VARIANT_FAMILY_REFINEMENT_MIN_AVG_MARGIN = 0.5
+VARIANT_FAMILY_REFINEMENT_METHOD = "variant_family_diagnostic_refine"
 
 # Record the start time
 start_run_time = time.time()
@@ -138,6 +149,246 @@ PLAYER_NAME_BATCH_CONFIG = os.environ.get("MK8_PLAYER_NAME_BATCH_CONFIG", "--psm
 PLAYER_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_PLAYER_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
 RACE_SCORE_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_RACE_SCORE_NAME_ROW_FALLBACK_ENABLED", "1").lower() not in {"0", "false", "no"}
 TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED", "0").lower() not in {"0", "false", "no"}
+
+
+@lru_cache(maxsize=1)
+def _character_variant_family_lookup() -> dict[str, tuple[int, str]]:
+    lookup: dict[str, tuple[int, str]] = {}
+    catalog = load_game_catalog()
+    for character in catalog.characters:
+        roster_index = int(character.roster_index)
+        if roster_index not in CHARACTER_VARIANT_FAMILY_ROSTER_INDICES:
+            continue
+        lookup[str(character.name_uk).strip()] = (
+            roster_index,
+            CHARACTER_VARIANT_FAMILY_ROSTER_NAMES[roster_index],
+        )
+    return lookup
+
+
+def resolve_character_variant_family_name(character_name: str | None) -> str:
+    normalized = str(character_name or "").strip()
+    if not normalized:
+        return ""
+    return _character_variant_family_lookup().get(normalized, (None, ""))[1]
+
+
+def character_variant_family_templates(
+    templates: List[Dict[str, object]],
+    character_name: str | None,
+) -> List[Dict[str, object]]:
+    normalized = str(character_name or "").strip()
+    if not normalized:
+        return []
+
+    family_lookup = _character_variant_family_lookup()
+    family_entry = family_lookup.get(normalized)
+    if family_entry is None:
+        return []
+
+    family_roster_index, _family_name = family_entry
+    catalog_lookup = {
+        str(character.name_uk).strip(): int(character.roster_index)
+        for character in load_game_catalog().characters
+    }
+    family_templates = [
+        template
+        for template in templates
+        if catalog_lookup.get(str(template.get("character_name", "")).strip()) == family_roster_index
+    ]
+    return family_templates
+
+
+def build_character_variant_family_diagnostic_mask(
+    family_templates: List[Dict[str, object]],
+) -> np.ndarray:
+    if not family_templates:
+        return np.zeros((0, 0), dtype=bool)
+
+    template_images = []
+    alpha_masks = []
+    for template in family_templates:
+        template_images.append(np.asarray(template["template_image"], dtype=np.uint8))
+        alpha_masks.append(np.asarray(template["template_alpha"], dtype=np.uint8))
+
+    hsv_stack = np.stack(
+        [cv2.cvtColor(template_image, cv2.COLOR_BGR2HSV).astype(np.float32) for template_image in template_images],
+        axis=0,
+    )
+    alpha_stack = np.stack(alpha_masks, axis=0)
+    alpha_mask = np.mean(alpha_stack > 16, axis=0) > 0.9
+    hue_var = np.var(hsv_stack[:, :, :, 0], axis=0)
+    sat_var = np.var(hsv_stack[:, :, :, 1], axis=0)
+    sat_mean = np.mean(hsv_stack[:, :, :, 1], axis=0)
+    val_mean = np.mean(hsv_stack[:, :, :, 2], axis=0)
+
+    return alpha_mask & ((sat_var > 2000.0) | ((hue_var > 300.0) & (sat_mean > 40.0))) & (val_mean > 40.0)
+
+
+def diagnostic_character_variant_score(
+    source_image: np.ndarray,
+    template_image: np.ndarray,
+    diagnostic_mask: np.ndarray,
+) -> float:
+    if source_image.size == 0 or template_image.size == 0 or diagnostic_mask.size == 0:
+        return 0.0
+
+    template_height, template_width = template_image.shape[:2]
+    if source_image.shape[0] != template_height or source_image.shape[1] != template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+
+    source_hsv = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    template_hsv = cv2.cvtColor(template_image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    source_h = source_hsv[:, :, 0][diagnostic_mask]
+    template_h = template_hsv[:, :, 0][diagnostic_mask]
+    source_s = source_hsv[:, :, 1][diagnostic_mask]
+    template_s = template_hsv[:, :, 1][diagnostic_mask]
+    source_v = source_hsv[:, :, 2][diagnostic_mask]
+    template_v = template_hsv[:, :, 2][diagnostic_mask]
+
+    if source_h.size == 0:
+        return 0.0
+
+    hue_delta = np.abs(source_h - template_h)
+    hue_delta = np.minimum(hue_delta, 180.0 - hue_delta)
+    sat_diff = np.abs(source_s - template_s)
+    val_diff = np.abs(source_v - template_v)
+
+    score = 1.0
+    score -= 0.55 * float(np.mean(hue_delta) / 90.0)
+    score -= 0.30 * float(np.mean(sat_diff) / 255.0)
+    score -= 0.15 * float(np.mean(val_diff) / 255.0)
+    return max(0.0, min(1.0, score))
+
+
+def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
+    """Resolve stable color-variant families using family-specific diagnostic pixels."""
+    if df.empty or "Character" not in df.columns or "FixPlayerName" not in df.columns:
+        return df
+
+    df = df.copy()
+    templates = load_character_templates()
+    if not templates:
+        return df
+
+    template_by_name = {str(template["character_name"]): template for template in templates}
+    family_template_cache: dict[str, tuple[list[dict[str, object]], np.ndarray]] = {}
+    frame_cache: dict[tuple[str, int], tuple[np.ndarray | None, str]] = {}
+    row_refinements: dict[int, dict[str, object]] = {}
+
+    for row_index, row in df.iterrows():
+        current_character = str(row.get("Character") or "").strip()
+        family_name = resolve_character_variant_family_name(current_character)
+        if not family_name:
+            continue
+
+        family_templates, diagnostic_mask = family_template_cache.get(family_name, (None, None))
+        if family_templates is None:
+            family_templates = character_variant_family_templates(templates, current_character)
+            diagnostic_mask = build_character_variant_family_diagnostic_mask(family_templates)
+            family_template_cache[family_name] = (family_templates, diagnostic_mask)
+        if not family_templates or diagnostic_mask.size == 0 or int(np.count_nonzero(diagnostic_mask)) <= 0:
+            continue
+
+        race_class = str(row.get("RaceClass", "") or "")
+        race_id = int(row.get("RaceIDNumber", 0) or 0)
+        position = int(row.get("RacePosition", 0) or 0)
+        if not race_class or race_id <= 0 or position <= 0:
+            continue
+
+        cache_key = (race_class, race_id)
+        if cache_key not in frame_cache:
+            preferred_frame = find_score_bundle_anchor_path(race_class, race_id, "2RaceScore")
+            if preferred_frame is None:
+                frame_cache[cache_key] = (None, "")
+            else:
+                frame_cache[cache_key] = (
+                    cv2.imread(str(preferred_frame), cv2.IMREAD_COLOR),
+                    score_layout_id_from_filename(preferred_frame),
+                )
+        frame_image, score_layout_id = frame_cache[cache_key]
+        if frame_image is None:
+            continue
+
+        (x1, y1), (x2, y2) = character_row_roi(position - 1, score_layout_id=score_layout_id)
+        row_roi = frame_image[y1:y2, x1:x2]
+        if row_roi.size == 0:
+            continue
+
+        ranked_scores = []
+        for family_template in family_templates:
+            score = diagnostic_character_variant_score(
+                row_roi,
+                family_template["template_image"],
+                diagnostic_mask,
+            )
+            ranked_scores.append(
+                (
+                    str(family_template["character_name"]),
+                    int(family_template["character_index"]),
+                    float(score) * 100.0,
+                )
+            )
+        ranked_scores.sort(key=lambda item: item[2], reverse=True)
+        if not ranked_scores:
+            continue
+        best_name, best_index, best_score = ranked_scores[0]
+        second_score = ranked_scores[1][2] if len(ranked_scores) > 1 else 0.0
+        row_refinements[row_index] = {
+            "family_name": family_name,
+            "winner_name": best_name,
+            "winner_index": best_index,
+            "winner_score": round(best_score, 1),
+            "winner_margin": round(best_score - second_score, 1),
+        }
+
+    if not row_refinements:
+        return df
+
+    for (race_class, player_name), player_rows in df.groupby(["RaceClass", "FixPlayerName"], sort=False):
+        if not player_name or str(player_name).startswith("PlayerNameMissing_"):
+            continue
+        player_row_indices = [row_index for row_index in player_rows.index if row_index in row_refinements]
+        if len(player_row_indices) < VARIANT_FAMILY_REFINEMENT_MIN_SUPPORT:
+            continue
+        family_names = {str(row_refinements[row_index]["family_name"]) for row_index in player_row_indices}
+        for family_name in family_names:
+            family_row_indices = [
+                row_index for row_index in player_row_indices
+                if str(row_refinements[row_index]["family_name"]) == family_name
+            ]
+            if len(family_row_indices) < VARIANT_FAMILY_REFINEMENT_MIN_SUPPORT:
+                continue
+
+            winner_counts = defaultdict(int)
+            margins_by_winner: dict[str, list[float]] = defaultdict(list)
+            for row_index in family_row_indices:
+                refinement = row_refinements[row_index]
+                winner_name = str(refinement["winner_name"])
+                winner_counts[winner_name] += 1
+                margins_by_winner[winner_name].append(float(refinement["winner_margin"]))
+            dominant_name, dominant_count = max(winner_counts.items(), key=lambda item: (item[1], item[0]))
+            dominant_ratio = dominant_count / max(1, len(family_row_indices))
+            dominant_avg_margin = sum(margins_by_winner[dominant_name]) / max(1, len(margins_by_winner[dominant_name]))
+            if dominant_ratio < VARIANT_FAMILY_REFINEMENT_MIN_DOMINANT_RATIO:
+                continue
+            if dominant_avg_margin < VARIANT_FAMILY_REFINEMENT_MIN_AVG_MARGIN:
+                continue
+
+            dominant_template = template_by_name.get(dominant_name)
+            if dominant_template is None:
+                continue
+
+            for row_index in family_row_indices:
+                refinement = row_refinements[row_index]
+                existing_method = str(df.at[row_index, "CharacterMatchMethod"] or "").strip()
+                df.at[row_index, "Character"] = dominant_name
+                df.at[row_index, "CharacterIndex"] = int(dominant_template["character_index"])
+                df.at[row_index, "CharacterMatchConfidence"] = round(float(refinement["winner_score"]), 1)
+                df.at[row_index, "CharacterMatchMethod"] = (
+                    f"{existing_method}+{VARIANT_FAMILY_REFINEMENT_METHOD}" if existing_method else VARIANT_FAMILY_REFINEMENT_METHOD
+                )
+    return df
 PLAYER_NAME_OCR_ENGINE = os.environ.get("MK8_PLAYER_NAME_OCR_ENGINE", "easyocr").strip().lower()
 PLAYER_NAME_BATCH_RAW_MODE = os.environ.get("MK8_PLAYER_NAME_BATCH_RAW_MODE", "weak").strip().lower()
 if PLAYER_NAME_BATCH_RAW_MODE not in {"all", "weak", "off"}:
@@ -1789,6 +2040,7 @@ def finalize_ocr_results(
     frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     df = annotate_raw_character_match_metrics(df, frames_folder)
     df = refine_black_blue_character_variants(df, frames_folder)
+    df = refine_character_variant_families(df, frames_folder)
     df = apply_mii_character_fallback(df)
 
     df = apply_session_validation(df, parse_detected_int, exact_total_score_fallback)

@@ -56,6 +56,15 @@ Character OCR also now includes a conservative session-level Mii fallback:
 - the exported character is relabeled to `Mii`
 - the row receives a short review note: `mii_fallback_unstable_character_match`
 
+Character OCR now also includes a roster-family variant refinement pass before that fallback:
+- color-variant families such as `Shy Guy`, `Yoshi`, and `Birdo` are rescored only against members of the same family
+- the default/base roster member stays in the family comparison instead of being treated separately
+- the refinement uses family-specific diagnostic color pixels from the saved RaceScore anchor frame
+- this is intended to stabilize true family members before the conservative `Mii` fallback is allowed to relabel them
+
+Family-variant debug probe on saved character crops:
+- `.\.venv\Scripts\python.exe tools\evaluate_character_variant_families.py --crop-dir Output_Results\Debug\character_probe_20260328`
+
 Short setup guide for Windows.
 
 Linux or macOS? Read [docs/LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md).

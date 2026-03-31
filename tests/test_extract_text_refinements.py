@@ -6,13 +6,147 @@ import numpy as np
 import pandas as pd
 
 from mk8_local_play.extract_text import (
+    build_character_variant_family_diagnostic_mask,
     build_grouped_race_images,
+    character_variant_family_templates,
+    diagnostic_character_variant_score,
+    refine_character_variant_families,
     refine_black_blue_character_variants,
+    resolve_character_variant_family_name,
     rescue_placeholder_identity_names,
 )
 
 
 class TestExtractTextRefinements(TestCase):
+    def test_resolve_character_variant_family_name_includes_default_roster_members(self):
+        self.assertEqual(resolve_character_variant_family_name("Shy Guy"), "Shy Guy")
+        self.assertEqual(resolve_character_variant_family_name("Pink Shy Guy"), "Shy Guy")
+        self.assertEqual(resolve_character_variant_family_name("Yoshi"), "Yoshi")
+        self.assertEqual(resolve_character_variant_family_name("Birdo"), "Birdo")
+        self.assertEqual(resolve_character_variant_family_name("Waluigi"), "")
+
+    def test_character_variant_family_templates_include_default_and_colored_variants(self):
+        templates = [
+            {"character_name": "Shy Guy", "character_index": 27},
+            {"character_name": "Pink Shy Guy", "character_index": 34},
+            {"character_name": "Orange Shy Guy", "character_index": 35},
+            {"character_name": "Yoshi", "character_index": 16},
+            {"character_name": "Waluigi", "character_index": 26},
+        ]
+
+        family_templates = character_variant_family_templates(templates, "Pink Shy Guy")
+
+        self.assertEqual(
+            [template["character_name"] for template in family_templates],
+            ["Shy Guy", "Pink Shy Guy", "Orange Shy Guy"],
+        )
+
+    def test_diagnostic_character_variant_score_prefers_matching_family_template(self):
+        alpha = np.full((2, 2), 255, dtype=np.uint8)
+        family_templates = [
+            {
+                "character_name": "Shy Guy",
+                "character_index": 27,
+                "template_image": np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Green Shy Guy",
+                "character_index": 30,
+                "template_image": np.full((2, 2, 3), (0, 255, 0), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+        ]
+
+        diagnostic_mask = build_character_variant_family_diagnostic_mask(family_templates)
+        source = np.full((2, 2, 3), (0, 255, 0), dtype=np.uint8)
+        shy_score = diagnostic_character_variant_score(source, family_templates[0]["template_image"], diagnostic_mask)
+        green_score = diagnostic_character_variant_score(source, family_templates[1]["template_image"], diagnostic_mask)
+
+        self.assertGreater(green_score, shy_score)
+
+    def test_refine_character_variant_families_promotes_stable_diagnostic_winner(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoA",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Shin",
+                    "Character": "White Shy Guy",
+                    "CharacterIndex": 32,
+                    "CharacterMatchConfidence": 70.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Shin",
+                    "Character": "Orange Shy Guy",
+                    "CharacterIndex": 35,
+                    "CharacterMatchConfidence": 72.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "RaceIDNumber": 3,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Shin",
+                    "Character": "Yellow Shy Guy",
+                    "CharacterIndex": 31,
+                    "CharacterMatchConfidence": 71.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+            ]
+        )
+
+        frame = np.full((4, 4, 3), (0, 255, 0), dtype=np.uint8)
+        alpha = np.full((2, 2), 255, dtype=np.uint8)
+        templates = [
+            {
+                "character_name": "Shy Guy",
+                "character_index": 27,
+                "template_image": np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Green Shy Guy",
+                "character_index": 30,
+                "template_image": np.full((2, 2, 3), (0, 255, 0), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "White Shy Guy",
+                "character_index": 32,
+                "template_image": np.full((2, 2, 3), 255, dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Orange Shy Guy",
+                "character_index": 35,
+                "template_image": np.full((2, 2, 3), (0, 128, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Yellow Shy Guy",
+                "character_index": 31,
+                "template_image": np.full((2, 2, 3), (0, 255, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+        ]
+
+        with patch("mk8_local_play.extract_text.load_character_templates", return_value=templates):
+            with patch("mk8_local_play.extract_text.find_score_bundle_anchor_path", return_value="dummy.png"):
+                with patch("mk8_local_play.extract_text.cv2.imread", return_value=frame):
+                    with patch("mk8_local_play.extract_text.character_row_roi", return_value=((0, 0), (2, 2))):
+                        refined = refine_character_variant_families(df, frames_folder=".")
+
+        self.assertEqual(set(refined["Character"]), {"Green Shy Guy"})
+        self.assertTrue(
+            all("variant_family_diagnostic_refine" in str(value) for value in refined["CharacterMatchMethod"])
+        )
+
     def test_build_grouped_race_images_skips_incomplete_races_without_race_score(self):
         with patch("mk8_local_play.extract_text.iter_video_race_dirs", return_value=[("VideoA", 1, "Race_001"), ("VideoA", 2, "Race_002")]):
             with patch("mk8_local_play.extract_text.find_anchor_frame_path", side_effect=[None, None]):
