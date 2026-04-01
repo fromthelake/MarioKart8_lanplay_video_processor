@@ -118,7 +118,7 @@ class OcrSessionValidationTests(unittest.TestCase):
 
         self.assertEqual(violations, {11, 12})
 
-    def test_assign_shared_positions_after_race_uses_validated_total_order_with_stable_ties(self):
+    def test_assign_shared_positions_after_race_uses_shared_rank_for_equal_totals(self):
         df = pd.DataFrame(
             [
                 {"RaceClass": "Demo", "RaceIDNumber": 1, "RacePosition": 2, "FixPlayerName": "A", "NewTotalScore": 30},
@@ -130,7 +130,21 @@ class OcrSessionValidationTests(unittest.TestCase):
 
         ranked = assign_shared_positions_after_race(df)
 
-        self.assertEqual(ranked["PositionAfterRace"].tolist(), [1, 2, 3, 4])
+        self.assertEqual(ranked["PositionAfterRace"].tolist(), [1, 1, 3, 4])
+
+    def test_assign_shared_positions_after_race_supports_three_way_first_place_tie(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "Demo", "RaceIDNumber": 12, "RacePosition": 1, "FixPlayerName": "Bas", "NewTotalScore": 101},
+                {"RaceClass": "Demo", "RaceIDNumber": 12, "RacePosition": 2, "FixPlayerName": "Matthijs", "NewTotalScore": 101},
+                {"RaceClass": "Demo", "RaceIDNumber": 12, "RacePosition": 3, "FixPlayerName": "Gianni", "NewTotalScore": 101},
+                {"RaceClass": "Demo", "RaceIDNumber": 12, "RacePosition": 4, "FixPlayerName": "Menno", "NewTotalScore": 96},
+            ]
+        )
+
+        ranked = assign_shared_positions_after_race(df)
+
+        self.assertEqual(ranked["PositionAfterRace"].tolist(), [1, 1, 1, 4])
 
     def test_apply_session_validation_suppresses_order_violation_when_total_matches_expected(self):
         df = pd.DataFrame(

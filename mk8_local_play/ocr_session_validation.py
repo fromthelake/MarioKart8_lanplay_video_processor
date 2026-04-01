@@ -266,8 +266,8 @@ def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
 
     We assign a full ordered standing per race after validation:
     - higher ``NewTotalScore`` ranks earlier
-    - equal totals are ordered stably by on-screen race position when available
-    - if race position is unavailable, keep the incoming row order as the tie-break
+    - equal totals share the same rank
+    - on-screen race position and incoming row order only break display order within ties
 
     This keeps ``PositionAfterRace`` aligned with the final validated tournament
     totals and avoids stale OCR-only tie positions surviving after relinking.
@@ -285,10 +285,10 @@ def assign_shared_positions_after_race(df: pd.DataFrame) -> pd.DataFrame:
             kind="stable",
             na_position="last",
         ).copy()
-        ordered_rows["PositionAfterRace"] = pd.Series(
-            range(1, len(ordered_rows) + 1),
-            index=ordered_rows.index,
-            dtype="Int64",
+        ordered_rows["PositionAfterRace"] = (
+            ordered_rows["NewTotalScore"]
+            .rank(method="min", ascending=False)
+            .astype("Int64")
         )
         ranked_frames.append(ordered_rows)
 
