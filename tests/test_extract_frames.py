@@ -1,4 +1,5 @@
 import unittest
+from collections import defaultdict
 from unittest import mock
 
 from mk8_local_play import extract_frames
@@ -188,3 +189,156 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn(0, progress_updates)
         self.assertIn(5, progress_updates)
         seek_mock.assert_any_call(fake_capture, 3, context["video_stats"])
+
+    def test_parallel_video_scan_starts_total_score_before_all_scans_complete(self):
+        class FakeFuture:
+            def __init__(self, result, done=False):
+                self._result = result
+                self._done = done
+
+            def done(self):
+                return self._done
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, kind, events, prepare_results=None, scan_futures=None, score_results=None):
+                self.kind = kind
+                self.events = events
+                self.prepare_results = list(prepare_results or [])
+                self.scan_futures = list(scan_futures or [])
+                self.score_results = dict(score_results or {})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                if self.kind == "prepare":
+                    video_path = args[0]
+                    self.events.append(("prepare_submit", video_path))
+                    return FakeFuture(self.prepare_results.pop(0), done=True)
+                context = args[0]
+                label = context["video_label"]
+                if self.kind == "scan":
+                    self.events.append(("scan_submit", label))
+                    return self.scan_futures.pop(0)
+                self.events.append(("score_submit", label))
+                return FakeFuture(self.score_results[label], done=True)
+
+        events = []
+        scan_result_1 = {
+            "aborted": False,
+            "capture_poisoned": False,
+            "score_candidates": [{"race_number": 1}],
+            "scan_track_count": 1,
+            "scan_race_count": 1,
+            "scan_progress": None,
+        }
+        scan_result_2 = {
+            "aborted": False,
+            "capture_poisoned": False,
+            "score_candidates": [{"race_number": 1}],
+            "scan_track_count": 1,
+            "scan_race_count": 1,
+            "scan_progress": None,
+        }
+        scan_future_1 = FakeFuture(scan_result_1, done=True)
+        scan_future_2 = FakeFuture(scan_result_2, done=False)
+
+        score_results = {
+            "video-1": {
+                "exported_counts": {"score": 1, "track": 1, "race": 1},
+                "per_video_summary": {"display_video_index": 1, "video_name": "video1.mp4"},
+            },
+            "video-2": {
+                "exported_counts": {"score": 1, "track": 1, "race": 1},
+                "per_video_summary": {"display_video_index": 2, "video_name": "video2.mp4"},
+            },
+        }
+
+        context_1 = {
+            "video_path": "Input_Videos/video1.mp4",
+            "video_name": "video1.mp4",
+            "video_label": "video-1",
+            "source_display_name": "2026-03-28/video1.mp4",
+            "display_video_index": 1,
+            "display_total_videos": 2,
+            "video_index": 1,
+            "total_videos": 2,
+            "video_start": 0.0,
+            "video_stats": defaultdict(float, {"main_scan_loop_s": 1.0}),
+            "fps": 30.0,
+            "total_frames": 300,
+            "detection_segment_tasks": [object()],
+        }
+
+        context_2 = {
+            "video_path": "Input_Videos/video2.mp4",
+            "video_name": "video2.mp4",
+            "video_label": "video-2",
+            "source_display_name": "2026-03-28/video2.mp4",
+            "display_video_index": 2,
+            "display_total_videos": 2,
+            "video_index": 2,
+            "total_videos": 2,
+            "video_start": 0.0,
+            "video_stats": defaultdict(float, {"main_scan_loop_s": 1.0}),
+            "fps": 30.0,
+            "total_frames": 300,
+            "detection_segment_tasks": [object()],
+        }
+
+        executors = [
+            FakeExecutor("prepare", events, prepare_results=[context_1, context_2]),
+            FakeExecutor("scan", events, scan_futures=[scan_future_1, scan_future_2]),
+            FakeExecutor("score", events, score_results=score_results),
+        ]
+
+        def _fake_executor_factory(*args, **kwargs):
+            return executors.pop(0)
+
+        def _fake_sleep(_seconds):
+            if not scan_future_2._done:
+                events.append(("second_scan_released", "video-2"))
+                scan_future_2._done = True
+
+        def _fake_wait(_futures, return_when=None):
+            _fake_sleep(0.0)
+            return (set(), set())
+
+        with mock.patch.object(extract_frames, "build_workflow_video_plan", return_value=([
+                {"video_path": context_1["video_path"], "display_video_index": 1, "video_label": "video-1", "source_display_name": context_1["source_display_name"]},
+                {"video_path": context_2["video_path"], "display_video_index": 2, "video_label": "video-2", "source_display_name": context_2["source_display_name"]},
+            ], 10.0)), \
+             mock.patch.object(extract_frames, "as_completed", side_effect=lambda futures: list(futures)), \
+             mock.patch.object(extract_frames, "ThreadPoolExecutor", side_effect=_fake_executor_factory), \
+             mock.patch.object(extract_frames, "wait", side_effect=_fake_wait), \
+             mock.patch.object(extract_frames, "time") as time_mock, \
+             mock.patch.object(extract_frames.LOGGER, "log"), \
+             mock.patch.object(extract_frames.LOGGER, "summary_block"), \
+             mock.patch.object(extract_frames.LOGGER, "peak_lines", return_value=[]), \
+             mock.patch.object(extract_frames.LOGGER.resources, "sample", return_value=None):
+            time_mock.time.return_value = 5.0
+            time_mock.sleep.side_effect = _fake_sleep
+            result = extract_frames._extract_frames_parallel_video_scan(
+                video_paths=["Input_Videos/video1.mp4", "Input_Videos/video2.mp4"],
+                folder_path="Input_Videos",
+                include_subfolders=True,
+                templates=[],
+                template_load_time_s=0.0,
+                csv_writer=None,
+                metadata_writer=None,
+                metadata_context=None,
+                per_video_complete_callback=None,
+                per_race_complete_callback=None,
+                total_source_seconds=10.0,
+                return_frame_cache=False,
+                phase_start_time=0.0,
+            )
+
+        self.assertEqual(result["summary"]["total_score_screens"], 2)
+        self.assertLess(events.index(("score_submit", "video-1")), events.index(("second_scan_released", "video-2")))

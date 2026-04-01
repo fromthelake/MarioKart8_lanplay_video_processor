@@ -7,7 +7,7 @@ import time
 import threading
 from pathlib import Path
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from .app_runtime import detect_easyocr_runtime, effective_overlap_ocr_mode, load_app_config
 from .console_logging import LOGGER
 from .data_paths import resolve_asset_file
@@ -1215,6 +1215,81 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
     }
 
 
+def _run_scan_phase_for_context(context, templates, csv_writer, metadata_writer):
+    video_stats = context["video_stats"]
+    video_index = int(context.get("display_video_index", context["video_index"]))
+    total_videos = int(context.get("display_total_videos", context["total_videos"]))
+    video_name = context["video_name"]
+    video_label = context["video_label"]
+    fps = context["fps"]
+    total_frames = context["total_frames"]
+    scan_progress = context.get("scan_progress")
+
+    if context["detection_segment_tasks"]:
+        LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
+        scan_progress = ProgressPrinter(
+            color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
+            total_frames,
+            percent_step=5,
+            min_interval_s=1.0,
+            unit_formatter=lambda completed, total, fps=fps: format_scan_time_progress(completed, total, fps),
+            include_resources=False,
+        )
+        scan_progress.update(0)
+        parallel_scan_diag = {}
+        stage_start = time.perf_counter()
+        segment_results = initial_scan.run_parallel_detection_segments(
+            context["detection_segment_tasks"],
+            scan_progress,
+            diagnostics=parallel_scan_diag,
+        )
+        video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
+        parallel_result = _finalize_parallel_initial_scan(
+            context,
+            segment_results,
+            csv_writer,
+            metadata_writer,
+        )
+        score_candidates = parallel_result["score_candidates"]
+        scan_track_count = int(parallel_result["scan_track_count"])
+        scan_race_count = int(parallel_result["scan_race_count"])
+        if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
+            LOGGER.summary_block(
+                f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
+                _format_parallel_scan_diagnostics(
+                    parallel_scan_diag or {},
+                    parallel_result["merged_score_detections"],
+                    parallel_result["merged_track_detections"],
+                    parallel_result["merged_race_detections"],
+                    parallel_result["parallel_merge_s"],
+                    parallel_result["parallel_dedupe_s"],
+                    parallel_result["auxiliary_save_s"],
+                ),
+                color_name="dim",
+            )
+        return {
+            "aborted": False,
+            "capture_poisoned": False,
+            "score_candidates": score_candidates,
+            "scan_track_count": scan_track_count,
+            "scan_race_count": scan_race_count,
+            "scan_progress": scan_progress,
+        }
+
+    LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
+    scan_result = _run_serial_initial_scan(context, templates, csv_writer, metadata_writer)
+    if scan_result.get("aborted"):
+        return scan_result
+    if scan_result.get("capture_poisoned"):
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Complete]",
+            f"{video_name} | Aborted after timed-out read to avoid reusing a poisoned decoder",
+            color_name="yellow",
+        )
+        video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
+    return scan_result
+
+
 def _finalize_parallel_initial_scan(context, segment_results, csv_writer, metadata_writer):
     video_stats = context["video_stats"]
     fps = context["fps"]
@@ -1325,21 +1400,28 @@ def _extract_frames_parallel_video_scan(
     per_video_summaries = []
 
     prepared_contexts = []
-    score_ready_items = []
-    for plan_entry in workflow_plan:
-        context = _prepare_video_context(
-            plan_entry["video_path"],
-            folder_path,
-            include_subfolders,
-            plan_entry["display_video_index"],
-            total_videos,
-            template_load_time_s,
-            templates,
-            video_label=plan_entry["video_label"],
-            source_display_name=plan_entry["source_display_name"],
-        )
-        if context is not None:
-            prepared_contexts.append(context)
+    prepare_workers = 1 if len(workflow_plan) <= 1 else max(1, min(PARALLEL_VIDEO_SCAN_WORKERS, len(workflow_plan)))
+    with ThreadPoolExecutor(max_workers=prepare_workers) as prepare_executor:
+        prepare_futures = {
+            prepare_executor.submit(
+                _prepare_video_context,
+                plan_entry["video_path"],
+                folder_path,
+                include_subfolders,
+                plan_entry["display_video_index"],
+                total_videos,
+                template_load_time_s,
+                templates,
+                video_label=plan_entry["video_label"],
+                source_display_name=plan_entry["source_display_name"],
+            ): plan_entry
+            for plan_entry in workflow_plan
+        }
+        for future in as_completed(prepare_futures):
+            context = future.result()
+            if context is not None:
+                prepared_contexts.append(context)
+    prepared_contexts.sort(key=lambda item: int(item.get("display_video_index", item["video_index"])))
 
     parallel_contexts = [context for context in prepared_contexts if context["detection_segment_tasks"]]
     for context in prepared_contexts:
@@ -1353,134 +1435,44 @@ def _extract_frames_parallel_video_scan(
                 (format_duration(context["total_frames"] / max(context["fps"], 1)), context["video_label"]),
             ]),
         )
-    shared_results_by_video = {}
-    diagnostics_by_video = {}
-    if len(parallel_contexts) > 1:
-        progress_by_video = {}
-        shared_segment_tasks = []
-        for context in parallel_contexts:
-            LOGGER.log(
-                color_video_scope(
-                    f"[Video {context['display_video_index']}/{context['display_total_videos']} - Scan - Phase Start]",
-                    context["video_label"],
-                ),
-                "",
-            )
-            scan_progress = ProgressPrinter(
-                color_video_scope(
-                    f"[Video {context['display_video_index']}/{context['display_total_videos']} - Scan]",
-                    context["video_label"],
-                ),
-                context["total_frames"],
-                percent_step=5,
-                min_interval_s=1.0,
-                unit_formatter=lambda completed, total, fps=context["fps"]: format_scan_time_progress(completed, total, fps),
-                include_resources=False,
-            )
-            scan_progress.update(0)
-            context["scan_progress"] = scan_progress
-            progress_by_video[context["video_label"]] = scan_progress
-            shared_segment_tasks.extend(context["detection_segment_tasks"])
-        shared_results_by_video = initial_scan.run_parallel_detection_segments_shared(
-            shared_segment_tasks,
-            progress_by_video,
-            diagnostics_by_video=diagnostics_by_video,
-            max_workers=max(1, PARALLEL_VIDEO_SCAN_WORKERS * INITIAL_SCAN_WORKERS),
-            total_video_count=total_videos,
-        )
-        if diagnostics_by_video:
-            for context in parallel_contexts:
-                context["parallel_scan_diag"] = diagnostics_by_video.get(context["video_label"], {})
+    parallel_score_workers = 1
+    if len(prepared_contexts) > 1:
+        parallel_score_workers = max(1, min(PARALLEL_VIDEO_SCORE_WORKERS, len(prepared_contexts)))
+    per_video_score_analysis_workers = max(1, SCORE_ANALYSIS_WORKERS)
+    io_lock = threading.Lock() if parallel_score_workers > 1 else None
+    scan_workers = 1 if len(prepared_contexts) <= 1 else max(1, min(PARALLEL_VIDEO_SCAN_WORKERS, len(prepared_contexts)))
 
-    for context in prepared_contexts:
-        video_stats = context["video_stats"]
-        video_index = int(context.get("display_video_index", context["video_index"]))
-        total_videos = int(context.get("display_total_videos", context["total_videos"]))
-        video_name = context["video_name"]
-        video_label = context["video_label"]
-        processing_video_path = context["processing_video_path"]
-        fps = context["fps"]
-        total_frames = context["total_frames"]
-        source_display_name = context["source_display_name"]
-        scan_progress = context.get("scan_progress")
+    with ThreadPoolExecutor(max_workers=scan_workers) as scan_executor, ThreadPoolExecutor(max_workers=parallel_score_workers) as score_executor:
+        pending_scan_futures = {
+            scan_executor.submit(_run_scan_phase_for_context, context, templates, csv_writer, metadata_writer): context
+            for context in prepared_contexts
+        }
+        pending_score_futures = {}
 
-        if context["detection_segment_tasks"] and video_label in shared_results_by_video:
-            parallel_scan_diag = context.get("parallel_scan_diag", {})
-            video_stats["main_scan_loop_s"] = float(parallel_scan_diag.get("video_complete_s", 0.0))
-            parallel_result = _finalize_parallel_initial_scan(
-                context,
-                shared_results_by_video[video_label],
-                csv_writer,
-                metadata_writer,
-            )
-            score_candidates = parallel_result["score_candidates"]
-            scan_track_count = int(parallel_result["scan_track_count"])
-            scan_race_count = int(parallel_result["scan_race_count"])
-            if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
-                LOGGER.summary_block(
-                    f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
-                    _format_parallel_scan_diagnostics(
-                        parallel_scan_diag or {},
-                        parallel_result["merged_score_detections"],
-                        parallel_result["merged_track_detections"],
-                        parallel_result["merged_race_detections"],
-                        parallel_result["parallel_merge_s"],
-                        parallel_result["parallel_dedupe_s"],
-                        parallel_result["auxiliary_save_s"],
-                    ),
-                    color_name="dim",
-                )
-        else:
-            LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
-            if context["detection_segment_tasks"]:
-                scan_progress = ProgressPrinter(
-                    color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
-                    total_frames,
-                    percent_step=5,
-                    min_interval_s=1.0,
-                    unit_formatter=lambda completed, total, fps=fps: format_scan_time_progress(completed, total, fps),
-                    include_resources=False,
-                )
-                scan_progress.update(0)
-                parallel_scan_diag = {}
-                stage_start = time.perf_counter()
-                segment_results = initial_scan.run_parallel_detection_segments(
-                    context["detection_segment_tasks"],
-                    scan_progress,
-                    diagnostics=parallel_scan_diag,
-                )
-                video_io.add_timing(video_stats, "main_scan_loop_s", stage_start)
-                parallel_result = _finalize_parallel_initial_scan(
-                    context,
-                    segment_results,
-                    csv_writer,
-                    metadata_writer,
-                )
-                score_candidates = parallel_result["score_candidates"]
-                scan_track_count = int(parallel_result["scan_track_count"])
-                scan_race_count = int(parallel_result["scan_race_count"])
-                if INITIAL_SCAN_DIAGNOSTICS_ENABLED:
-                    LOGGER.summary_block(
-                        f"[Video {video_index}/{total_videos} - Scan Diagnostics]",
-                        _format_parallel_scan_diagnostics(
-                            parallel_scan_diag or {},
-                            parallel_result["merged_score_detections"],
-                            parallel_result["merged_track_detections"],
-                            parallel_result["merged_race_detections"],
-                            parallel_result["parallel_merge_s"],
-                            parallel_result["parallel_dedupe_s"],
-                            parallel_result["auxiliary_save_s"],
-                        ),
-                        color_name="dim",
-                    )
-            else:
-                scan_result = _run_serial_initial_scan(context, templates, csv_writer, metadata_writer)
+        while pending_scan_futures or pending_score_futures:
+            if not any(future.done() for future in pending_scan_futures) and not any(future.done() for future in pending_score_futures):
+                pending_any = list(pending_scan_futures.keys()) + list(pending_score_futures.keys())
+                if pending_any:
+                    wait(pending_any, return_when=FIRST_COMPLETED)
+
+            completed_scan_futures = [future for future in list(pending_scan_futures.keys()) if future.done()]
+            for future in completed_scan_futures:
+                context = pending_scan_futures.pop(future)
+                scan_result = future.result()
                 if scan_result.get("aborted"):
                     continue
+
+                video_stats = context["video_stats"]
+                video_index = int(context.get("display_video_index", context["video_index"]))
+                total_videos = int(context.get("display_total_videos", context["total_videos"]))
+                video_name = context["video_name"]
+                fps = context["fps"]
+                total_frames = context["total_frames"]
+                scan_progress = scan_result.get("scan_progress")
                 score_candidates = scan_result["score_candidates"]
                 scan_track_count = int(scan_result["scan_track_count"])
                 scan_race_count = int(scan_result["scan_race_count"])
-                scan_progress = scan_result["scan_progress"]
+
                 if scan_result.get("capture_poisoned"):
                     LOGGER.log(
                         f"[Video {video_index}/{total_videos} - Complete]",
@@ -1490,75 +1482,45 @@ def _extract_frames_parallel_video_scan(
                     video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
                     continue
 
-        scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
-        scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
-        scan_summary_lines = [
-            f"Duration: {format_duration(scan_duration)}",
-            f"Source length: {format_duration(total_frames / max(fps, 1))}",
-            f"Frames scanned: {total_frames:,}",
-            f"Scan speed: {scan_speed:,.0f} frames/s",
-            f"Track screens found: {scan_track_count}",
-            f"Race numbers found: {scan_race_count}",
-            f"Total score screens queued: {len(score_candidates)}",
-        ]
-        if scan_progress is not None:
-            scan_summary_lines.extend(scan_progress.peak_lines())
-        LOGGER.summary_block(
-            f"[Video {video_index}/{total_videos} - Scan - Phase Complete]",
-            scan_summary_lines,
-            color_name="green",
-        )
-
-        score_ready_items.append((context, score_candidates))
-
-    parallel_score_workers = 1
-    if len(score_ready_items) > 1:
-        parallel_score_workers = max(1, min(PARALLEL_VIDEO_SCORE_WORKERS, len(score_ready_items)))
-    per_video_score_analysis_workers = max(1, SCORE_ANALYSIS_WORKERS // max(1, parallel_score_workers))
-    io_lock = threading.Lock() if parallel_score_workers > 1 else None
-
-    if parallel_score_workers == 1:
-        for item_index, (context, score_candidates) in enumerate(score_ready_items, start=1):
-            result = _run_total_score_phase_for_context(
-                context,
-                score_candidates,
-                templates,
-                metadata_context,
-                csv_writer,
-                metadata_writer,
-                per_race_complete_callback,
-                per_video_complete_callback,
-                include_subfolders,
-                io_lock=io_lock,
-                analysis_workers_override=per_video_score_analysis_workers,
-            )
-            exported_counts = result["exported_counts"]
-            total_score_screens_found += exported_counts["score"]
-            total_track_screens_found += exported_counts["track"]
-            total_race_numbers_found += exported_counts["race"]
-            per_video_summaries.append(result["per_video_summary"])
-            if item_index < len(score_ready_items):
-                LOGGER.blank_lines(2)
-    else:
-        with ThreadPoolExecutor(max_workers=parallel_score_workers) as executor:
-            futures = [
-                executor.submit(
-                    _run_total_score_phase_for_context,
-                    context,
-                    score_candidates,
-                    templates,
-                    metadata_context,
-                    csv_writer,
-                    metadata_writer,
-                    per_race_complete_callback,
-                    per_video_complete_callback,
-                    include_subfolders,
-                    io_lock=io_lock,
-                    analysis_workers_override=per_video_score_analysis_workers,
+                scan_duration = float(video_stats.get("main_scan_loop_s", 0.0))
+                scan_speed = total_frames / scan_duration if scan_duration > 0 else 0.0
+                scan_summary_lines = [
+                    f"Duration: {format_duration(scan_duration)}",
+                    f"Source length: {format_duration(total_frames / max(fps, 1))}",
+                    f"Frames scanned: {total_frames:,}",
+                    f"Scan speed: {scan_speed:,.0f} frames/s",
+                    f"Track screens found: {scan_track_count}",
+                    f"Race numbers found: {scan_race_count}",
+                    f"Total score screens queued: {len(score_candidates)}",
+                ]
+                if scan_progress is not None:
+                    scan_summary_lines.extend(scan_progress.peak_lines())
+                LOGGER.summary_block(
+                    f"[Video {video_index}/{total_videos} - Scan - Phase Complete]",
+                    scan_summary_lines,
+                    color_name="green",
                 )
-                for context, score_candidates in score_ready_items
-            ]
-            for future in as_completed(futures):
+
+                pending_score_futures[
+                    score_executor.submit(
+                        _run_total_score_phase_for_context,
+                        context,
+                        score_candidates,
+                        templates,
+                        metadata_context,
+                        csv_writer,
+                        metadata_writer,
+                        per_race_complete_callback,
+                        per_video_complete_callback,
+                        include_subfolders,
+                        io_lock=io_lock,
+                        analysis_workers_override=per_video_score_analysis_workers,
+                    )
+                ] = context
+
+            completed_score_futures = [future for future in list(pending_score_futures.keys()) if future.done()]
+            for future in completed_score_futures:
+                pending_score_futures.pop(future, None)
                 result = future.result()
                 exported_counts = result["exported_counts"]
                 total_score_screens_found += exported_counts["score"]

@@ -130,9 +130,9 @@ def load_app_config(base_dir: Optional[Path] = None) -> AppConfig:
     config_path = base_dir / "config" / "app_config.json"
     json_config = _load_json_config(config_path)
 
-    default_ocr_workers = max(1, min(16, os.cpu_count() or 1))
-    default_score_workers = 4
     cpu_count = os.cpu_count() or 1
+    default_ocr_workers = max(1, min(16, cpu_count))
+    default_score_workers = 6 if cpu_count >= 16 else 4
     default_parallel_video_score_workers = 2 if cpu_count >= 16 else 1
     if cpu_count >= 24:
         default_pass1_workers = 4
