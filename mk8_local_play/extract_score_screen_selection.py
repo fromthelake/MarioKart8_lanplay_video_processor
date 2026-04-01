@@ -29,7 +29,14 @@ from .extract_initial_scan import (
     _initial_scan_gate_tile_roi,
     _match_score_target_layouts,
 )
-from .extract_video_io import actual_frame_after_read, add_timing, log_exported_frame, read_video_frame, seek_to_frame
+from .extract_video_io import (
+    actual_frame_after_read,
+    add_timing,
+    log_exported_frame,
+    position_capture_for_read,
+    read_video_frame,
+    seek_to_frame,
+)
 from .ocr_scoreboard_consensus import (
     POSITION_PRESENT_COEFF_THRESHOLD,
     POSITION_PRESENT_ROW1_COEFF_THRESHOLD,
@@ -60,7 +67,12 @@ def enhance_export_frame(upscaled_image, scale_x, scale_y):
 
 
 def capture_export_frame(capture, target_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats):
-    seek_to_frame(capture, target_frame, stats)
+    position_capture_for_read(
+        capture,
+        target_frame,
+        stats,
+        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+    )
     ret, frame = read_video_frame(capture, stats)
     if not ret:
         return None, None
@@ -89,6 +101,7 @@ TOTAL_SCORE_STABLE_SEARCH_SECONDS = 5.0
 TOTAL_SCORE_STABLE_FRAMES_30FPS = 20
 COARSE_SEARCH_STEP_FRAMES = 10
 COARSE_SEARCH_REWIND_FRAMES = 10
+SMALL_FORWARD_GRAB_WINDOW_FRAMES = 12
 
 
 APP_CONFIG = load_app_config()
@@ -419,7 +432,12 @@ def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, 
     coarse_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
     coarse_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
     frame_number = int(transition_frame)
-    seek_to_frame(local_cap, frame_number, stats)
+    position_capture_for_read(
+        local_cap,
+        frame_number,
+        stats,
+        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+    )
     stable_run_start = None
     stable_run_count = 0
     stable_signature = None
@@ -439,7 +457,12 @@ def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, 
                 next_frame = min(int(search_end_frame), int(frame_number) + coarse_step)
                 if next_frame <= int(frame_number):
                     break
-                seek_to_frame(local_cap, next_frame, stats)
+                position_capture_for_read(
+                    local_cap,
+                    next_frame,
+                    stats,
+                    max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+                )
                 frame_number = next_frame
                 continue
             rewind_frame = max(int(transition_frame), int(frame_number) - coarse_rewind)
@@ -647,7 +670,12 @@ def analyze_score_window_task(task, frame_to_timecode):
     coarse_search_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
     coarse_search_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
     detail_frame_number = start_frame
-    seek_to_frame(local_cap, detail_frame_number, stats)
+    position_capture_for_read(
+        local_cap,
+        detail_frame_number,
+        stats,
+        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+    )
     while detail_frame_number < end_frame:
         stats["score_detail_frames"] += 1
         ret, frame = read_video_frame(local_cap, stats)
@@ -718,7 +746,12 @@ def analyze_score_window_task(task, frame_to_timecode):
                 if next_frame <= int(detail_frame_number):
                     break
                 detail_frame_number = next_frame
-                seek_to_frame(local_cap, detail_frame_number, stats)
+                position_capture_for_read(
+                    local_cap,
+                    detail_frame_number,
+                    stats,
+                    max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+                )
                 continue
             detail_frame_number += 1
             continue
@@ -765,7 +798,12 @@ def analyze_score_window_task(task, frame_to_timecode):
                 if next_frame <= int(detail_frame_number):
                     break
                 detail_frame_number = next_frame
-                seek_to_frame(local_cap, detail_frame_number, stats)
+                position_capture_for_read(
+                    local_cap,
+                    detail_frame_number,
+                    stats,
+                    max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+                )
                 continue
             detail_frame_number += 1
             continue
@@ -812,7 +850,12 @@ def analyze_score_window_task(task, frame_to_timecode):
                 if total_score_frame is None:
                     total_score_frame = int(transition_frame) + int(TOTAL_SCORE_FROM_TRANSITION_SECONDS * fps)
                 break
-            seek_to_frame(local_cap, int(detail_frame_number) + 1, stats)
+            position_capture_for_read(
+                local_cap,
+                int(detail_frame_number) + 1,
+                stats,
+                max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+            )
             continue
 
         if race_score_frame != 0:

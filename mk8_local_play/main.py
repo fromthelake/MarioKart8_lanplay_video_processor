@@ -327,6 +327,14 @@ def _format_overlap_queue_race(video_label: str, race_number: int) -> str:
     return "Queued OCR race " + LOGGER.video_value(f"{race_number:03}", video_label) + " for " + LOGGER.video_value(video_label, video_label)
 
 
+def _format_overlap_start_race(video_label: str, race_number: int) -> str:
+    return "Started OCR race " + LOGGER.video_value(f"{race_number:03}", video_label) + " for " + LOGGER.video_value(video_label, video_label)
+
+
+def _format_overlap_complete_race(video_label: str, race_number: int) -> str:
+    return "Finished OCR race " + LOGGER.video_value(f"{race_number:03}", video_label) + " for " + LOGGER.video_value(video_label, video_label)
+
+
 def _format_overlap_extraction_complete(video_label: str, race_count: int) -> str:
     return LOGGER.video_value(video_label, video_label) + " | Races ready: " + LOGGER.video_value(race_count, video_label)
 
@@ -369,6 +377,20 @@ def _format_overlap_complete_with_finalize(video_label: str, race_count: int, du
 
 def _format_overlap_progress_line(video_label: str, detail_text: str) -> str:
     return LOGGER.video_value(video_label, video_label) + " | " + LOGGER.video_value(detail_text, video_label)
+
+
+def _format_overlap_queue_status(video_label: str, *, queued_for_video: int, active_for_video: int, queued_total: int, active_total: int) -> str:
+    return (
+        LOGGER.video_value(video_label, video_label)
+        + " | OCR backlog: queued "
+        + LOGGER.video_value(queued_for_video, video_label)
+        + " | active "
+        + LOGGER.video_value(active_for_video, video_label)
+        + " | global queued "
+        + LOGGER.video_value(queued_total, video_label)
+        + " | global active "
+        + LOGGER.video_value(active_total, video_label)
+    )
 
 
 def confirm_yes_no(title: str, message: str) -> bool:
@@ -641,9 +663,15 @@ def _format_overlap_ocr_detail(event: dict, format_duration) -> str:
         return f"{completed}/{total} ({percent}%) | {track_name}{race_text}{players_text} | Elapsed: {elapsed_text}"
     detail = str(event.get("detail") or "").strip()
     pending = event.get("pending")
+    active = event.get("active")
+    global_pending = event.get("global_pending")
+    global_active = event.get("global_active")
     pending_text = f" | Pending races: {int(pending)}" if pending is not None else ""
+    active_text = f" | Active OCR races: {int(active)}" if active is not None else ""
+    global_pending_text = f" | Global queued: {int(global_pending)}" if global_pending is not None else ""
+    global_active_text = f" | Global active: {int(global_active)}" if global_active is not None else ""
     detail_text = f" | {detail}" if detail else ""
-    return f"{completed}/{total} ({percent}%) | Elapsed: {elapsed_text}{pending_text}{detail_text}"
+    return f"{completed}/{total} ({percent}%) | Elapsed: {elapsed_text}{pending_text}{active_text}{global_pending_text}{global_active_text}{detail_text}"
 
 
 def _make_overlap_ocr_progress_callback(video_label: str, format_duration, display_video_label):
@@ -902,6 +930,17 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         finalizing_videos = set()
         finalize_futures = {}
         finalize_executor = ThreadPoolExecutor(max_workers=max(1, min(2, overlap_ocr_consumers)))
+        race_overlap_lock = threading.Lock()
+        queued_races_by_video = defaultdict(int)
+        active_races_by_video = defaultdict(int)
+
+        def summarize_race_overlap_state(video_label: str) -> tuple[int, int, int, int]:
+            with race_overlap_lock:
+                queued_for_video = int(queued_races_by_video.get(video_label, 0))
+                active_for_video = int(active_races_by_video.get(video_label, 0))
+                queued_total = int(sum(queued_races_by_video.values()))
+                active_total = int(sum(active_races_by_video.values()))
+            return queued_for_video, active_for_video, queued_total, active_total
 
         def _finalize_video_result(video_label: str) -> dict:
             video_label = str(video_label)
@@ -1009,6 +1048,25 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     continue
                 video_label = str(event.get("video_label", "unknown"))
                 if event_type == "race_start":
+                    race_id = int(event.get("race_id") or 0)
+                    with race_overlap_lock:
+                        if queued_races_by_video.get(video_label, 0) > 0:
+                            queued_races_by_video[video_label] -= 1
+                        active_races_by_video[video_label] += 1
+                    queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
+                    LOGGER.log(
+                        "[Run - Overlap]",
+                        _format_overlap_start_race(video_label, race_id)
+                        + " | "
+                        + _format_overlap_queue_status(
+                            video_label,
+                            queued_for_video=queued_for_video,
+                            active_for_video=active_for_video,
+                            queued_total=queued_total,
+                            active_total=active_total,
+                        ),
+                        color_name="cyan",
+                    )
                     record_ocr_started(video_label)
                     continue
 
@@ -1037,11 +1095,15 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     continue
 
                 video_label = str(message["video_label"])
+                with race_overlap_lock:
+                    if active_races_by_video.get(video_label, 0) > 0:
+                        active_races_by_video[video_label] -= 1
                 race_result = dict(message["race_result"])
                 video_race_results[video_label].append(race_result)
                 video_race_durations[video_label] += float(race_result.get("duration_s", 0.0))
                 completed = len(video_race_results[video_label])
                 total = max(1, int(video_expected_races.get(video_label, completed)))
+                queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
                 race_summary = race_result.get("summary") or {}
                 progress_event = {
                     "event": "progress",
@@ -1053,8 +1115,25 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     "track_name": race_summary.get("track_name"),
                     "race_score_players": race_summary.get("race_score_players"),
                     "total_score_players": race_summary.get("total_score_players"),
+                    "pending": queued_for_video,
+                    "active": active_for_video,
+                    "global_pending": queued_total,
+                    "global_active": active_total,
                 }
                 record_ocr_progress(video_label, progress_event)
+                LOGGER.log(
+                    "[Run - Overlap]",
+                    _format_overlap_complete_race(video_label, int(message.get("race_id") or 0))
+                    + " | "
+                    + _format_overlap_queue_status(
+                        video_label,
+                        queued_for_video=queued_for_video,
+                        active_for_video=active_for_video,
+                        queued_total=queued_total,
+                        active_total=active_total,
+                    ),
+                    color_name="green",
+                )
                 LOGGER.log(
                     "[Run - Overlap OCR]",
                     _format_overlap_progress_line(
@@ -1095,6 +1174,20 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 },
             )
             record_ocr_queued(video_label)
+            with race_overlap_lock:
+                queued_races_by_video[video_label] += 1
+            queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
+            LOGGER.log(
+                "[Run - Overlap]",
+                _format_overlap_queue_status(
+                    video_label,
+                    queued_for_video=queued_for_video,
+                    active_for_video=active_for_video,
+                    queued_total=queued_total,
+                    active_total=active_total,
+                ),
+                color_name="dim",
+            )
             ocr_jobs.put(
                 {
                     "video_label": video_label,
@@ -1153,6 +1246,11 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     continue
                 video_label = str(event.get("video_label", "unknown"))
                 if event.get("event") == "worker_start":
+                    LOGGER.log(
+                        "[Run - Overlap]",
+                        _format_overlap_start_video(video_label),
+                        color_name="cyan",
+                    )
                     record_ocr_started(video_label)
                     continue
                 record_ocr_progress(video_label, event)
@@ -1714,12 +1812,23 @@ def write_profile_report(profile: cProfile.Profile, output_path: Path, limit: in
             stats.print_callers(pattern)
 
 
-def run_profiled_all(selected_video: str | list[str] | None = None, *, debug: bool | None = None) -> None:
+def run_profiled_all(
+    selected_video: str | list[str] | None = None,
+    *,
+    include_subfolders: bool = False,
+    selection_mode: bool = False,
+    debug: bool | None = None,
+) -> None:
     LOGGER.reset()
     profiler = cProfile.Profile()
     profiler.enable()
     try:
-        run_all(selected_video=selected_video, debug=debug)
+        run_all(
+            selected_video=selected_video,
+            include_subfolders=include_subfolders,
+            selection_mode=selection_mode,
+            debug=debug,
+        )
     finally:
         profiler.disable()
         write_profile_report(profiler, PROFILE_OUTPUT)
@@ -2533,12 +2642,24 @@ def main() -> int:
         return 0
     if args.all:
         if args.profile:
-            run_profiled_all(selected_video=selected_videos, debug=args.debug)
+            run_profiled_all(
+                selected_video=selected_videos,
+                include_subfolders=args.subfolders,
+                debug=args.debug,
+            )
         else:
             run_all(selected_video=selected_videos, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     if args.selection:
-        run_all(selected_video=selected_videos, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
+        if args.profile:
+            run_profiled_all(
+                selected_video=selected_videos,
+                include_subfolders=args.subfolders,
+                selection_mode=True,
+                debug=args.debug,
+            )
+        else:
+            run_all(selected_video=selected_videos, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
         return 0
     return launch_gui()
 

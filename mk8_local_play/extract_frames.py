@@ -288,6 +288,12 @@ def print_extract_profiler_summary(video_name, stats):
     """Print per-function/bucket call counts, total time, and average milliseconds."""
     profile_rows = [
         ("score selection match", "score_detail_match_score_s", "score_detail_score_match_calls"),
+        ("flush save score frames", "score_flush_save_frames_s", None),
+        ("flush refine/expand", "score_flush_refine_expand_s", None),
+        ("flush callback", "score_flush_callback_s", None),
+        ("flush static gallery check", "score_flush_static_gallery_check_s", None),
+        ("flush visible row count", "score_flush_row_count_s", None),
+        ("flush debug CSV write", "score_flush_debug_write_s", None),
         ("scan 5/6 gate", "scan_gate_s", "scan_gate_calls"),
         ("scan gate row crops", "scan_gate_position_row_crop_s", "scan_gate_position_row_crop_calls"),
         ("scan score preprocess", "scan_score_preprocess_s", "scan_score_process_image_calls"),
@@ -447,13 +453,16 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         nonlocal previous_total_score_players
         race_number = int(result["candidate"].get("race_number", 0) or 0)
         expected_players = previous_total_score_players if race_number >= 2 else None
+        refine_stage_start = time.perf_counter()
         result = score_screen_selection.refine_race_score_result_for_expected_players(result, expected_players)
         result = score_screen_selection.expand_race_score_consensus_window(
             result,
             expected_players,
         )
+        video_io.add_timing(stats, "score_flush_refine_expand_s", refine_stage_start)
         for key, value in result["stats"].items():
             stats[key] += value
+        debug_write_stage_start = time.perf_counter()
         if io_lock is None:
             for row in result["debug_rows"]:
                 csv_writer.writerow(row)
@@ -461,11 +470,14 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             with io_lock:
                 for row in result["debug_rows"]:
                     csv_writer.writerow(row)
+        video_io.add_timing(stats, "score_flush_debug_write_s", debug_write_stage_start)
         if result["race_score_frame"] <= 0 or result["total_score_frame"] <= 0:
             return
+        static_gallery_stage_start = time.perf_counter()
         is_static_gallery_bundle, similarity = score_screen_selection.is_static_gallery_race_bundle(
             result.get("race_consensus_frames", [])
         )
+        video_io.add_timing(stats, "score_flush_static_gallery_check_s", static_gallery_stage_start)
         if is_static_gallery_bundle and not DISABLE_STATIC_GALLERY_RACE_FILTER:
             similarity_text = (
                 f"min {similarity['min']:.6f} | avg {similarity['avg']:.6f} | max {similarity['max']:.6f}"
@@ -504,24 +516,30 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 points_anchor_image=result.get("points_anchor_image"),
                 points_context_frames=result.get("points_context_frames", []),
             )
+        save_stage_start = time.perf_counter()
         if io_lock is None:
             saved = _save_frames()
         else:
             with io_lock:
                 saved = _save_frames()
+        video_io.add_timing(stats, "score_flush_save_frames_s", save_stage_start)
         if saved and per_race_complete_callback is not None:
+            callback_stage_start = time.perf_counter()
             per_race_complete_callback(
                 {
                     "video_label": video_label,
                     "race_number": int(result["candidate"]["race_number"]),
                 }
             )
+            video_io.add_timing(stats, "score_flush_callback_s", callback_stage_start)
         total_score_image = result.get("total_score_image")
         if total_score_image is not None:
+            row_count_stage_start = time.perf_counter()
             previous_total_score_players = score_screen_selection.count_visible_position_rows(
                 total_score_image,
                 result["candidate"].get("score_layout_id"),
             )
+            video_io.add_timing(stats, "score_flush_row_count_s", row_count_stage_start)
 
     if worker_count == 1:
         for completed_count, task in enumerate(tasks, start=1):
@@ -667,6 +685,8 @@ def _run_total_score_phase_for_context(
         ],
         color_name="green",
     )
+    print_timing_summary(video_name, video_stats)
+    print_extract_profiler_summary(video_name, video_stats)
     LOGGER.log(
         color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_label),
         f"{video_name} | Elapsed until complete: {format_duration(video_stats['video_total_s'])} | "

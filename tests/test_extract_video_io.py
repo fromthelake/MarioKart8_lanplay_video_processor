@@ -7,6 +7,53 @@ from mk8_local_play import extract_video_io
 
 
 class ExtractVideoIoTests(unittest.TestCase):
+    def test_position_capture_for_read_uses_grab_for_small_forward_jump(self):
+        class FakeCapture:
+            def get(self, _prop):
+                return 101
+
+        stats = {"seek_calls": 0, "grab_calls": 0, "seek_time_s": 0.0, "grab_time_s": 0.0}
+        with mock.patch.object(extract_video_io, "advance_frames_by_grab", return_value=True) as grab_mock, \
+             mock.patch.object(extract_video_io, "seek_to_frame", return_value=True) as seek_mock:
+            result = extract_video_io.position_capture_for_read(
+                FakeCapture(),
+                105,
+                stats,
+                max_forward_grab_frames=12,
+            )
+
+        self.assertTrue(result)
+        grab_mock.assert_called_once()
+        self.assertEqual(grab_mock.call_args[0][1], 4)
+        seek_mock.assert_not_called()
+
+    def test_position_capture_for_read_seeks_for_backward_or_large_jump(self):
+        class FakeCapture:
+            def __init__(self, pos):
+                self.pos = pos
+
+            def get(self, _prop):
+                return self.pos
+
+        stats = {"seek_calls": 0, "grab_calls": 0, "seek_time_s": 0.0, "grab_time_s": 0.0}
+        with mock.patch.object(extract_video_io, "advance_frames_by_grab", return_value=True) as grab_mock, \
+             mock.patch.object(extract_video_io, "seek_to_frame", return_value=True) as seek_mock:
+            extract_video_io.position_capture_for_read(
+                FakeCapture(110),
+                105,
+                stats,
+                max_forward_grab_frames=12,
+            )
+            extract_video_io.position_capture_for_read(
+                FakeCapture(100),
+                120,
+                stats,
+                max_forward_grab_frames=12,
+            )
+
+        grab_mock.assert_not_called()
+        self.assertEqual(seek_mock.call_count, 2)
+
     def test_update_repair_progress_state_resets_when_progress_advances(self):
         stalled_elapsed_s, progress_seconds = extract_video_io._update_repair_progress_state(
             12.0,

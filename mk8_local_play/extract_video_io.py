@@ -48,6 +48,26 @@ def seek_to_frame(capture, frame_number, stats):
     return result
 
 
+def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_frames=0):
+    """Move capture to the next frame to read, preferring cheap forward grabs for short jumps."""
+    target_frame = int(frame_number)
+    try:
+        current_next_frame = int(capture.get(1) or 0)
+    except Exception:  # pragma: no cover - native backend safety
+        current_next_frame = None
+
+    if current_next_frame is not None:
+        if current_next_frame == target_frame:
+            return True
+        if (
+            max_forward_grab_frames > 0
+            and 0 <= (target_frame - current_next_frame) <= int(max_forward_grab_frames)
+        ):
+            return advance_frames_by_grab(capture, target_frame - current_next_frame, stats)
+
+    return seek_to_frame(capture, target_frame, stats)
+
+
 def read_video_frame(capture, stats):
     """Read and decode one frame while tracking I/O cost."""
     start_time = time.perf_counter()
