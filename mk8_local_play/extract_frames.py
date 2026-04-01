@@ -677,6 +677,8 @@ def _run_total_score_phase_for_context(
 
     per_video_summary = {
         "video_name": video_name,
+        "video_label": video_label,
+        "source_display_name": context["source_display_name"],
         "source_length_s": total_frames / max(fps, 1),
         "processing_duration_s": float(video_stats["video_total_s"]),
         "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),
@@ -754,6 +756,90 @@ def _format_parallel_scan_diagnostics(parallel_scan_diag, merged_score_detection
     ]
 
 
+def _log_corrupt_preflight_outcome(video_index, total_videos, preflight_result, *, fps=None, video_label=None):
+    if not preflight_result:
+        return
+
+    status = str(preflight_result.get("status", "checked"))
+    reason = str(preflight_result.get("reason", "") or "")
+    probe_count = int(preflight_result.get("probe_count", 0) or 0)
+    usable_total_frames = preflight_result.get("usable_total_frames")
+    scope = color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label) if video_label else f"[Video {video_index}/{total_videos} - Start]"
+
+    if preflight_result.get("is_suspect"):
+        LOGGER.log(
+            scope,
+            f"Corrupt preflight suspect ({status}) | action: try mp4 remux, then full transcode only if still unreadable | {reason}",
+            color_name="yellow",
+        )
+        return
+
+    if status == "head_clamped":
+        usable_start_frame = int(preflight_result.get("usable_start_frame", 0) or 0)
+        usable_total_frames = preflight_result.get("usable_total_frames")
+        readable_detail = "the readable part only"
+        if usable_total_frames is not None:
+            readable_detail = (
+                f"{int(usable_total_frames):,} frames "
+                f"(about {format_duration(int(usable_total_frames) / max(float(fps or 1), 1.0))})"
+            )
+        failed_frame = preflight_result.get("failed_frame")
+        debug_detail = ""
+        if failed_frame is not None and usable_total_frames is not None:
+            end_frame = max(usable_start_frame, usable_start_frame + int(usable_total_frames) - 1)
+            debug_detail = (
+                f"Debug: head probe failed at requested frame {int(failed_frame):,}; "
+                f"extraction will use frames {usable_start_frame:,}-{end_frame:,} "
+                f"({int(usable_total_frames):,} total)."
+            )
+        LOGGER.log(
+            scope,
+            (
+                f"Video readability check: the file becomes unreadable right at the start. "
+                f"Extraction will skip that damaged opening and continue with {readable_detail}. "
+                f"({probe_count} probe checks)"
+            ),
+            color_name="yellow",
+        )
+        if debug_detail:
+            LOGGER.log(scope, debug_detail, color_name="dim")
+        return
+
+    if status == "tail_clamped":
+        readable_detail = "the readable part only"
+        if usable_total_frames is not None:
+            readable_detail = (
+                f"{int(usable_total_frames):,} frames "
+                f"(about {format_duration(int(usable_total_frames) / max(float(fps or 1), 1.0))})"
+            )
+        failed_frame = preflight_result.get("failed_frame")
+        debug_detail = ""
+        if failed_frame is not None and usable_total_frames is not None:
+            debug_detail = (
+                f"Debug: tail probe failed at requested frame {int(failed_frame):,}; "
+                f"extraction will use frames 0-{int(usable_total_frames) - 1:,} "
+                f"({int(usable_total_frames):,} total)."
+            )
+        LOGGER.log(
+            scope,
+            (
+                f"Video readability check: the file becomes unreadable at the very end. "
+                f"Extraction will continue with {readable_detail}. "
+                f"({probe_count} probe checks)"
+            ),
+            color_name="yellow",
+        )
+        if debug_detail:
+            LOGGER.log(scope, debug_detail, color_name="dim")
+        return
+
+    LOGGER.log(
+        scope,
+        f"Video readability check passed. Extraction will continue unchanged. ({probe_count} probe checks)",
+        color_name="green",
+    )
+
+
 def _prepare_video_context(video_path, folder_path, include_subfolders, video_index, total_videos, template_load_time_s, templates, *, video_label=None, source_display_name=None):
     video_start = time.perf_counter()
     video_stats = defaultdict(float)
@@ -777,12 +863,13 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     )
     corrupt_check_status = str(preflight_result.get("status", "checked"))
     probe.release()
-    if preflight_result is not None and preflight_result.get("is_suspect"):
-        LOGGER.log(
-            f"[Video {video_index}/{total_videos} - Start]",
-            f"Corrupt preflight flagged file: {preflight_result.get('reason', 'sample probe failed')}",
-            color_name="yellow",
-        )
+    _log_corrupt_preflight_outcome(
+        video_index,
+        total_videos,
+        preflight_result,
+        fps=nominal_fps,
+        video_label=video_label,
+    )
     processing_video_path = video_io.repair_video_if_needed(
         video_path,
         nominal_total_frames,
@@ -803,15 +890,46 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_skip = int(3 * max(1, int(fps)))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    nominal_processing_total_frames = total_frames
+    usable_start_frame = int(preflight_result.get("usable_start_frame") or 0) if preflight_result else 0
+    effective_total_frames = int(preflight_result.get("usable_total_frames") or total_frames) if preflight_result else total_frames
+    total_frames = max(0, min(total_frames, effective_total_frames))
+    if total_frames < nominal_processing_total_frames:
+        LOGGER.log(
+            color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
+            (
+                f"Readable portion selected for extraction: {total_frames:,} of {nominal_processing_total_frames:,} "
+                f"frames ({format_duration(total_frames / max(fps, 1))})"
+            ),
+            color_name="yellow",
+        )
+    elif usable_start_frame > 0:
+        LOGGER.log(
+            color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
+            (
+                f"Readable portion selected for extraction: frames {usable_start_frame:,}-"
+                f"{max(usable_start_frame, usable_start_frame + total_frames - 1):,} "
+                f"({total_frames:,} total, {format_duration(total_frames / max(fps, 1))})"
+            ),
+            color_name="yellow",
+        )
     processing_is_suspect = bool(preflight_result and preflight_result.get("is_suspect") and processing_video_path == video_path)
-    scan_worker_count = 1 if processing_is_suspect else INITIAL_SCAN_WORKERS
+    processing_has_head_offset = usable_start_frame > 0
+    scan_worker_count = 1 if (processing_is_suspect or processing_has_head_offset) else INITIAL_SCAN_WORKERS
     if processing_is_suspect:
         LOGGER.log(
             f"[Video {video_index}/{total_videos} - Start]",
             "Using conservative single-process scan for suspect video",
             color_name="yellow",
         )
-    sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
+    if processing_has_head_offset:
+        LOGGER.log(
+            color_video_scope(f"[Video {video_index}/{total_videos} - Start]", video_label),
+            "Using conservative single-process scan because extraction starts after a damaged opening section",
+            color_name="yellow",
+        )
+    readable_end_frame = usable_start_frame + total_frames
+    sample_frames = np.linspace(usable_start_frame, max(usable_start_frame, readable_end_frame - 1), 19).astype(int)
     scales = []
     video_name = os.path.basename(processing_video_path)
     original_source_display_name = (
@@ -825,11 +943,19 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     source_display_name = source_display_name or processing_source_display_name
     stage_start = time.perf_counter()
     eof_guard_frames = max(frame_skip, int(fps * INITIAL_SCAN_EOF_GUARD_SECONDS))
+    if total_frames <= 0:
+        cap.release()
+        LOGGER.log(
+            f"[Video {video_index}/{total_videos} - Start]",
+            f"No readable frames available after preflight clamp: {processing_video_path}",
+            color_name="red",
+        )
+        return None
     for frame_num in sample_frames:
         video_io.seek_to_frame(cap, frame_num, video_stats)
         read_timeout_s = (
             INITIAL_SCAN_EOF_READ_TIMEOUT_SECONDS
-            if total_frames - int(frame_num) <= eof_guard_frames
+            if readable_end_frame - int(frame_num) <= eof_guard_frames
             else None
         )
         if read_timeout_s is None:
@@ -887,6 +1013,8 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
         "fps": fps,
         "frame_skip": frame_skip,
         "total_frames": total_frames,
+        "usable_start_frame": usable_start_frame,
+        "readable_end_frame": readable_end_frame,
         "eof_guard_frames": eof_guard_frames,
         "capture_poisoned": capture_poisoned,
         "median_scale_x": np.median([s[0] for s in scales]),
@@ -934,6 +1062,8 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
     video_stats = context["video_stats"]
     fps = context["fps"]
     total_frames = context["total_frames"]
+    usable_start_frame = int(context.get("usable_start_frame", 0) or 0)
+    readable_end_frame = int(context.get("readable_end_frame", usable_start_frame + total_frames) or (usable_start_frame + total_frames))
     frame_skip = context["frame_skip"]
     eof_guard_frames = context["eof_guard_frames"]
     score_candidates = []
@@ -943,7 +1073,7 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
         "next_race_number": 1,
         "capture": cap,
     }
-    frame_count = 0
+    frame_count = usable_start_frame
     stage_start = time.perf_counter()
     scan_progress = ProgressPrinter(
         color_video_scope(
@@ -958,12 +1088,14 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
     )
     scan_progress.update(0)
     capture_poisoned = False
+    video_io.seek_to_frame(cap, usable_start_frame, video_stats)
 
-    while cap.isOpened() and frame_count < total_frames:
-        remaining_frames = max(0, total_frames - frame_count)
+    while cap.isOpened() and frame_count < readable_end_frame:
+        completed_frames = max(0, frame_count - usable_start_frame)
+        remaining_frames = max(0, readable_end_frame - frame_count)
         if (
             total_frames > 0
-            and frame_count / total_frames >= INITIAL_SCAN_EOF_GUARD_PROGRESS
+            and completed_frames / total_frames >= INITIAL_SCAN_EOF_GUARD_PROGRESS
             and remaining_frames <= eof_guard_frames
         ):
             LOGGER.log(
@@ -978,7 +1110,7 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
                 ),
                 color_name="yellow",
             )
-            frame_count = total_frames
+            frame_count = readable_end_frame
             break
         window_interrupted = False
         for _ in range(INITIAL_SCAN_WINDOW_STEPS):
@@ -1005,7 +1137,7 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
                     ),
                     color_name="yellow",
                 )
-                frame_count = total_frames
+                frame_count = readable_end_frame
                 window_interrupted = True
                 capture_poisoned = True
                 break
@@ -1035,11 +1167,11 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
             )
             if frames_to_skip > 0:
                 frame_count += frames_to_skip + frame_skip
-                if frame_count < total_frames:
+                if frame_count < readable_end_frame:
                     video_io.seek_to_frame(cap, frame_count, video_stats)
                 window_interrupted = True
                 scan_progress.update(
-                    min(frame_count, total_frames),
+                    min(max(0, frame_count - usable_start_frame), total_frames),
                     color_video_detail("Score candidates: ", len(score_candidates), context["video_label"]),
                     value_color_token=context["video_label"],
                 )
@@ -1047,19 +1179,19 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
 
             if not video_io.advance_frames_by_grab(cap, frame_skip - 1, video_stats):
                 window_interrupted = True
-                frame_count = total_frames
+                frame_count = readable_end_frame
                 break
 
             frame_count += frame_skip
-            if frame_count >= total_frames:
+            if frame_count >= readable_end_frame:
                 window_interrupted = True
                 break
             scan_progress.update(
-                frame_count,
+                min(max(0, frame_count - usable_start_frame), total_frames),
                 color_video_detail("Score candidates: ", len(score_candidates), context["video_label"]),
                 value_color_token=context["video_label"],
             )
-        if window_interrupted and frame_count >= total_frames:
+        if window_interrupted and frame_count >= readable_end_frame:
             break
 
     if scan_progress.last_percent < 100:
@@ -1631,12 +1763,12 @@ def extract_frames(
             preflight_result = video_io.sample_video_readability(video_path, nominal_total_frames, stats=video_stats)
             corrupt_check_status = str(preflight_result.get("status", "checked"))
             probe.release()
-            if preflight_result is not None and preflight_result.get("is_suspect"):
-                LOGGER.log(
-                    f"[Video {video_index}/{total_videos} - Start]",
-                    f"Corrupt preflight flagged file: {preflight_result.get('reason', 'sample probe failed')}",
-                    color_name="yellow",
-                )
+            _log_corrupt_preflight_outcome(
+                video_index,
+                total_videos,
+                preflight_result,
+                fps=nominal_fps,
+            )
             processing_video_path = video_io.repair_video_if_needed(
                 video_path,
                 nominal_total_frames,
@@ -1665,6 +1797,18 @@ def extract_frames(
                 "capture": cap,
             }
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            nominal_processing_total_frames = total_frames
+            effective_total_frames = int(preflight_result.get("usable_total_frames") or total_frames) if preflight_result else total_frames
+            total_frames = max(0, min(total_frames, effective_total_frames))
+            if total_frames < nominal_processing_total_frames:
+                LOGGER.log(
+                    f"[Video {video_index}/{total_videos} - Start]",
+                    (
+                        f"Using readable frame count {total_frames:,} / {nominal_processing_total_frames:,} "
+                        f"({format_duration(total_frames / max(fps, 1))}) for extraction"
+                    ),
+                    color_name="yellow",
+                )
             processing_is_suspect = bool(preflight_result and preflight_result.get("is_suspect") and processing_video_path == video_path)
             scan_worker_count = 1 if processing_is_suspect else INITIAL_SCAN_WORKERS
             if processing_is_suspect:
@@ -2084,6 +2228,8 @@ def extract_frames(
             per_video_summaries.append(
                 {
                     "video_name": video_name,
+                    "video_label": video_label,
+                    "source_display_name": source_display_name,
                     "source_length_s": total_frames / max(fps, 1),
                     "processing_duration_s": float(video_stats["video_total_s"]),
                     "scan_duration_s": float(video_stats.get("main_scan_loop_s", 0.0)),

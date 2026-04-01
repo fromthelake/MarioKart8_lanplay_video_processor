@@ -1465,7 +1465,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         performance_lines.extend(["", "Per-video summary"])
         per_video_rows = []
         for summary in extract_summary["per_video_summaries"]:
-            video_identity = build_video_identity(Path(summary["video_name"]), include_subfolders=include_subfolders)
+            video_identity = str(summary.get("video_label") or build_video_identity(Path(summary["video_name"]), include_subfolders=include_subfolders))
             video_ocr_summary = per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
             per_video_rows.append([
@@ -1492,7 +1492,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         )
         performance_lines.extend(formatted_table[:2])
         for index, row_values in enumerate(per_video_rows):
-            video_identity = build_video_identity(Path(extract_summary["per_video_summaries"][index]["video_name"]), include_subfolders=include_subfolders)
+            video_identity = str(
+                extract_summary["per_video_summaries"][index].get("video_label")
+                or build_video_identity(Path(extract_summary["per_video_summaries"][index]["video_name"]), include_subfolders=include_subfolders)
+            )
             performance_lines.append(_format_colored_table_row(row_values, row_widths, video_identity))
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
     LOGGER.summary_block("[Run - Performance Summary]", performance_lines, color_name="cyan")
@@ -1634,8 +1637,8 @@ def run_all(
         performance_lines.extend(["", "Per-video summary"])
         per_video_rows = []
         for summary in per_video_summaries:
-            video_stem = Path(summary["video_name"]).stem
-            video_ocr_summary = ocr_per_video_summary.get(video_stem, {})
+            video_identity = str(summary.get("video_label") or Path(summary["video_name"]).stem)
+            video_ocr_summary = ocr_per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
             per_video_rows.append([
                 summary["video_name"],
@@ -1644,7 +1647,7 @@ def run_all(
                 extract_frames.format_duration(summary["scan_duration_s"]),
                 extract_frames.format_duration(summary["total_score_duration_s"]),
                 extract_frames.format_duration(
-                    total_ocr_duration_s * (float(ocr_per_video_work_durations.get(video_stem, 0.0)) / total_ocr_work_s)
+                    total_ocr_duration_s * (float(ocr_per_video_work_durations.get(video_identity, 0.0)) / total_ocr_work_s)
                     if total_ocr_work_s > 0 else 0.0
                 ),
                 str(video_ocr_summary.get("race_count", 0)),
@@ -1662,7 +1665,11 @@ def run_all(
         performance_lines.extend(formatted_table[:2])
         for index, row_values in enumerate(per_video_rows):
             performance_lines.append(
-                _format_colored_table_row(row_values, row_widths, Path(per_video_summaries[index]["video_name"]).stem)
+                _format_colored_table_row(
+                    row_values,
+                    row_widths,
+                    str(per_video_summaries[index].get("video_label") or Path(per_video_summaries[index]["video_name"]).stem),
+                )
             )
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
     LOGGER.summary_block(

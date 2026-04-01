@@ -20,9 +20,12 @@ CORRUPT_CHECK_EDGE_SAMPLE_COUNT = 10
 CORRUPT_CHECK_EDGE_FRACTION = 0.02
 CORRUPT_CHECK_READ_TIMEOUT_S = 5.0
 CORRUPT_CHECK_FRAME_SLACK = 5
+CORRUPT_CHECK_HEAD_FRAME_TOLERANCE = 2
+CORRUPT_CHECK_TAIL_FRAME_TOLERANCE = 2
 VIDEO_REPAIR_PROGRESS_INTERVAL_S = 2.0
 VIDEO_REPAIR_STALL_TIMEOUT_S = 45.0
 VIDEO_REPAIR_PROGRESS_EPSILON_S = 0.25
+VIDEO_REMUX_STALL_TIMEOUT_S = 30.0
 _STDERR_REDIRECT_LOCK = threading.Lock()
 
 
@@ -234,6 +237,82 @@ def _timed_probe_read(capture, frame_number: int, timeout_s: float) -> tuple[boo
     return ret, frame, False, actual_frame
 
 
+def _tail_probe_clamp(total_frames: int, failed_frame: int, actual_frame: int | None) -> int | None:
+    """Return a usable frame count when only the nominal tail overstates decodable frames."""
+    if total_frames <= 0:
+        return None
+    tail_start = max(0, int(total_frames) - max(1, int(CORRUPT_CHECK_TAIL_FRAME_TOLERANCE)))
+    if int(failed_frame) < tail_start:
+        return None
+    actual = int(actual_frame) if actual_frame is not None else int(failed_frame) - 1
+    usable_total_frames = max(0, min(int(total_frames), actual + 1))
+    if usable_total_frames >= int(total_frames):
+        return None
+    return usable_total_frames or None
+
+
+def _head_probe_clamp(total_frames: int, failed_frame: int) -> tuple[int, int] | None:
+    """Return a readable frame window when only the nominal head is unreadable."""
+    if total_frames <= 0:
+        return None
+    head_end = max(0, min(int(total_frames) - 1, max(1, int(CORRUPT_CHECK_HEAD_FRAME_TOLERANCE)) - 1))
+    if int(failed_frame) > head_end:
+        return None
+    start_frame = min(int(total_frames) - 1, int(failed_frame) + 1)
+    if start_frame <= 0:
+        return None
+    return start_frame, int(total_frames)
+
+
+def _find_last_readable_frame(capture, low_frame: int, high_frame: int, timeout_s: float) -> int | None:
+    """Binary-search the last decodable frame in a bounded interval."""
+    lower = int(low_frame)
+    upper = int(high_frame)
+    last_good = None
+    while lower <= upper:
+        mid = (lower + upper) // 2
+        ret, frame, timed_out, actual_frame = _timed_probe_read(capture, mid, timeout_s)
+        if timed_out or not ret or frame is None:
+            upper = mid - 1
+            continue
+        if abs(int(actual_frame) - int(mid)) > CORRUPT_CHECK_FRAME_SLACK:
+            upper = mid - 1
+            continue
+        last_good = int(mid)
+        lower = mid + 1
+    return last_good
+
+
+def _find_first_readable_frame(capture, low_frame: int, high_frame: int, timeout_s: float) -> int | None:
+    """Binary-search the first decodable frame in a bounded interval."""
+    lower = int(low_frame)
+    upper = int(high_frame)
+    first_good = None
+    while lower <= upper:
+        mid = (lower + upper) // 2
+        ret, frame, timed_out, actual_frame = _timed_probe_read(capture, mid, timeout_s)
+        if timed_out or not ret or frame is None:
+            lower = mid + 1
+            continue
+        if abs(int(actual_frame) - int(mid)) > CORRUPT_CHECK_FRAME_SLACK:
+            lower = mid + 1
+            continue
+        first_good = int(mid)
+        upper = mid - 1
+    return first_good
+
+
+def read_nominal_frame_count(video_path: str | os.PathLike[str]) -> int:
+    """Read the container-reported frame count via OpenCV."""
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            return 0
+        return int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    finally:
+        capture.release()
+
+
 def sample_video_readability(video_path: str, nominal_total_frames: int, stats: dict | None = None, *, video_identity: object | None = None) -> dict:
     """Cheap corruption preflight using sampled OpenCV seeks/reads across the file."""
     video_name = os.path.basename(video_path)
@@ -247,6 +326,8 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
         "probe_count": 0,
         "failed_frame": None,
         "actual_frame": None,
+        "usable_start_frame": 0,
+        "usable_total_frames": int(nominal_total_frames) if nominal_total_frames else None,
     }
     with suppress_native_stderr():
         capture = cv2.VideoCapture(video_path)
@@ -257,6 +338,7 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
     total_frames = nominal_total_frames or int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     probe_frames = _sample_probe_frames(total_frames)
     result["probe_count"] = len(probe_frames)
+    last_successful_probe_frame = None
     for frame_number in probe_frames:
         try:
             with suppress_native_stderr():
@@ -272,6 +354,59 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
                 "failed_frame": int(frame_number),
             }
         if timed_out:
+            head_window = _head_probe_clamp(total_frames, frame_number)
+            if head_window is not None:
+                first_readable_frame = _find_first_readable_frame(
+                    capture,
+                    head_window[0],
+                    max(head_window[0], min(total_frames - 1, head_window[1] - 1)),
+                    CORRUPT_CHECK_READ_TIMEOUT_S,
+                )
+                if first_readable_frame is not None:
+                    usable_total_frames = max(0, int(total_frames) - int(first_readable_frame))
+                    capture.release()
+                    _record_corrupt_check_duration(stats, overall_start)
+                    return {
+                        **result,
+                        "status": "head_clamped",
+                        "is_suspect": False,
+                        "reason": (
+                            f"head probe timed out at frame {frame_number}; "
+                            f"first readable frame {first_readable_frame}; using {usable_total_frames} readable frames"
+                        ),
+                        "failed_frame": int(frame_number),
+                        "actual_frame": int(actual_frame),
+                        "usable_start_frame": int(first_readable_frame),
+                        "usable_total_frames": int(usable_total_frames),
+                    }
+            search_start = 0 if last_successful_probe_frame is None else int(last_successful_probe_frame)
+            last_readable_frame = _find_last_readable_frame(
+                capture,
+                search_start,
+                max(search_start, int(frame_number) - 1),
+                CORRUPT_CHECK_READ_TIMEOUT_S,
+            )
+            usable_total_frames = (
+                max(0, int(last_readable_frame) + 1)
+                if last_readable_frame is not None and int(frame_number) >= max(0, int(total_frames) - max(1, int(CORRUPT_CHECK_TAIL_FRAME_TOLERANCE)))
+                else None
+            )
+            if usable_total_frames is not None:
+                capture.release()
+                _record_corrupt_check_duration(stats, overall_start)
+                return {
+                    **result,
+                    "status": "tail_clamped",
+                    "is_suspect": False,
+                    "reason": (
+                        f"tail probe timed out at frame {frame_number}; "
+                        f"last readable frame {last_readable_frame}; using {usable_total_frames} readable frames"
+                    ),
+                    "failed_frame": int(frame_number),
+                    "actual_frame": int(actual_frame),
+                    "usable_start_frame": 0,
+                    "usable_total_frames": int(usable_total_frames),
+                }
             capture.release()
             _record_corrupt_check_duration(stats, overall_start)
             return {
@@ -283,6 +418,59 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
                 "actual_frame": int(actual_frame),
             }
         if not ret or frame is None:
+            head_window = _head_probe_clamp(total_frames, frame_number)
+            if head_window is not None:
+                first_readable_frame = _find_first_readable_frame(
+                    capture,
+                    head_window[0],
+                    max(head_window[0], min(total_frames - 1, head_window[1] - 1)),
+                    CORRUPT_CHECK_READ_TIMEOUT_S,
+                )
+                if first_readable_frame is not None:
+                    usable_total_frames = max(0, int(total_frames) - int(first_readable_frame))
+                    capture.release()
+                    _record_corrupt_check_duration(stats, overall_start)
+                    return {
+                        **result,
+                        "status": "head_clamped",
+                        "is_suspect": False,
+                        "reason": (
+                            f"head probe read failed at frame {frame_number}; "
+                            f"first readable frame {first_readable_frame}; using {usable_total_frames} readable frames"
+                        ),
+                        "failed_frame": int(frame_number),
+                        "actual_frame": int(actual_frame),
+                        "usable_start_frame": int(first_readable_frame),
+                        "usable_total_frames": int(usable_total_frames),
+                    }
+            search_start = 0 if last_successful_probe_frame is None else int(last_successful_probe_frame)
+            last_readable_frame = _find_last_readable_frame(
+                capture,
+                search_start,
+                max(search_start, int(frame_number) - 1),
+                CORRUPT_CHECK_READ_TIMEOUT_S,
+            )
+            usable_total_frames = (
+                max(0, int(last_readable_frame) + 1)
+                if last_readable_frame is not None and int(frame_number) >= max(0, int(total_frames) - max(1, int(CORRUPT_CHECK_TAIL_FRAME_TOLERANCE)))
+                else None
+            )
+            if usable_total_frames is not None:
+                capture.release()
+                _record_corrupt_check_duration(stats, overall_start)
+                return {
+                    **result,
+                    "status": "tail_clamped",
+                    "is_suspect": False,
+                    "reason": (
+                        f"tail probe read failed at frame {frame_number}; "
+                        f"last readable frame {last_readable_frame}; using {usable_total_frames} readable frames"
+                    ),
+                    "failed_frame": int(frame_number),
+                    "actual_frame": int(actual_frame),
+                    "usable_start_frame": 0,
+                    "usable_total_frames": int(usable_total_frames),
+                }
             capture.release()
             _record_corrupt_check_duration(stats, overall_start)
             return {
@@ -294,6 +482,60 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
                 "actual_frame": int(actual_frame),
             }
         if abs(int(actual_frame) - int(frame_number)) > CORRUPT_CHECK_FRAME_SLACK:
+            head_window = _head_probe_clamp(total_frames, frame_number)
+            if head_window is not None:
+                first_readable_frame = _find_first_readable_frame(
+                    capture,
+                    head_window[0],
+                    max(head_window[0], min(total_frames - 1, head_window[1] - 1)),
+                    CORRUPT_CHECK_READ_TIMEOUT_S,
+                )
+                if first_readable_frame is not None:
+                    usable_total_frames = max(0, int(total_frames) - int(first_readable_frame))
+                    capture.release()
+                    _record_corrupt_check_duration(stats, overall_start)
+                    return {
+                        **result,
+                        "status": "head_clamped",
+                        "is_suspect": False,
+                        "reason": (
+                            f"head probe landed at frame {actual_frame} instead of {frame_number}; "
+                            f"first readable frame {first_readable_frame}; using {usable_total_frames} readable frames"
+                        ),
+                        "failed_frame": int(frame_number),
+                        "actual_frame": int(actual_frame),
+                        "usable_start_frame": int(first_readable_frame),
+                        "usable_total_frames": int(usable_total_frames),
+                    }
+            search_start = 0 if last_successful_probe_frame is None else int(last_successful_probe_frame)
+            last_readable_frame = _find_last_readable_frame(
+                capture,
+                search_start,
+                max(search_start, int(frame_number) - 1),
+                CORRUPT_CHECK_READ_TIMEOUT_S,
+            )
+            usable_total_frames = (
+                max(0, int(last_readable_frame) + 1)
+                if last_readable_frame is not None and int(frame_number) >= max(0, int(total_frames) - max(1, int(CORRUPT_CHECK_TAIL_FRAME_TOLERANCE)))
+                else None
+            )
+            if usable_total_frames is not None:
+                capture.release()
+                _record_corrupt_check_duration(stats, overall_start)
+                return {
+                    **result,
+                    "status": "tail_clamped",
+                    "is_suspect": False,
+                    "reason": (
+                        f"tail probe landed at frame {actual_frame} instead of {frame_number}; "
+                        f"last readable frame {last_readable_frame}; "
+                        f"using {usable_total_frames} readable frames"
+                    ),
+                    "failed_frame": int(frame_number),
+                    "actual_frame": int(actual_frame),
+                    "usable_start_frame": 0,
+                    "usable_total_frames": int(usable_total_frames),
+                }
             capture.release()
             _record_corrupt_check_duration(stats, overall_start)
             return {
@@ -304,6 +546,7 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
                 "failed_frame": int(frame_number),
                 "actual_frame": int(actual_frame),
             }
+        last_successful_probe_frame = int(frame_number)
     capture.release()
     LOGGER.log("[Frame Count Scan]", f"sample probe passed for {display_video_name}: {len(probe_frames)} frames checked", color_name="green")
     _record_corrupt_check_duration(stats, overall_start)
@@ -318,6 +561,17 @@ def _rename_with_collision_suffix(source_path: Path, target_path: Path) -> Path:
         counter += 1
     source_path.replace(candidate)
     return candidate
+
+
+def _promote_repaired_output(source_path: Path, archived_path: Path, working_path: Path, final_suffix: str) -> tuple[Path, Path]:
+    """Archive the original source and promote a validated working file into place."""
+    CORRUPT_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+    archived_actual_path = _rename_with_collision_suffix(source_path, archived_path)
+    final_path = source_path.with_suffix(final_suffix)
+    if final_path.exists():
+        final_path.unlink()
+    final_path = _rename_with_collision_suffix(working_path, final_path)
+    return archived_actual_path, final_path
 
 
 def _repair_output_suffix(_video_path: Path) -> str:
@@ -360,6 +614,29 @@ def _ffmpeg_repair_command(source_path: Path, repaired_path: Path) -> list[str]:
             "-movflags", "+faststart"
         ])
     command.append(str(repaired_path))
+    return command
+
+
+def _ffmpeg_remux_command(source_path: Path, remuxed_path: Path) -> list[str]:
+    command = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-fflags",
+        "+genpts+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+        "-i",
+        str(source_path),
+        "-map",
+        "0",
+        "-c",
+        "copy",
+        "-y",
+    ]
+    if remuxed_path.suffix.lower() == ".mp4":
+        command.extend(["-movflags", "+faststart"])
+    command.append(str(remuxed_path))
     return command
 
 
@@ -488,11 +765,17 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
 
     repair_suffix = _repair_output_suffix(source_path)
     repairing_path = source_path.with_name(f"{source_path.stem}__repairing{repair_suffix}")
+    remuxing_path = source_path.with_name(f"{source_path.stem}__remuxing.mp4")
     archived_path = CORRUPT_VIDEOS_DIR / f"corrupt_{source_path.name}"
 
     try:
         if repairing_path.exists():
             repairing_path.unlink()
+    except Exception:
+        pass
+    try:
+        if remuxing_path.exists():
+            remuxing_path.unlink()
     except Exception:
         pass
 
@@ -502,6 +785,64 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
         f"Repairing {source_path.name}: {repair_reason}",
         color_name="yellow",
     )
+
+    remux_start = time.perf_counter()
+    try:
+        _run_ffmpeg_repair_command(
+            _ffmpeg_remux_command(source_path, remuxing_path),
+            source_path.name,
+            VIDEO_REMUX_STALL_TIMEOUT_S,
+            source_duration_s=duration_s,
+        )
+        remux_frame_count = read_nominal_frame_count(remuxing_path)
+        remux_preflight = sample_video_readability(
+            str(remuxing_path),
+            remux_frame_count,
+            stats=stats,
+            video_identity=source_path.stem,
+        )
+        if remux_frame_count > 0 and not remux_preflight.get("is_suspect"):
+            if stats is not None:
+                stats["repair_duration_s"] = stats.get("repair_duration_s", 0.0) + (time.perf_counter() - remux_start)
+                stats["repair_created"] = 1
+                stats["remux_created"] = 1
+                stats["repair_mode_remux"] = 1
+            archived_actual_path, final_path = _promote_repaired_output(source_path, archived_path, remuxing_path, ".mp4")
+            LOGGER.log(
+                "[Video Repair]",
+                (
+                    f"Remux succeeded | archived original as {archived_actual_path.name} | "
+                    f"using repaired file {final_path.name}"
+                ),
+                color_name="green",
+            )
+            return str(final_path)
+        LOGGER.log(
+            "[Video Repair]",
+            (
+                f"Remux did not clear preflight for {source_path.name}: "
+                f"{remux_preflight.get('reason', 'still suspect')}"
+            ),
+            color_name="yellow",
+        )
+    except subprocess.TimeoutExpired:
+        LOGGER.log(
+            "[Video Repair]",
+            f"Remux stalled for {source_path.name}; falling back to transcode",
+            color_name="yellow",
+        )
+    except Exception as exc:
+        LOGGER.log(
+            "[Video Repair]",
+            f"Remux failed for {source_path.name}: {exc}; falling back to transcode",
+            color_name="yellow",
+        )
+    finally:
+        try:
+            if remuxing_path.exists():
+                remuxing_path.unlink()
+        except Exception:
+            pass
 
     repair_start = time.perf_counter()
     try:
@@ -547,12 +888,8 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
     if stats is not None:
         stats["repair_duration_s"] = stats.get("repair_duration_s", 0.0) + repair_elapsed_s
         stats["repair_created"] = 1
-    CORRUPT_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
-    archived_actual_path = _rename_with_collision_suffix(source_path, archived_path)
-    final_path = source_path.with_suffix(repair_suffix)
-    if final_path.exists():
-        final_path.unlink()
-    final_path = _rename_with_collision_suffix(repairing_path, final_path)
+        stats["repair_mode_transcode"] = 1
+    archived_actual_path, final_path = _promote_repaired_output(source_path, archived_path, repairing_path, repair_suffix)
 
     LOGGER.log(
         "[Video Repair]",
@@ -563,6 +900,88 @@ def repair_video_if_needed(video_path: str, nominal_total_frames: int, preflight
         color_name="green",
     )
     return str(final_path)
+
+
+def compare_preflight_before_after_remux(
+    video_path: str,
+    nominal_total_frames: int,
+    *,
+    remuxed_path: str | os.PathLike[str] | None = None,
+    keep_remuxed_file: bool = False,
+    stats: dict | None = None,
+    video_identity: object | None = None,
+) -> dict:
+    """Compare the sampled OpenCV preflight before and after a light ffmpeg remux."""
+    source_path = Path(video_path)
+    source_result = sample_video_readability(
+        video_path,
+        nominal_total_frames,
+        stats=stats,
+        video_identity=video_identity,
+    )
+    result = {
+        "video_path": str(source_path),
+        "source_preflight": source_result,
+        "remux_attempted": False,
+        "remux_created": False,
+        "remux_path": "",
+        "remux_preflight": None,
+        "improved": False,
+        "comparison_note": "source preflight did not require remux",
+    }
+    if not source_result.get("is_suspect"):
+        return result
+
+    if not shutil.which("ffmpeg"):
+        result["comparison_note"] = "ffmpeg not found on PATH"
+        return result
+
+    remux_path = Path(remuxed_path) if remuxed_path else source_path.with_name(f"{source_path.stem}__remux_probe{source_path.suffix}")
+    result["remux_attempted"] = True
+    result["remux_path"] = str(remux_path)
+    try:
+        if remux_path.exists():
+            remux_path.unlink()
+    except Exception:
+        pass
+
+    try:
+        _run_ffmpeg_repair_command(
+            _ffmpeg_remux_command(source_path, remux_path),
+            source_path.name,
+            VIDEO_REMUX_STALL_TIMEOUT_S,
+            source_duration_s=None,
+        )
+    except Exception as exc:
+        result["comparison_note"] = f"remux failed: {type(exc).__name__}"
+        return result
+
+    result["remux_created"] = remux_path.exists()
+    if not result["remux_created"]:
+        result["comparison_note"] = "remux command completed without creating output"
+        return result
+
+    remux_result = sample_video_readability(
+        str(remux_path),
+        read_nominal_frame_count(remux_path),
+        stats=stats,
+        video_identity=video_identity,
+    )
+    result["remux_preflight"] = remux_result
+    result["improved"] = bool(source_result.get("is_suspect") and not remux_result.get("is_suspect"))
+    result["comparison_note"] = (
+        "remux cleared the OpenCV preflight"
+        if result["improved"]
+        else "remux did not clear the OpenCV preflight"
+    )
+
+    if not keep_remuxed_file:
+        try:
+            remux_path.unlink(missing_ok=True)
+            result["remux_created"] = False
+        except Exception:
+            pass
+    return result
 
 
 
