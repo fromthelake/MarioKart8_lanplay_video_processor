@@ -31,40 +31,63 @@ _STDERR_REDIRECT_LOCK = threading.Lock()
 
 def add_timing(stats, key, start_time):
     """Accumulate elapsed time for a named timing bucket."""
-    stats[key] += time.perf_counter() - start_time
+    stats[key] = stats.get(key, 0.0) + (time.perf_counter() - start_time)
 
 
 def increment_counter(stats, key, amount=1):
     """Accumulate a named integer counter inside the shared stats dict."""
-    stats[key] += int(amount)
+    stats[key] = stats.get(key, 0) + int(amount)
 
 
 def seek_to_frame(capture, frame_number, stats):
     """Seek to a frame and record the seek cost."""
+    current_frame = None
+    try:
+        current_frame = int(capture.get(1) or 0)
+    except Exception:  # pragma: no cover - native backend safety
+        current_frame = None
+    if current_frame is not None:
+        delta = int(frame_number) - current_frame
+        increment_counter(stats, "seek_frame_distance_total", abs(delta))
+        increment_counter(stats, "seek_forward_calls", int(delta > 0))
+        increment_counter(stats, "seek_backward_calls", int(delta < 0))
+        if abs(delta) <= 12:
+            increment_counter(stats, "seek_short_calls")
+        elif abs(delta) <= 120:
+            increment_counter(stats, "seek_medium_calls")
+        else:
+            increment_counter(stats, "seek_long_calls")
     start_time = time.perf_counter()
     result = capture.set(1, frame_number)
     add_timing(stats, "seek_time_s", start_time)
-    stats["seek_calls"] += 1
+    increment_counter(stats, "seek_calls")
     return result
 
 
 def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_frames=0):
     """Move capture to the next frame to read, preferring cheap forward grabs for short jumps."""
     target_frame = int(frame_number)
+    increment_counter(stats, "position_calls")
     try:
         current_next_frame = int(capture.get(1) or 0)
     except Exception:  # pragma: no cover - native backend safety
         current_next_frame = None
 
     if current_next_frame is not None:
+        delta = target_frame - current_next_frame
+        increment_counter(stats, "position_frame_distance_total", abs(delta))
         if current_next_frame == target_frame:
+            increment_counter(stats, "position_noop_calls")
             return True
         if (
             max_forward_grab_frames > 0
-            and 0 <= (target_frame - current_next_frame) <= int(max_forward_grab_frames)
+            and 0 <= delta <= int(max_forward_grab_frames)
         ):
-            return advance_frames_by_grab(capture, target_frame - current_next_frame, stats)
+            increment_counter(stats, "position_forward_grab_calls")
+            increment_counter(stats, "position_forward_grab_frames", int(delta))
+            return advance_frames_by_grab(capture, delta, stats)
 
+    increment_counter(stats, "position_seek_fallback_calls")
     return seek_to_frame(capture, target_frame, stats)
 
 
@@ -73,7 +96,7 @@ def read_video_frame(capture, stats):
     start_time = time.perf_counter()
     ret, frame = capture.read()
     add_timing(stats, "read_time_s", start_time)
-    stats["read_calls"] += 1
+    increment_counter(stats, "read_calls")
     return ret, frame
 
 
@@ -92,7 +115,7 @@ def read_video_frame_with_timeout(capture, stats, timeout_s):
     worker.start()
     worker.join(timeout_s)
     add_timing(stats, "read_time_s", start_time)
-    stats["read_calls"] += 1
+    increment_counter(stats, "read_calls")
     if worker.is_alive():
         stats["read_timeouts"] = stats.get("read_timeouts", 0) + 1
         return False, None, True
@@ -107,7 +130,7 @@ def grab_video_frame(capture, stats):
     start_time = time.perf_counter()
     ret = capture.grab()
     add_timing(stats, "grab_time_s", start_time)
-    stats["grab_calls"] += 1
+    increment_counter(stats, "grab_calls")
     return ret
 
 

@@ -442,6 +442,25 @@ def print_extract_profiler_summary(video_name, stats):
             f"{int(stats.get('score_capture_frames_outside_same_run_cache_total', 0)):,} "
             f"({float(stats.get('score_capture_outside_same_run_cache_source_seconds_total', 0.0)):.2f}s source)"
         )
+    if int(stats.get("position_calls", 0)) > 0:
+        extra_lines.append(
+            f"capture positioning: "
+            f"{int(stats.get('position_calls', 0)):,} calls | "
+            f"no-op {int(stats.get('position_noop_calls', 0)):,} | "
+            f"grab-advance {int(stats.get('position_forward_grab_calls', 0)):,} "
+            f"({int(stats.get('position_forward_grab_frames', 0)):,} frames) | "
+            f"seek fallback {int(stats.get('position_seek_fallback_calls', 0)):,}"
+        )
+    if int(stats.get("seek_calls", 0)) > 0:
+        extra_lines.append(
+            f"seek profile: "
+            f"forward {int(stats.get('seek_forward_calls', 0)):,} | "
+            f"backward {int(stats.get('seek_backward_calls', 0)):,} | "
+            f"short {int(stats.get('seek_short_calls', 0)):,} | "
+            f"medium {int(stats.get('seek_medium_calls', 0)):,} | "
+            f"long {int(stats.get('seek_long_calls', 0)):,} | "
+            f"distance {int(stats.get('seek_frame_distance_total', 0)):,} frames"
+        )
     if int(stats.get("score_ready_results_max", 0)) > 1 or int(stats.get("score_out_of_order_results", 0)) > 0:
         extra_lines.append(
             f"parallel score result backlog: "

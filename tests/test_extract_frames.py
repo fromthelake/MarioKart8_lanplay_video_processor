@@ -54,6 +54,29 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn("flush IO lock wait: 1.25s across 8 acquires", joined)
         self.assertIn("callback IO lock wait: 0.50s across 4 acquires", joined)
 
+    def test_print_extract_profiler_summary_reports_positioning_lines(self):
+        stats = defaultdict(float)
+        stats["position_calls"] = 10
+        stats["position_noop_calls"] = 2
+        stats["position_forward_grab_calls"] = 3
+        stats["position_forward_grab_frames"] = 9
+        stats["position_seek_fallback_calls"] = 5
+        stats["seek_calls"] = 5
+        stats["seek_forward_calls"] = 3
+        stats["seek_backward_calls"] = 2
+        stats["seek_short_calls"] = 1
+        stats["seek_medium_calls"] = 2
+        stats["seek_long_calls"] = 2
+        stats["seek_frame_distance_total"] = 450
+
+        with mock.patch.object(extract_frames.LOGGER, "summary_block") as summary_mock:
+            extract_frames.print_extract_profiler_summary("demo.mp4", stats)
+
+        summary_lines = summary_mock.call_args.args[1]
+        joined = "\n".join(summary_lines)
+        self.assertIn("capture positioning: 10 calls | no-op 2 | grab-advance 3 (9 frames) | seek fallback 5", joined)
+        self.assertIn("seek profile: forward 3 | backward 2 | short 1 | medium 2 | long 2 | distance 450 frames", joined)
+
     def test_prepare_video_context_uses_preflight_usable_total_frames_without_repair(self):
         class FakeCapture:
             def __init__(self, frame_count=207459, fps=30.0):
