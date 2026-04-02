@@ -5,6 +5,7 @@ import argparse
 import csv
 import time
 import threading
+import queue
 from pathlib import Path
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
@@ -477,6 +478,19 @@ def print_extract_profiler_summary(video_name, stats):
                 f"{label} {call_count}c/{backward_calls}b/{long_calls}l/{distance:,}f"
             )
         extra_lines.append("seek hotspots: " + " | ".join(formatted_labels))
+    scheduler_strategy = stats.get("score_scheduler_strategy")
+    if scheduler_strategy:
+        extra_lines.append(f"score scheduler: {scheduler_strategy}")
+    scheduler_layouts = stats.get("score_scheduler_worker_layouts")
+    if scheduler_layouts:
+        extra_lines.append("score worker layout: " + " | ".join(str(item) for item in list(scheduler_layouts)))
+    scheduler_backends = stats.get("score_scheduler_worker_backends")
+    if scheduler_backends:
+        extra_lines.append("score worker backends: " + " | ".join(str(item) for item in list(scheduler_backends)))
+    if int(stats.get("score_scheduler_capture_opens", 0)) > 0:
+        extra_lines.append(
+            f"score worker-local capture opens: {int(stats.get('score_scheduler_capture_opens', 0)):,}"
+        )
     if int(stats.get("score_ready_results_max", 0)) > 1 or int(stats.get("score_out_of_order_results", 0)) > 0:
         extra_lines.append(
             f"parallel score result backlog: "
@@ -514,6 +528,165 @@ def _accumulate_result_stats(global_stats, result):
             continue
         global_stats[key] += delta
         accounted_stats[key] = current_value
+
+
+def _score_task_start_frame(task):
+    fps = float(task.get("fps", 0) or 0)
+    return max(0, int(task.get("frame_number", 0) or 0) - int(3 * fps))
+
+
+def _score_task_estimated_cost(task):
+    fps = max(1.0, float(task.get("fps", 0) or 0))
+    analysis_window_frames = max(1, int(round(16.0 * fps)))
+    return analysis_window_frames
+
+
+def _partition_score_tasks_contiguous(tasks, worker_count):
+    if not tasks:
+        return []
+    sorted_tasks = sorted(
+        tasks,
+        key=lambda task: (_score_task_start_frame(task), int(task.get("race_number", 0) or 0)),
+    )
+    worker_count = max(1, min(int(worker_count), len(sorted_tasks)))
+    if worker_count == 1:
+        return [sorted_tasks]
+
+    weighted_tasks = []
+    previous_start = None
+    total_cost = 0.0
+    for task in sorted_tasks:
+        start_frame = _score_task_start_frame(task)
+        base_cost = float(_score_task_estimated_cost(task))
+        gap_cost = 0.0 if previous_start is None else max(0.0, float(start_frame - previous_start))
+        task_cost = base_cost + gap_cost
+        weighted_tasks.append((task, start_frame, task_cost))
+        total_cost += task_cost
+        previous_start = start_frame
+
+    target_cost = total_cost / float(worker_count)
+    blocks = []
+    current_block = []
+    current_cost = 0.0
+    remaining_tasks = len(weighted_tasks)
+    remaining_workers = worker_count
+    for weighted_index, (task, _start_frame, task_cost) in enumerate(weighted_tasks):
+        current_block.append(task)
+        current_cost += task_cost
+        remaining_tasks = len(weighted_tasks) - weighted_index - 1
+        remaining_workers = worker_count - len(blocks) - 1
+        must_split = remaining_workers > 0 and remaining_tasks >= remaining_workers
+        if must_split and current_cost >= target_cost:
+            blocks.append(current_block)
+            current_block = []
+            current_cost = 0.0
+    if current_block:
+        blocks.append(current_block)
+    while len(blocks) < worker_count:
+        blocks.append([])
+    return [block for block in blocks if block]
+
+
+def _chunk_score_tasks_contiguous(tasks, chunk_size):
+    sorted_tasks = sorted(
+        tasks,
+        key=lambda task: (_score_task_start_frame(task), int(task.get("race_number", 0) or 0)),
+    )
+    chunk_size = max(1, int(chunk_size))
+    return [
+        sorted_tasks[index:index + chunk_size]
+        for index in range(0, len(sorted_tasks), chunk_size)
+    ]
+
+
+def _score_worker_layout_text(block_index, tasks):
+    race_numbers = [int(task.get("race_number", 0) or 0) for task in tasks]
+    if not race_numbers:
+        return f"w{block_index + 1}: none"
+    start_frames = [_score_task_start_frame(task) for task in tasks]
+    return (
+        f"w{block_index + 1}: races {race_numbers[0]:03}-{race_numbers[-1]:03} "
+        f"| span {min(start_frames):,}-{max(start_frames):,}"
+    )
+
+
+def _run_score_task_block(video_path, block_index, tasks, frame_to_timecode, result_queue):
+    local_cap = cv2.VideoCapture(video_path)
+    backend_name = ""
+    if local_cap is not None and local_cap.isOpened():
+        try:
+            backend_name = str(local_cap.getBackendName() or "")
+        except Exception:
+            backend_name = ""
+    for task in tasks:
+        result = score_screen_selection.analyze_score_window_task(
+            task,
+            frame_to_timecode,
+            capture=local_cap if local_cap is not None and local_cap.isOpened() else None,
+        )
+        result_queue.put(
+            {
+                "task": task,
+                "result": result,
+                "block_index": block_index,
+            }
+        )
+    if local_cap is not None and local_cap.isOpened():
+        local_cap.release()
+    race_numbers = [int(task.get("race_number", 0) or 0) for task in tasks]
+    start_frames = [_score_task_start_frame(task) for task in tasks]
+    return {
+        "block_index": int(block_index),
+        "backend_name": backend_name,
+        "race_numbers": race_numbers,
+        "frame_start": min(start_frames) if start_frames else None,
+        "frame_end": max(start_frames) if start_frames else None,
+        "capture_opens": 1 if tasks else 0,
+    }
+
+
+def _run_score_task_chunk_worker(video_path, worker_id, chunk_queue, frame_to_timecode, result_queue):
+    local_cap = cv2.VideoCapture(video_path)
+    backend_name = ""
+    if local_cap is not None and local_cap.isOpened():
+        try:
+            backend_name = str(local_cap.getBackendName() or "")
+        except Exception:
+            backend_name = ""
+    processed_chunks = []
+    processed_races = []
+    while True:
+        try:
+            chunk = chunk_queue.get_nowait()
+        except queue.Empty:
+            break
+        chunk_index = int(chunk["chunk_index"])
+        chunk_tasks = list(chunk["tasks"])
+        processed_chunks.append(chunk_index)
+        processed_races.extend(int(task.get("race_number", 0) or 0) for task in chunk_tasks)
+        for task in chunk_tasks:
+            result = score_screen_selection.analyze_score_window_task(
+                task,
+                frame_to_timecode,
+                capture=local_cap if local_cap is not None and local_cap.isOpened() else None,
+            )
+            result_queue.put(
+                {
+                    "task": task,
+                    "result": result,
+                    "worker_id": worker_id,
+                    "chunk_index": chunk_index,
+                }
+            )
+    if local_cap is not None and local_cap.isOpened():
+        local_cap.release()
+    return {
+        "worker_id": int(worker_id),
+        "backend_name": backend_name,
+        "race_numbers": processed_races,
+        "chunk_indices": processed_chunks,
+        "capture_opens": 1 if processed_races else 0,
+    }
 
 
 def collect_consensus_frames(video_path, video_label, center_frame, fps, left, top, crop_width, crop_height, bundle_kind):
@@ -727,21 +900,46 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             )
             _persist_saved_result(result, revision=1)
     else:
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_map = {
+        chunk_size = 2
+        score_task_chunks = _chunk_score_tasks_contiguous(tasks, chunk_size)
+        stats["score_scheduler_strategy"] = f"chunked queue (size {chunk_size})"
+        stats["score_scheduler_worker_layouts"] = [
+            _score_worker_layout_text(chunk_index, chunk_tasks)
+            for chunk_index, chunk_tasks in enumerate(score_task_chunks)
+        ]
+        chunk_queue = queue.Queue()
+        for chunk_index, chunk_tasks in enumerate(score_task_chunks):
+            chunk_queue.put({"chunk_index": chunk_index, "tasks": chunk_tasks})
+        result_queue = queue.Queue()
+        active_worker_count = min(worker_count, len(score_task_chunks))
+        with ThreadPoolExecutor(max_workers=active_worker_count) as executor:
+            futures = [
                 executor.submit(
-                    score_screen_selection.analyze_score_window_task,
-                    task,
+                    _run_score_task_chunk_worker,
+                    video_path,
+                    worker_id,
+                    chunk_queue,
                     frame_to_timecode,
-                ): task
-                for task in tasks
-            }
+                    result_queue,
+                )
+                for worker_id in range(active_worker_count)
+            ]
             immediate_expected_players = None
-            for completed_count, future in enumerate(as_completed(future_map), start=1):
-                task = future_map[future]
-                result = future.result()
+            completed_count = 0
+            while completed_count < len(tasks):
+                try:
+                    queue_item = result_queue.get(timeout=0.1)
+                except queue.Empty:
+                    for future in futures:
+                        exception = future.exception() if future.done() else None
+                        if exception is not None:
+                            raise exception
+                    continue
+                task = queue_item["task"]
+                result = queue_item["result"]
                 _accumulate_result_stats(stats, result)
                 race_number = int(task["race_number"])
+                completed_count += 1
                 total_score_image = result.get("total_score_image")
                 immediate_visible_players = None
                 if total_score_image is not None:
@@ -780,6 +978,14 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     immediate_expected_players if race_number >= 2 else None,
                 )
                 _persist_saved_result(result, revision=1)
+            worker_summaries = [future.result() for future in futures]
+        stats["score_scheduler_capture_opens"] = sum(
+            int(summary.get("capture_opens", 0) or 0) for summary in worker_summaries
+        )
+        stats["score_scheduler_worker_backends"] = [
+            f"w{int(summary.get('worker_id', 0)) + 1}:{summary.get('backend_name') or 'unknown'}"
+            for summary in worker_summaries
+        ]
     video_io.add_timing(stats, "score_candidate_pass_s", stage_start)
 
 

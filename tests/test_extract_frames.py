@@ -82,28 +82,39 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn("seek profile: forward 3 | backward 2 | short 1 | medium 2 | long 2 | distance 450 frames", joined)
         self.assertIn("seek hotspots: total_stable_rewind 3c/2b/1l/320f", joined)
 
+    def test_partition_score_tasks_contiguous_is_deterministic(self):
+        tasks = [
+            {"race_number": 4, "frame_number": 400, "fps": 30.0},
+            {"race_number": 1, "frame_number": 100, "fps": 30.0},
+            {"race_number": 3, "frame_number": 300, "fps": 30.0},
+            {"race_number": 2, "frame_number": 200, "fps": 30.0},
+        ]
+
+        blocks = extract_frames._partition_score_tasks_contiguous(tasks, 2)
+        flattened = [int(task["race_number"]) for block in blocks for task in block]
+        self.assertEqual(flattened, [1, 2, 3, 4])
+        for block in blocks:
+            race_numbers = [int(task["race_number"]) for task in block]
+            self.assertEqual(race_numbers, sorted(race_numbers))
+
+    def test_chunk_score_tasks_contiguous_preserves_local_order(self):
+        tasks = [
+            {"race_number": 4, "frame_number": 400, "fps": 30.0},
+            {"race_number": 1, "frame_number": 100, "fps": 30.0},
+            {"race_number": 3, "frame_number": 300, "fps": 30.0},
+            {"race_number": 2, "frame_number": 200, "fps": 30.0},
+            {"race_number": 5, "frame_number": 500, "fps": 30.0},
+        ]
+
+        chunks = extract_frames._chunk_score_tasks_contiguous(tasks, 2)
+
+        self.assertEqual(
+            [[int(task["race_number"]) for task in chunk] for chunk in chunks],
+            [[1, 2], [3, 4], [5]],
+        )
+
     def test_process_score_candidates_queues_ocr_immediately_for_completed_races(self):
         callback_payloads = []
-
-        class FakeFuture:
-            def __init__(self, result):
-                self._result = result
-
-            def result(self):
-                return self._result
-
-        class FakeExecutor:
-            def __init__(self, futures_in_submit_order):
-                self._futures = list(futures_in_submit_order)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def submit(self, _fn, *_args, **_kwargs):
-                return self._futures.pop(0)
 
         def _build_result(race_number, total_visible_players):
             return {
@@ -132,19 +143,15 @@ class ExtractFramesTests(unittest.TestCase):
             2: _build_result(2, 11),
         }
 
-        def _fake_analyze(task, _frame_to_timecode):
+        def _fake_analyze(task, _frame_to_timecode, capture=None):
             return analyze_results[int(task["race_number"])]
-
-        futures = [FakeFuture(analyze_results[1]), FakeFuture(analyze_results[2])]
 
         with mock.patch.object(extract_frames.score_screen_selection, "analyze_score_window_task", side_effect=_fake_analyze), \
              mock.patch.object(extract_frames.score_screen_selection, "refine_race_score_result_for_expected_players", side_effect=lambda result, _expected_players: result), \
              mock.patch.object(extract_frames.score_screen_selection, "expand_race_score_consensus_window", side_effect=lambda result, _expected_players: result), \
              mock.patch.object(extract_frames.score_screen_selection, "is_static_gallery_race_bundle", return_value=(False, None)), \
              mock.patch.object(extract_frames.score_screen_selection, "save_score_frames", return_value=True), \
-             mock.patch.object(extract_frames.video_io, "add_timing", return_value=None), \
-             mock.patch.object(extract_frames, "ThreadPoolExecutor", return_value=FakeExecutor(futures)), \
-             mock.patch.object(extract_frames, "as_completed", return_value=[futures[1], futures[0]]):
+             mock.patch.object(extract_frames.video_io, "add_timing", return_value=None):
             extract_frames.process_score_candidates(
                 video_path="Input_Videos/demo.mkv",
                 video_label="demo",
@@ -165,14 +172,14 @@ class ExtractFramesTests(unittest.TestCase):
                 stats=defaultdict(float),
                 metadata_writer=mock.Mock(),
                 per_race_complete_callback=lambda payload: callback_payloads.append(dict(payload)),
-                analysis_workers_override=2,
+                analysis_workers_override=1,
             )
 
         self.assertEqual(
             callback_payloads,
             [
-                {"video_label": "demo", "race_number": 2, "ocr_revision": 1},
                 {"video_label": "demo", "race_number": 1, "ocr_revision": 1},
+                {"video_label": "demo", "race_number": 2, "ocr_revision": 1},
             ],
         )
 

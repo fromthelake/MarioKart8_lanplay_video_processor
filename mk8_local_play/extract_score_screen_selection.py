@@ -669,7 +669,7 @@ def expand_race_score_consensus_window(result, minimum_expected_players):
     return result
 
 
-def analyze_score_window_task(task, frame_to_timecode):
+def analyze_score_window_task(task, frame_to_timecode, capture=None):
     """Analyze one score candidate window and decide which frames to export."""
     video_path = task["video_path"]
     frame_number = task["frame_number"]
@@ -696,8 +696,9 @@ def analyze_score_window_task(task, frame_to_timecode):
     from collections import defaultdict
 
     stats = defaultdict(float)
-    local_cap = cv2.VideoCapture(video_path)
-    if not local_cap.isOpened():
+    owned_capture = capture is None
+    local_cap = capture if capture is not None else cv2.VideoCapture(video_path)
+    if local_cap is None or not local_cap.isOpened():
         return {"candidate": task, "race_score_frame": 0, "total_score_frame": 0, "debug_rows": [], "stats": stats}
 
     coarse_search_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
@@ -741,7 +742,8 @@ def analyze_score_window_task(task, frame_to_timecode):
                         timecode,
                     ]
                 )
-                local_cap.release()
+                if owned_capture:
+                    local_cap.release()
                 return {
                     "candidate": task,
                     "race_score_frame": 0,
@@ -973,7 +975,8 @@ def analyze_score_window_task(task, frame_to_timecode):
         )
         add_timing(stats, "output_frame_capture_s", export_stage_start)
 
-    local_cap.release()
+    if owned_capture:
+        local_cap.release()
     return {
         "candidate": task,
         "race_score_frame": race_score_frame,
