@@ -490,6 +490,20 @@ def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, 
     return None
 
 
+def _captured_frames_cover_range(captured_frames, start_frame, end_frame):
+    """Return True when existing captured frames already span an inclusive target range."""
+    if not captured_frames:
+        return False
+    frame_numbers = sorted(
+        int(frame_number)
+        for frame_number, _frame_image in captured_frames
+        if frame_number is not None
+    )
+    if not frame_numbers:
+        return False
+    return frame_numbers[0] <= int(start_frame) and frame_numbers[-1] >= int(end_frame)
+
+
 def count_visible_position_rows(frame_image, score_layout_id=None):
     return _count_visible_rows_from_position_metrics(_position_metrics_for_frame(frame_image, score_layout_id=score_layout_id))
 
@@ -552,6 +566,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
                 top,
                 crop_width,
                 crop_height,
+                stats=stats,
             )
         if not should_search:
             return result
@@ -587,6 +602,7 @@ def refine_race_score_result_for_expected_players(result, expected_players):
                 top,
                 crop_width,
                 crop_height,
+                stats=stats,
             )
             break
     finally:
@@ -611,7 +627,18 @@ def expand_race_score_consensus_window(result, minimum_expected_players):
     crop_height = candidate.get('crop_height')
     consensus_frame_count = int(candidate.get('ocr_consensus_frames', 0) or 0)
     video_path = candidate.get('video_path')
+    stats = defaultdict(float, result.get('stats') or {})
+    result['stats'] = stats
     if not video_path or any(value is None for value in (left, top, crop_width, crop_height)):
+        return result
+
+    expanded_start_frame = max(0, int(actual_race_score_frame) - RACE_SCORE_EARLY_EXPANSION_FRAMES)
+    expanded_end_frame = int(actual_race_score_frame) + RACE_SCORE_LATE_EXPANSION_FRAMES
+    if _captured_frames_cover_range(
+        result.get('race_consensus_frames', []),
+        expanded_start_frame,
+        expanded_end_frame,
+    ):
         return result
 
     local_cap = cv2.VideoCapture(video_path)
@@ -619,8 +646,6 @@ def expand_race_score_consensus_window(result, minimum_expected_players):
         return result
 
     try:
-        expanded_start_frame = max(0, int(actual_race_score_frame) - RACE_SCORE_EARLY_EXPANSION_FRAMES)
-        expanded_end_frame = int(actual_race_score_frame) + RACE_SCORE_LATE_EXPANSION_FRAMES
         result['race_consensus_frames'] = collect_frame_range_from_capture(
             local_cap,
             expanded_start_frame,
@@ -629,6 +654,7 @@ def expand_race_score_consensus_window(result, minimum_expected_players):
             top,
             crop_width,
             crop_height,
+            stats=stats,
         )
     finally:
         local_cap.release()
@@ -894,14 +920,14 @@ def analyze_score_window_task(task, frame_to_timecode):
         )
         if actual_race_score_frame is not None:
             race_consensus_frames = collect_consensus_frames_from_capture(
-                local_cap, actual_race_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"]
+                local_cap, actual_race_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"], stats=stats
             )
         actual_total_score_frame, total_score_image = capture_export_frame(
             local_cap, total_score_frame, left, top, crop_width, crop_height, scale_x, scale_y, stats
         )
         if actual_total_score_frame is not None:
             total_consensus_frames = collect_consensus_frames_from_capture(
-                local_cap, actual_total_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"]
+                local_cap, actual_total_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"], stats=stats
             )
         if selected_points_anchor_frame is not None:
             actual_points_anchor_frame, points_anchor_image = capture_export_frame(
@@ -916,6 +942,7 @@ def analyze_score_window_task(task, frame_to_timecode):
                     top,
                     crop_width,
                     crop_height,
+                    stats=stats,
                 )
         add_timing(stats, "output_frame_capture_s", export_stage_start)
 
@@ -940,16 +967,27 @@ def analyze_score_window_task(task, frame_to_timecode):
     }
 
 
-def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop_width, crop_height, consensus_frame_count):
+def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop_width, crop_height, consensus_frame_count, stats=None):
     """Collect neighbouring upscaled frames for OCR voting from an open capture."""
     radius = max(0, consensus_frame_count // 2)
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     bundled_frames = []
     start_frame = max(0, center_frame - radius)
     end_frame = min(total_frames, center_frame + radius + 1)
-    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    if stats is None:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    else:
+        position_capture_for_read(
+            capture,
+            start_frame,
+            stats,
+            max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+        )
     for _frame_number in range(start_frame, end_frame):
-        ret, frame = capture.read()
+        if stats is None:
+            ret, frame = capture.read()
+        else:
+            ret, frame = read_video_frame(capture, stats)
         if not ret:
             continue
         bundled_frames.append(
@@ -961,7 +999,7 @@ def collect_consensus_frames_from_capture(capture, center_frame, left, top, crop
     return bundled_frames
 
 
-def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top, crop_width, crop_height):
+def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top, crop_width, crop_height, stats=None):
     """Collect a specific inclusive frame range as OCR inputs."""
     total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
     bundled_frames = []
@@ -969,9 +1007,20 @@ def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top,
     end_frame = min(total_frames - 1, int(end_frame))
     if end_frame < start_frame:
         return bundled_frames
-    capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    if stats is None:
+        capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    else:
+        position_capture_for_read(
+            capture,
+            start_frame,
+            stats,
+            max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+        )
     for _frame_number in range(start_frame, end_frame + 1):
-        ret, frame = capture.read()
+        if stats is None:
+            ret, frame = capture.read()
+        else:
+            ret, frame = read_video_frame(capture, stats)
         if not ret:
             continue
         bundled_frames.append(

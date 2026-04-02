@@ -79,6 +79,69 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
 
         self.assertEqual(expanded["race_consensus_frames"], ["keep"])
 
+    def test_expand_race_score_consensus_window_skips_recapture_when_range_already_covered(self):
+        result = {
+            "twelfth_template_detected": True,
+            "candidate": {
+                "video_path": "dummy.mp4",
+                "left": 0,
+                "top": 0,
+                "crop_width": 10,
+                "crop_height": 10,
+                "ocr_consensus_frames": 7,
+            },
+            "actual_race_score_frame": 100,
+            "race_consensus_frames": [(93, "a"), (100, "b"), (106, "c")],
+            "stats": defaultdict(float),
+        }
+
+        with (
+            mock.patch.object(extract_score_screen_selection.cv2, "VideoCapture") as cap_mock,
+            mock.patch.object(extract_score_screen_selection, "collect_frame_range_from_capture") as collect_mock,
+        ):
+            expanded = extract_score_screen_selection.expand_race_score_consensus_window(result, 12)
+
+        self.assertEqual(expanded["race_consensus_frames"], [(93, "a"), (100, "b"), (106, "c")])
+        cap_mock.assert_not_called()
+        collect_mock.assert_not_called()
+
+    def test_collect_frame_range_from_capture_uses_position_helper_when_stats_supplied(self):
+        capture = mock.Mock()
+        capture.get.return_value = 200
+        stats = defaultdict(float)
+
+        with (
+            mock.patch.object(extract_score_screen_selection, "position_capture_for_read") as position_mock,
+            mock.patch.object(
+                extract_score_screen_selection,
+                "read_video_frame",
+                side_effect=[(True, np.zeros((10, 10, 3), dtype=np.uint8))] * 3,
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "crop_and_upscale_image",
+                return_value=np.zeros((10, 10, 3), dtype=np.uint8),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "actual_frame_after_read",
+                side_effect=[10, 11, 12],
+            ),
+        ):
+            frames = extract_score_screen_selection.collect_frame_range_from_capture(
+                capture,
+                10,
+                12,
+                0,
+                0,
+                10,
+                10,
+                stats=stats,
+            )
+
+        self.assertEqual([frame_number for frame_number, _image in frames], [10, 11, 12])
+        position_mock.assert_called_once()
+
     def test_find_points_transition_frame_uses_multi_row_transition_and_centers_on_transition(self):
         capture = mock.Mock()
         stats = defaultdict(float)
@@ -146,6 +209,7 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
         with (
             mock.patch.object(extract_score_screen_selection, "fps_scaled_frames", return_value=3),
             mock.patch.object(extract_score_screen_selection, "seek_to_frame") as seek_mock,
+            mock.patch.object(extract_score_screen_selection, "position_capture_for_read") as position_mock,
             mock.patch.object(
                 extract_score_screen_selection,
                 "read_video_frame",
@@ -176,8 +240,10 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
 
         self.assertEqual(stable_frame, 104)
         seek_targets = [call.args[1] for call in seek_mock.call_args_list]
-        self.assertIn(110, seek_targets)
         self.assertIn(100, seek_targets)
+        position_targets = [call.args[1] for call in position_mock.call_args_list]
+        self.assertIn(100, position_targets)
+        self.assertIn(110, position_targets)
 
     def test_analyze_score_window_task_rejects_ignore_candidate_early(self):
         task = {
