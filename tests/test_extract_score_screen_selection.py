@@ -332,6 +332,99 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
         self.assertEqual(result.get("ignore_label"), "IgnoreAlbumGallery")
         gate_mock.assert_not_called()
 
+    def test_analyze_score_window_task_precomputes_total_score_visible_players(self):
+        task = {
+            "video_path": "dummy.mp4",
+            "frame_number": 100,
+            "fps": 30.0,
+            "templates": [(np.zeros((5, 5), dtype=np.uint8), None)] * 9,
+            "left": 0,
+            "top": 0,
+            "crop_width": 10,
+            "crop_height": 10,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "score_layout_id": "lan2_split_2p",
+            "ocr_consensus_frames": 7,
+            "race_number": 1,
+        }
+        capture = mock.Mock()
+        capture.isOpened.return_value = True
+        capture.get.return_value = 1000
+        total_score_image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        with (
+            mock.patch.object(extract_score_screen_selection.cv2, "VideoCapture", return_value=capture),
+            mock.patch.object(extract_score_screen_selection, "position_capture_for_read"),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "read_video_frame",
+                return_value=(True, np.zeros((10, 10, 3), dtype=np.uint8)),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "crop_and_upscale_image",
+                return_value=np.zeros((720, 1280, 3), dtype=np.uint8),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_match_ignore_frame_target_detail",
+                return_value={
+                    "label": "",
+                    "max_val": 0.0,
+                    "match_threshold": 0.62,
+                    "rejected_as_blank": True,
+                },
+            ),
+            mock.patch.object(extract_score_screen_selection, "_fast_prefix_gate_score", return_value=True),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_raw_fixed_grid_prefix_confirm",
+                return_value=(True, 0.91),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_find_points_transition_frame",
+                return_value=(150, 148),
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "_find_total_score_stable_frame",
+                return_value=200,
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "capture_export_frame",
+                side_effect=[
+                    (121, np.zeros((720, 1280, 3), dtype=np.uint8)),
+                    (200, total_score_image),
+                    (148, np.zeros((720, 1280, 3), dtype=np.uint8)),
+                ],
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "collect_consensus_frames_from_capture",
+                return_value=[],
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "collect_frame_range_from_capture",
+                return_value=[],
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
+                "count_visible_position_rows",
+                return_value=11,
+            ) as count_mock,
+        ):
+            result = extract_score_screen_selection.analyze_score_window_task(
+                task,
+                lambda frame_number, fps: "00:00:00",
+            )
+
+        self.assertEqual(result["total_score_visible_players"], 11)
+        count_mock.assert_called_once_with(total_score_image, "lan2_split_2p")
+
 
 if __name__ == "__main__":
     unittest.main()

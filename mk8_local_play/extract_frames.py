@@ -542,10 +542,12 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         total_score_image = result.get("total_score_image")
         if total_score_image is not None:
             row_count_stage_start = time.perf_counter()
-            previous_total_score_players = score_screen_selection.count_visible_position_rows(
-                total_score_image,
-                result["candidate"].get("score_layout_id"),
-            )
+            previous_total_score_players = result.get("total_score_visible_players")
+            if previous_total_score_players is None:
+                previous_total_score_players = score_screen_selection.count_visible_position_rows(
+                    total_score_image,
+                    result["candidate"].get("score_layout_id"),
+                )
             video_io.add_timing(stats, "score_flush_row_count_s", row_count_stage_start)
 
     if worker_count == 1:

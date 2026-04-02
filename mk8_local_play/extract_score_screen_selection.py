@@ -907,6 +907,7 @@ def analyze_score_window_task(task, frame_to_timecode):
 
     race_score_image = None
     total_score_image = None
+    total_score_visible_players = None
     actual_race_score_frame = None
     actual_total_score_frame = None
     actual_points_anchor_frame = None
@@ -929,6 +930,10 @@ def analyze_score_window_task(task, frame_to_timecode):
         if actual_total_score_frame is not None:
             total_consensus_frames = collect_consensus_frames_from_capture(
                 local_cap, actual_total_score_frame, left, top, crop_width, crop_height, task["ocr_consensus_frames"], stats=stats
+            )
+            total_score_visible_players = count_visible_position_rows(
+                total_score_image,
+                task.get("score_layout_id"),
             )
         if selected_points_anchor_frame is not None:
             actual_points_anchor_frame, points_anchor_image = capture_export_frame(
@@ -956,6 +961,7 @@ def analyze_score_window_task(task, frame_to_timecode):
         "actual_total_score_frame": actual_total_score_frame,
         "race_score_image": race_score_image,
         "total_score_image": total_score_image,
+        "total_score_visible_players": total_score_visible_players,
         "race_consensus_frames": race_consensus_frames,
         "total_consensus_frames": total_consensus_frames,
         "selected_points_anchor_frame": selected_points_anchor_frame,
