@@ -769,13 +769,14 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
             return
         video_label = str(job["video_label"])
         race_id = int(job["race_id"])
+        ocr_revision = max(1, int(job.get("ocr_revision", 1) or 1))
         grouped_item = job["grouped_item"]
         try:
             append_ocr_trace_event(
                 "scheduler_events.jsonl",
-                {"event": "race_worker_start", "video_label": video_label, "race_id": race_id},
+                {"event": "race_worker_start", "video_label": video_label, "race_id": race_id, "ocr_revision": ocr_revision},
             )
-            progress_queue.put({"event": "race_start", "video_label": video_label, "race_id": race_id})
+            progress_queue.put({"event": "race_start", "video_label": video_label, "race_id": race_id, "ocr_revision": ocr_revision})
             metadata_index = extract_text.load_exported_frame_metadata(base_dir)
             race_result = extract_text.process_race_group(
                 grouped_item,
@@ -789,6 +790,7 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
                     "event": "race_result",
                     "video_label": video_label,
                     "race_id": race_id,
+                    "ocr_revision": ocr_revision,
                     "race_result": race_result,
                 }
             )
@@ -798,6 +800,7 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
                     "event": "race_worker_result",
                     "video_label": video_label,
                     "race_id": race_id,
+                    "ocr_revision": ocr_revision,
                     "duration_s": float(race_result.get("duration_s", 0.0)),
                     "row_count": len(race_result.get("rows", [])),
                 },
@@ -805,13 +808,14 @@ def _overlap_ocr_race_process_worker(job_queue, result_queue, progress_queue) ->
         except BaseException as exc:
             append_ocr_trace_event(
                 "scheduler_events.jsonl",
-                {"event": "race_worker_error", "video_label": video_label, "race_id": race_id, "error": repr(exc)},
+                {"event": "race_worker_error", "video_label": video_label, "race_id": race_id, "ocr_revision": ocr_revision, "error": repr(exc)},
             )
             result_queue.put(
                 {
                     "event": "error",
                     "video_label": video_label,
                     "race_id": race_id,
+                    "ocr_revision": ocr_revision,
                     "error": repr(exc),
                 }
             )
@@ -924,7 +928,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
         video_expected_races = {}
         video_extraction_complete = set()
-        video_race_results = defaultdict(list)
+        video_expected_race_ids = defaultdict(set)
+        video_expected_race_revisions = defaultdict(dict)
+        video_completed_race_revisions = defaultdict(dict)
+        video_race_results = defaultdict(dict)
         video_race_durations = defaultdict(float)
         finalized_videos = set()
         finalizing_videos = set()
@@ -948,9 +955,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             finalized = extract_text.finalize_ocr_results(
                 [
                     row
-                    for item in sorted(
-                        video_race_results[video_label],
-                        key=lambda value: int((value.get('summary') or {}).get('race_id_number', 0) or 0),
+                    for _race_id, item in sorted(
+                        video_race_results[video_label].items(),
+                        key=lambda value: int(value[0]),
                     )
                     for row in item.get("rows", [])
                 ],
@@ -1017,9 +1024,13 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 return
             if video_label not in video_extraction_complete:
                 return
-            completed = len(video_race_results[video_label])
-            total = max(1, int(video_expected_races.get(video_label, completed)))
-            if completed < total:
+            expected_race_ids = set(video_expected_race_ids.get(video_label, set()))
+            expected_revisions = dict(video_expected_race_revisions.get(video_label, {}))
+            completed_revisions = dict(video_completed_race_revisions.get(video_label, {}))
+            total = max(1, int(video_expected_races.get(video_label, len(expected_race_ids))))
+            if not expected_race_ids:
+                return
+            if any(int(completed_revisions.get(race_id, 0)) < int(expected_revisions.get(race_id, 1)) for race_id in expected_race_ids):
                 return
 
             finalizing_videos.add(video_label)
@@ -1095,23 +1106,40 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     continue
 
                 video_label = str(message["video_label"])
+                race_id = int(message.get("race_id") or 0)
+                ocr_revision = int(message.get("ocr_revision") or 1)
                 with race_overlap_lock:
                     if active_races_by_video.get(video_label, 0) > 0:
                         active_races_by_video[video_label] -= 1
                 race_result = dict(message["race_result"])
-                video_race_results[video_label].append(race_result)
                 video_race_durations[video_label] += float(race_result.get("duration_s", 0.0))
-                completed = len(video_race_results[video_label])
-                total = max(1, int(video_expected_races.get(video_label, completed)))
+                expected_revisions = video_expected_race_revisions[video_label]
+                completed_revisions = video_completed_race_revisions[video_label]
+                expected_revision = int(expected_revisions.get(race_id, 1))
+                if ocr_revision >= expected_revision:
+                    current_completed_revision = int(completed_revisions.get(race_id, 0))
+                    if ocr_revision >= current_completed_revision:
+                        video_race_results[video_label][race_id] = race_result
+                        completed_revisions[race_id] = ocr_revision
+                expected_race_ids = set(video_expected_race_ids.get(video_label, set()))
+                if race_id not in expected_race_ids:
+                    expected_race_ids.add(race_id)
+                    video_expected_race_ids[video_label] = expected_race_ids
+                completed = sum(
+                    1
+                    for expected_race_id in expected_race_ids
+                    if int(completed_revisions.get(expected_race_id, 0)) >= int(expected_revisions.get(expected_race_id, 1))
+                )
+                total = max(1, int(video_expected_races.get(video_label, len(expected_race_ids) or completed)))
                 queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
                 race_summary = race_result.get("summary") or {}
                 progress_event = {
                     "event": "progress",
                     "completed": completed,
                     "total": total,
-                    "elapsed_s": sum(float(item.get("duration_s", 0.0)) for item in video_race_results[video_label]),
+                    "elapsed_s": sum(float(item.get("duration_s", 0.0)) for item in video_race_results[video_label].values()),
                     "video_label": video_label,
-                    "race_id": int(message.get("race_id") or 0),
+                    "race_id": race_id,
                     "track_name": race_summary.get("track_name"),
                     "race_score_players": race_summary.get("race_score_players"),
                     "total_score_players": race_summary.get("total_score_players"),
@@ -1123,7 +1151,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 record_ocr_progress(video_label, progress_event)
                 LOGGER.log(
                     "[Run - Overlap]",
-                    _format_overlap_complete_race(video_label, int(message.get("race_id") or 0))
+                    _format_overlap_complete_race(video_label, race_id)
                     + " | "
                     + _format_overlap_queue_status(
                         video_label,
@@ -1154,6 +1182,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     ocr_start_time_holder["value"] = time.time()
             video_label = str(race_payload["video_label"])
             race_number = int(race_payload["race_number"])
+            ocr_revision = max(1, int(race_payload.get("ocr_revision", 1) or 1))
             grouped_item = extract_text.build_grouped_race_item(
                 str(FRAMES_DIR),
                 video_label,
@@ -1170,12 +1199,16 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     "event": "race_queued",
                     "video_label": video_label,
                     "race_id": race_number,
+                    "ocr_revision": ocr_revision,
                     "source": "extract_complete_callback",
                 },
             )
             record_ocr_queued(video_label)
             with race_overlap_lock:
                 queued_races_by_video[video_label] += 1
+            video_expected_race_ids[video_label].add(race_number)
+            previous_revision = int(video_expected_race_revisions[video_label].get(race_number, 0))
+            video_expected_race_revisions[video_label][race_number] = max(previous_revision, ocr_revision)
             queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
             LOGGER.log(
                 "[Run - Overlap]",
@@ -1192,6 +1225,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 {
                     "video_label": video_label,
                     "race_id": race_number,
+                    "ocr_revision": ocr_revision,
                     "grouped_item": grouped_item,
                 }
             )
@@ -1204,7 +1238,11 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             )
             video_extraction_complete.add(video_label)
             video_expected_races[video_label] = len(grouped_items)
-            video_expected_races[str(video_payload["video_label"])] = len(grouped_items)
+            video_expected_race_ids[video_label] = {
+                int(race_id_number)
+                for (race_class, race_id_number), _images in grouped_items
+                if str(race_class) == video_label
+            }
             LOGGER.log(
                 "[Run - Overlap]",
                 _format_overlap_extraction_complete(video_label, len(grouped_items)),

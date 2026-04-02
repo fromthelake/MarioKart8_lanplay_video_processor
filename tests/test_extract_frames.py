@@ -82,6 +82,100 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn("seek profile: forward 3 | backward 2 | short 1 | medium 2 | long 2 | distance 450 frames", joined)
         self.assertIn("seek hotspots: total_stable_rewind 3c/2b/1l/320f", joined)
 
+    def test_process_score_candidates_queues_ocr_immediately_for_completed_races(self):
+        callback_payloads = []
+
+        class FakeFuture:
+            def __init__(self, result):
+                self._result = result
+
+            def result(self):
+                return self._result
+
+        class FakeExecutor:
+            def __init__(self, futures_in_submit_order):
+                self._futures = list(futures_in_submit_order)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, _fn, *_args, **_kwargs):
+                return self._futures.pop(0)
+
+        def _build_result(race_number, total_visible_players):
+            return {
+                "candidate": {
+                    "race_number": race_number,
+                    "score_layout_id": "lan",
+                },
+                "race_score_frame": 100 + race_number,
+                "total_score_frame": 200 + race_number,
+                "actual_race_score_frame": 100 + race_number,
+                "actual_total_score_frame": 200 + race_number,
+                "actual_points_anchor_frame": 300 + race_number,
+                "race_score_image": object(),
+                "total_score_image": object(),
+                "race_consensus_frames": [(100 + race_number, object())],
+                "total_consensus_frames": [(200 + race_number, object())],
+                "points_context_frames": [(300 + race_number, object())],
+                "total_score_visible_players": total_visible_players,
+                "twelfth_template_detected": False,
+                "debug_rows": [],
+                "stats": defaultdict(float),
+            }
+
+        analyze_results = {
+            1: _build_result(1, 12),
+            2: _build_result(2, 11),
+        }
+
+        def _fake_analyze(task, _frame_to_timecode):
+            return analyze_results[int(task["race_number"])]
+
+        futures = [FakeFuture(analyze_results[1]), FakeFuture(analyze_results[2])]
+
+        with mock.patch.object(extract_frames.score_screen_selection, "analyze_score_window_task", side_effect=_fake_analyze), \
+             mock.patch.object(extract_frames.score_screen_selection, "refine_race_score_result_for_expected_players", side_effect=lambda result, _expected_players: result), \
+             mock.patch.object(extract_frames.score_screen_selection, "expand_race_score_consensus_window", side_effect=lambda result, _expected_players: result), \
+             mock.patch.object(extract_frames.score_screen_selection, "is_static_gallery_race_bundle", return_value=(False, None)), \
+             mock.patch.object(extract_frames.score_screen_selection, "save_score_frames", return_value=True), \
+             mock.patch.object(extract_frames.video_io, "add_timing", return_value=None), \
+             mock.patch.object(extract_frames, "ThreadPoolExecutor", return_value=FakeExecutor(futures)), \
+             mock.patch.object(extract_frames, "as_completed", return_value=[futures[1], futures[0]]):
+            extract_frames.process_score_candidates(
+                video_path="Input_Videos/demo.mkv",
+                video_label="demo",
+                video_source_path="2026-03-28/demo.mkv",
+                score_candidates=[
+                    {"race_number": 1, "frame_number": 100},
+                    {"race_number": 2, "frame_number": 200},
+                ],
+                templates=[],
+                fps=30.0,
+                csv_writer=mock.Mock(),
+                scale_x=1.0,
+                scale_y=1.0,
+                left=0,
+                top=0,
+                crop_width=1280,
+                crop_height=720,
+                stats=defaultdict(float),
+                metadata_writer=mock.Mock(),
+                per_race_complete_callback=lambda payload: callback_payloads.append(dict(payload)),
+                analysis_workers_override=2,
+            )
+
+        self.assertEqual(
+            callback_payloads,
+            [
+                {"video_label": "demo", "race_number": 2, "ocr_revision": 1},
+                {"video_label": "demo", "race_number": 1, "ocr_revision": 1},
+            ],
+        )
+
     def test_prepare_video_context_uses_preflight_usable_total_frames_without_repair(self):
         class FakeCapture:
             def __init__(self, frame_count=207459, fps=30.0):
