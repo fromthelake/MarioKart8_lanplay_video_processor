@@ -22,8 +22,8 @@ class ExtractFramesTests(unittest.TestCase):
         stats["score_same_run_ocr_unique_frames_total"] = 6
         stats["score_persisted_ocr_frames_total"] = 8
         stats["score_persisted_ocr_unique_frames_total"] = 8
-        stats["score_capture_frames_not_used_same_run_total"] = 3
-        stats["score_capture_not_used_same_run_source_seconds_total"] = 0.1
+        stats["score_capture_frames_outside_same_run_cache_total"] = 3
+        stats["score_capture_outside_same_run_cache_source_seconds_total"] = 0.1
 
         with mock.patch.object(extract_frames.LOGGER, "summary_block") as summary_mock:
             extract_frames.print_extract_profiler_summary("demo.mp4", stats)
@@ -34,6 +34,7 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn("score capture overlap: 3 duplicate frame reads (0.10s source)", joined)
         self.assertIn("same-run OCR frame inputs: 6 (6 unique)", joined)
         self.assertIn("persisted rerun OCR frame inputs: 8 (8 unique)", joined)
+        self.assertIn("captured frames outside same-run in-memory OCR cache: 3 (0.10s source)", joined)
 
     def test_prepare_video_context_uses_preflight_usable_total_frames_without_repair(self):
         class FakeCapture:

@@ -1114,12 +1114,12 @@ def _record_score_capture_usage(
     increment_counter(stats, "score_persisted_ocr_frames_total", len(persisted_ocr_frames))
     increment_counter(stats, "score_persisted_ocr_unique_frames_total", len(persisted_ocr_unique_frames))
 
-    capture_only_frames = unique_capture_frames - same_run_ocr_unique_frames
-    increment_counter(stats, "score_capture_frames_not_used_same_run_total", len(capture_only_frames))
+    capture_outside_same_run_cache_frames = unique_capture_frames - same_run_ocr_unique_frames
+    increment_counter(stats, "score_capture_frames_outside_same_run_cache_total", len(capture_outside_same_run_cache_frames))
 
     fps_value = max(float(fps or 0.0), 1.0)
     stats["score_capture_duplicate_source_seconds_total"] += duplicate_capture_frames / fps_value
-    stats["score_capture_not_used_same_run_source_seconds_total"] += len(capture_only_frames) / fps_value
+    stats["score_capture_outside_same_run_cache_source_seconds_total"] += len(capture_outside_same_run_cache_frames) / fps_value
 
 
 def _write_export_image_tracked(path, image, stats=None):

@@ -164,9 +164,9 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
         self.assertEqual(int(stats["score_same_run_ocr_unique_frames_total"]), 6)
         self.assertEqual(int(stats["score_persisted_ocr_frames_total"]), 8)
         self.assertEqual(int(stats["score_persisted_ocr_unique_frames_total"]), 7)
-        self.assertEqual(int(stats["score_capture_frames_not_used_same_run_total"]), 3)
+        self.assertEqual(int(stats["score_capture_frames_outside_same_run_cache_total"]), 3)
         self.assertAlmostEqual(float(stats["score_capture_duplicate_source_seconds_total"]), 0.1, places=6)
-        self.assertAlmostEqual(float(stats["score_capture_not_used_same_run_source_seconds_total"]), 0.1, places=6)
+        self.assertAlmostEqual(float(stats["score_capture_outside_same_run_cache_source_seconds_total"]), 0.1, places=6)
 
     def test_remove_legacy_bundle_files_skips_glob_when_bundle_is_new(self):
         bundle_dir = mock.Mock(spec=Path)

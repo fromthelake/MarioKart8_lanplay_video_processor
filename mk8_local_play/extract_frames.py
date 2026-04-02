@@ -422,11 +422,11 @@ def print_extract_profiler_summary(video_name, stats):
             f"{int(stats.get('score_persisted_ocr_frames_total', 0)):,} "
             f"({int(stats.get('score_persisted_ocr_unique_frames_total', 0)):,} unique)"
         )
-    if int(stats.get("score_capture_frames_not_used_same_run_total", 0)) > 0:
+    if int(stats.get("score_capture_frames_outside_same_run_cache_total", 0)) > 0:
         extra_lines.append(
-            f"captured frames not used by same-run OCR: "
-            f"{int(stats.get('score_capture_frames_not_used_same_run_total', 0)):,} "
-            f"({float(stats.get('score_capture_not_used_same_run_source_seconds_total', 0.0)):.2f}s source)"
+            f"captured frames outside same-run in-memory OCR cache: "
+            f"{int(stats.get('score_capture_frames_outside_same_run_cache_total', 0)):,} "
+            f"({float(stats.get('score_capture_outside_same_run_cache_source_seconds_total', 0.0)):.2f}s source)"
         )
 
     if not lines and not extra_lines:
