@@ -143,6 +143,31 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
         self.assertEqual([frame_number for frame_number, _image in frames], [10, 11, 12])
         position_mock.assert_called_once()
 
+    def test_record_score_capture_usage_tracks_overlap_and_same_run_unused_frames(self):
+        stats = defaultdict(float)
+
+        extract_score_screen_selection._record_score_capture_usage(
+            stats,
+            fps=30.0,
+            actual_race_score_frame=100,
+            actual_total_score_frame=200,
+            actual_points_anchor_frame=300,
+            race_consensus_frames=[(99, "a"), (100, "b"), (101, "c")],
+            total_consensus_frames=[(199, "d"), (200, "e"), (201, "f")],
+            points_context_frames=[(299, "g"), (300, "h"), (301, "i")],
+        )
+
+        self.assertEqual(int(stats["score_capture_frame_events_total"]), 12)
+        self.assertEqual(int(stats["score_capture_unique_frames_total"]), 9)
+        self.assertEqual(int(stats["score_capture_duplicate_frames_total"]), 3)
+        self.assertEqual(int(stats["score_same_run_ocr_frames_total"]), 6)
+        self.assertEqual(int(stats["score_same_run_ocr_unique_frames_total"]), 6)
+        self.assertEqual(int(stats["score_persisted_ocr_frames_total"]), 8)
+        self.assertEqual(int(stats["score_persisted_ocr_unique_frames_total"]), 7)
+        self.assertEqual(int(stats["score_capture_frames_not_used_same_run_total"]), 3)
+        self.assertAlmostEqual(float(stats["score_capture_duplicate_source_seconds_total"]), 0.1, places=6)
+        self.assertAlmostEqual(float(stats["score_capture_not_used_same_run_source_seconds_total"]), 0.1, places=6)
+
     def test_remove_legacy_bundle_files_skips_glob_when_bundle_is_new(self):
         bundle_dir = mock.Mock(spec=Path)
         stats = defaultdict(float)

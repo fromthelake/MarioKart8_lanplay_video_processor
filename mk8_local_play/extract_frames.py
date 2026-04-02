@@ -384,6 +384,50 @@ def print_extract_profiler_summary(video_name, stats):
         extra_lines.append(f"drop-window checks: {int(stats.get('score_tie_aware_drop_checks', 0)):,}")
     if int(stats.get("score_save_cleanup_removed", 0)) > 0:
         extra_lines.append(f"legacy bundle files removed: {int(stats.get('score_save_cleanup_removed', 0)):,}")
+    if int(stats.get("score_capture_frame_events_total", 0)) > 0:
+        extra_lines.append(
+            f"score capture events/unique frames: "
+            f"{int(stats.get('score_capture_frame_events_total', 0)):,}/"
+            f"{int(stats.get('score_capture_unique_frames_total', 0)):,}"
+        )
+    if int(stats.get("score_capture_duplicate_frames_total", 0)) > 0:
+        extra_lines.append(
+            f"score capture overlap: "
+            f"{int(stats.get('score_capture_duplicate_frames_total', 0)):,} duplicate frame reads "
+            f"({float(stats.get('score_capture_duplicate_source_seconds_total', 0.0)):.2f}s source)"
+        )
+    if int(stats.get("score_capture_race_consensus_frames", 0)) > 0 or int(stats.get("score_capture_total_consensus_frames", 0)) > 0:
+        extra_lines.append(
+            f"captured score windows: "
+            f"race consensus {int(stats.get('score_capture_race_consensus_frames', 0)):,} | "
+            f"total consensus {int(stats.get('score_capture_total_consensus_frames', 0)):,} | "
+            f"race context {int(stats.get('score_capture_points_context_frames', 0)):,}"
+        )
+    if int(stats.get("score_capture_race_anchor_frames", 0)) > 0 or int(stats.get("score_capture_total_anchor_frames", 0)) > 0:
+        extra_lines.append(
+            f"captured score anchors: "
+            f"race {int(stats.get('score_capture_race_anchor_frames', 0)):,} | "
+            f"total {int(stats.get('score_capture_total_anchor_frames', 0)):,} | "
+            f"points {int(stats.get('score_capture_points_anchor_frames', 0)):,}"
+        )
+    if int(stats.get("score_same_run_ocr_frames_total", 0)) > 0:
+        extra_lines.append(
+            f"same-run OCR frame inputs: "
+            f"{int(stats.get('score_same_run_ocr_frames_total', 0)):,} "
+            f"({int(stats.get('score_same_run_ocr_unique_frames_total', 0)):,} unique)"
+        )
+    if int(stats.get("score_persisted_ocr_frames_total", 0)) > 0:
+        extra_lines.append(
+            f"persisted rerun OCR frame inputs: "
+            f"{int(stats.get('score_persisted_ocr_frames_total', 0)):,} "
+            f"({int(stats.get('score_persisted_ocr_unique_frames_total', 0)):,} unique)"
+        )
+    if int(stats.get("score_capture_frames_not_used_same_run_total", 0)) > 0:
+        extra_lines.append(
+            f"captured frames not used by same-run OCR: "
+            f"{int(stats.get('score_capture_frames_not_used_same_run_total', 0)):,} "
+            f"({float(stats.get('score_capture_not_used_same_run_source_seconds_total', 0.0)):.2f}s source)"
+        )
 
     if not lines and not extra_lines:
         return

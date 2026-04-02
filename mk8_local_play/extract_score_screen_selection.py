@@ -950,6 +950,16 @@ def analyze_score_window_task(task, frame_to_timecode):
                     crop_height,
                     stats=stats,
                 )
+        _record_score_capture_usage(
+            stats,
+            fps=fps,
+            actual_race_score_frame=actual_race_score_frame,
+            actual_total_score_frame=actual_total_score_frame,
+            actual_points_anchor_frame=actual_points_anchor_frame,
+            race_consensus_frames=race_consensus_frames,
+            total_consensus_frames=total_consensus_frames,
+            points_context_frames=points_context_frames,
+        )
         add_timing(stats, "output_frame_capture_s", export_stage_start)
 
     local_cap.release()
@@ -1037,6 +1047,79 @@ def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top,
             )
         )
     return bundled_frames
+
+
+def _record_score_capture_usage(
+    stats,
+    *,
+    fps,
+    actual_race_score_frame=None,
+    actual_total_score_frame=None,
+    actual_points_anchor_frame=None,
+    race_consensus_frames=None,
+    total_consensus_frames=None,
+    points_context_frames=None,
+):
+    """Record per-race capture usage so profiler output can quantify overlap and possible waste."""
+    if stats is None:
+        return
+
+    race_consensus_frames = list(race_consensus_frames or [])
+    total_consensus_frames = list(total_consensus_frames or [])
+    points_context_frames = list(points_context_frames or [])
+
+    race_consensus_numbers = [int(frame_number) for frame_number, _image in race_consensus_frames]
+    total_consensus_numbers = [int(frame_number) for frame_number, _image in total_consensus_frames]
+    points_context_numbers = [int(frame_number) for frame_number, _image in points_context_frames]
+
+    capture_events = []
+    if actual_race_score_frame is not None:
+        capture_events.append(int(actual_race_score_frame))
+        increment_counter(stats, "score_capture_race_anchor_frames")
+    if actual_total_score_frame is not None:
+        capture_events.append(int(actual_total_score_frame))
+        increment_counter(stats, "score_capture_total_anchor_frames")
+    if actual_points_anchor_frame is not None:
+        capture_events.append(int(actual_points_anchor_frame))
+        increment_counter(stats, "score_capture_points_anchor_frames")
+
+    capture_events.extend(race_consensus_numbers)
+    capture_events.extend(total_consensus_numbers)
+    capture_events.extend(points_context_numbers)
+
+    increment_counter(stats, "score_capture_race_consensus_frames", len(race_consensus_numbers))
+    increment_counter(stats, "score_capture_total_consensus_frames", len(total_consensus_numbers))
+    increment_counter(stats, "score_capture_points_context_frames", len(points_context_numbers))
+
+    unique_capture_frames = set(capture_events)
+    duplicate_capture_frames = max(0, len(capture_events) - len(unique_capture_frames))
+
+    increment_counter(stats, "score_capture_frame_events_total", len(capture_events))
+    increment_counter(stats, "score_capture_unique_frames_total", len(unique_capture_frames))
+    increment_counter(stats, "score_capture_duplicate_frames_total", duplicate_capture_frames)
+
+    same_run_ocr_frames = list(race_consensus_numbers) + list(total_consensus_numbers)
+    same_run_ocr_unique_frames = set(same_run_ocr_frames)
+    increment_counter(stats, "score_same_run_ocr_frames_total", len(same_run_ocr_frames))
+    increment_counter(stats, "score_same_run_ocr_unique_frames_total", len(same_run_ocr_unique_frames))
+
+    persisted_ocr_frames = []
+    if actual_race_score_frame is not None:
+        persisted_ocr_frames.append(int(actual_race_score_frame))
+    if actual_total_score_frame is not None:
+        persisted_ocr_frames.append(int(actual_total_score_frame))
+    persisted_ocr_frames.extend(points_context_numbers)
+    persisted_ocr_frames.extend(total_consensus_numbers)
+    persisted_ocr_unique_frames = set(persisted_ocr_frames)
+    increment_counter(stats, "score_persisted_ocr_frames_total", len(persisted_ocr_frames))
+    increment_counter(stats, "score_persisted_ocr_unique_frames_total", len(persisted_ocr_unique_frames))
+
+    capture_only_frames = unique_capture_frames - same_run_ocr_unique_frames
+    increment_counter(stats, "score_capture_frames_not_used_same_run_total", len(capture_only_frames))
+
+    fps_value = max(float(fps or 0.0), 1.0)
+    stats["score_capture_duplicate_source_seconds_total"] += duplicate_capture_frames / fps_value
+    stats["score_capture_not_used_same_run_source_seconds_total"] += len(capture_only_frames) / fps_value
 
 
 def _write_export_image_tracked(path, image, stats=None):
