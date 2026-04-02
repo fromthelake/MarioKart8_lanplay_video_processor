@@ -294,6 +294,10 @@ def print_extract_profiler_summary(video_name, stats):
         ("flush static gallery check", "score_flush_static_gallery_check_s", None),
         ("flush visible row count", "score_flush_row_count_s", None),
         ("flush debug CSV write", "score_flush_debug_write_s", None),
+        ("save image writes", "score_save_image_write_s", "score_save_image_writes"),
+        ("save cleanup", "score_save_cleanup_s", "score_save_cleanup_runs"),
+        ("save race anchor", "score_save_race_anchor_s", None),
+        ("save total anchor", "score_save_total_anchor_s", None),
         ("scan 5/6 gate", "scan_gate_s", "scan_gate_calls"),
         ("scan gate row crops", "scan_gate_position_row_crop_s", "scan_gate_position_row_crop_calls"),
         ("scan score preprocess", "scan_score_preprocess_s", "scan_score_process_image_calls"),
@@ -378,6 +382,8 @@ def print_extract_profiler_summary(video_name, stats):
         extra_lines.append(f"tie-aware metric reuses: {int(stats.get('score_tie_aware_reuse_calls', 0)):,}")
     if int(stats.get("score_tie_aware_drop_checks", 0)) > 0:
         extra_lines.append(f"drop-window checks: {int(stats.get('score_tie_aware_drop_checks', 0)):,}")
+    if int(stats.get("score_save_cleanup_removed", 0)) > 0:
+        extra_lines.append(f"legacy bundle files removed: {int(stats.get('score_save_cleanup_removed', 0)):,}")
 
     if not lines and not extra_lines:
         return
@@ -515,6 +521,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 actual_points_anchor_frame=result.get("actual_points_anchor_frame"),
                 points_anchor_image=result.get("points_anchor_image"),
                 points_context_frames=result.get("points_context_frames", []),
+                stats=stats,
             )
         save_stage_start = time.perf_counter()
         if io_lock is None:

@@ -32,6 +32,7 @@ from .extract_initial_scan import (
 from .extract_video_io import (
     actual_frame_after_read,
     add_timing,
+    increment_counter,
     log_exported_frame,
     position_capture_for_read,
     read_video_frame,
@@ -1032,15 +1033,46 @@ def collect_frame_range_from_capture(capture, start_frame, end_frame, left, top,
     return bundled_frames
 
 
+def _write_export_image_tracked(path, image, stats=None):
+    write_start = time.perf_counter()
+    output_path = write_export_image(path, image)
+    if stats is not None:
+        add_timing(stats, "score_save_image_write_s", write_start)
+        increment_counter(stats, "score_save_image_writes")
+    return output_path
+
+
+def _remove_legacy_bundle_files(bundle_dir: Path, patterns, stats=None, *, preexisting=True):
+    if not preexisting:
+        return 0
+    cleanup_start = time.perf_counter()
+    removed = 0
+    for pattern in patterns:
+        for existing_frame_path in bundle_dir.glob(pattern):
+            try:
+                existing_frame_path.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if stats is not None:
+        add_timing(stats, "score_save_cleanup_s", cleanup_start)
+        increment_counter(stats, "score_save_cleanup_removed", removed)
+        if removed > 0:
+            increment_counter(stats, "score_save_cleanup_runs")
+    return removed
+
+
 def save_score_frames(video_path, video_label, race_number, race_score_frame, total_score_frame, actual_race_score_frame,
                       actual_total_score_frame, race_score_image, total_score_image, race_consensus_frames,
                       total_consensus_frames, fps, metadata_writer, consensus_frame_cache, frame_to_timecode, *, video_source_path=None,
                       score_layout_id=None, actual_points_anchor_frame=None, points_anchor_image=None,
-                      points_context_frames=None):
+                      points_context_frames=None, stats=None):
     """Persist the chosen race-score and total-score screenshots for one race."""
     if race_score_image is None or total_score_image is None:
         return False
     score_layout = get_score_layout(score_layout_id)
+    race_bundle_dir = Path(score_bundle_dir(video_label, race_number, "2RaceScore"))
+    race_bundle_preexisting = race_bundle_dir.exists()
     frame_filename = score_bundle_anchor_path(
         video_label,
         race_number,
@@ -1048,13 +1080,16 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
         actual_race_score_frame,
         score_layout.layout_id,
     )
-    write_export_image(frame_filename, race_score_image)
-    for legacy_pattern in ("frame_*", "12point_*", "12point_frame_*"):
-        for existing_frame_path in Path(frame_filename).parent.glob(legacy_pattern):
-            try:
-                existing_frame_path.unlink()
-            except OSError:
-                pass
+    write_start = time.perf_counter()
+    frame_filename = _write_export_image_tracked(frame_filename, race_score_image, stats=stats)
+    if stats is not None:
+        add_timing(stats, "score_save_race_anchor_s", write_start)
+    _remove_legacy_bundle_files(
+        race_bundle_dir,
+        ("frame_*", "12point_*", "12point_frame_*"),
+        stats=stats,
+        preexisting=race_bundle_preexisting,
+    )
     if APP_CONFIG.write_debug_score_images:
         draw_score_layout_demo(
             race_score_image,
@@ -1082,15 +1117,14 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
     )
 
     if actual_points_anchor_frame is not None and points_context_frames:
-        for existing_race_context_path in Path(score_bundle_dir(video_label, race_number, "2RaceScore")).glob(
-            f"Race_{int(race_number):03d}_F*"
-        ):
-            try:
-                existing_race_context_path.unlink()
-            except OSError:
-                pass
+        _remove_legacy_bundle_files(
+            race_bundle_dir,
+            (f"Race_{int(race_number):03d}_F*",),
+            stats=stats,
+            preexisting=race_bundle_preexisting,
+        )
         for context_frame_number, context_frame_image in points_context_frames:
-            write_export_image(
+            _write_export_image_tracked(
                 score_bundle_race_context_path(
                     video_label,
                     race_number,
@@ -1099,8 +1133,11 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
                     score_layout.layout_id,
                 ),
                 context_frame_image,
+                stats=stats,
             )
 
+    total_bundle_dir = Path(score_bundle_dir(video_label, race_number, "3TotalScore"))
+    total_bundle_preexisting = total_bundle_dir.exists()
     frame_filename = score_bundle_anchor_path(
         video_label,
         race_number,
@@ -1108,16 +1145,21 @@ def save_score_frames(video_path, video_label, race_number, race_score_frame, to
         actual_total_score_frame,
         score_layout.layout_id,
     )
-    write_export_image(frame_filename, total_score_image)
-    for existing_frame_path in Path(frame_filename).parent.glob("frame_*"):
-        try:
-            existing_frame_path.unlink()
-        except OSError:
-            pass
+    write_start = time.perf_counter()
+    frame_filename = _write_export_image_tracked(frame_filename, total_score_image, stats=stats)
+    if stats is not None:
+        add_timing(stats, "score_save_total_anchor_s", write_start)
+    _remove_legacy_bundle_files(
+        total_bundle_dir,
+        ("frame_*",),
+        stats=stats,
+        preexisting=total_bundle_preexisting,
+    )
     for consensus_frame_number, consensus_frame_image in total_consensus_frames:
-        write_export_image(
+        _write_export_image_tracked(
             score_bundle_consensus_path(video_label, race_number, "3TotalScore", consensus_frame_number),
             consensus_frame_image,
+            stats=stats,
         )
     if APP_CONFIG.write_debug_score_images:
         draw_score_layout_demo(

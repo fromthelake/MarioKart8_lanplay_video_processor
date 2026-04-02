@@ -1,5 +1,6 @@
 import unittest
 from collections import defaultdict
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -141,6 +142,40 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
 
         self.assertEqual([frame_number for frame_number, _image in frames], [10, 11, 12])
         position_mock.assert_called_once()
+
+    def test_remove_legacy_bundle_files_skips_glob_when_bundle_is_new(self):
+        bundle_dir = mock.Mock(spec=Path)
+        stats = defaultdict(float)
+
+        removed = extract_score_screen_selection._remove_legacy_bundle_files(
+            bundle_dir,
+            ("frame_*",),
+            stats=stats,
+            preexisting=False,
+        )
+
+        self.assertEqual(removed, 0)
+        bundle_dir.glob.assert_not_called()
+
+    def test_remove_legacy_bundle_files_removes_matching_files_when_bundle_preexists(self):
+        file_a = mock.Mock()
+        file_b = mock.Mock()
+        bundle_dir = mock.Mock(spec=Path)
+        bundle_dir.glob.side_effect = [[file_a, file_b]]
+        stats = defaultdict(float)
+
+        removed = extract_score_screen_selection._remove_legacy_bundle_files(
+            bundle_dir,
+            ("frame_*",),
+            stats=stats,
+            preexisting=True,
+        )
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(file_a.unlink.call_count, 1)
+        self.assertEqual(file_b.unlink.call_count, 1)
+        self.assertEqual(int(stats["score_save_cleanup_removed"]), 2)
+        self.assertEqual(int(stats["score_save_cleanup_runs"]), 1)
 
     def test_find_points_transition_frame_uses_multi_row_transition_and_centers_on_transition(self):
         capture = mock.Mock()
