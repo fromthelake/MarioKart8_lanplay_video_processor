@@ -68,6 +68,10 @@ class ExtractFramesTests(unittest.TestCase):
         stats["seek_medium_calls"] = 2
         stats["seek_long_calls"] = 2
         stats["seek_frame_distance_total"] = 450
+        stats["seek_calls__total_stable_rewind"] = 3
+        stats["seek_backward_calls__total_stable_rewind"] = 2
+        stats["seek_long_calls__total_stable_rewind"] = 1
+        stats["seek_frame_distance_total__total_stable_rewind"] = 320
 
         with mock.patch.object(extract_frames.LOGGER, "summary_block") as summary_mock:
             extract_frames.print_extract_profiler_summary("demo.mp4", stats)
@@ -76,6 +80,7 @@ class ExtractFramesTests(unittest.TestCase):
         joined = "\n".join(summary_lines)
         self.assertIn("capture positioning: 10 calls | no-op 2 | grab-advance 3 (9 frames) | seek fallback 5", joined)
         self.assertIn("seek profile: forward 3 | backward 2 | short 1 | medium 2 | long 2 | distance 450 frames", joined)
+        self.assertIn("seek hotspots: total_stable_rewind 3c/2b/1l/320f", joined)
 
     def test_prepare_video_context_uses_preflight_usable_total_frames_without_repair(self):
         class FakeCapture:

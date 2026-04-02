@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 from contextlib import contextmanager
+import re
 
 from .console_logging import LOGGER
 from .project_paths import PROJECT_ROOT
@@ -39,7 +40,20 @@ def increment_counter(stats, key, amount=1):
     stats[key] = stats.get(key, 0) + int(amount)
 
 
-def seek_to_frame(capture, frame_number, stats):
+def _stats_label_token(label):
+    if not label:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", str(label).strip().lower()).strip("_")
+
+
+def increment_labeled_counter(stats, key_prefix, label, amount=1):
+    token = _stats_label_token(label)
+    if not token:
+        return
+    increment_counter(stats, f"{key_prefix}__{token}", amount)
+
+
+def seek_to_frame(capture, frame_number, stats, *, label=None):
     """Seek to a frame and record the seek cost."""
     current_frame = None
     try:
@@ -51,23 +65,31 @@ def seek_to_frame(capture, frame_number, stats):
         increment_counter(stats, "seek_frame_distance_total", abs(delta))
         increment_counter(stats, "seek_forward_calls", int(delta > 0))
         increment_counter(stats, "seek_backward_calls", int(delta < 0))
+        increment_labeled_counter(stats, "seek_frame_distance_total", label, abs(delta))
+        increment_labeled_counter(stats, "seek_forward_calls", label, int(delta > 0))
+        increment_labeled_counter(stats, "seek_backward_calls", label, int(delta < 0))
         if abs(delta) <= 12:
             increment_counter(stats, "seek_short_calls")
+            increment_labeled_counter(stats, "seek_short_calls", label)
         elif abs(delta) <= 120:
             increment_counter(stats, "seek_medium_calls")
+            increment_labeled_counter(stats, "seek_medium_calls", label)
         else:
             increment_counter(stats, "seek_long_calls")
+            increment_labeled_counter(stats, "seek_long_calls", label)
     start_time = time.perf_counter()
     result = capture.set(1, frame_number)
     add_timing(stats, "seek_time_s", start_time)
     increment_counter(stats, "seek_calls")
+    increment_labeled_counter(stats, "seek_calls", label)
     return result
 
 
-def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_frames=0):
+def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_frames=0, label=None):
     """Move capture to the next frame to read, preferring cheap forward grabs for short jumps."""
     target_frame = int(frame_number)
     increment_counter(stats, "position_calls")
+    increment_labeled_counter(stats, "position_calls", label)
     try:
         current_next_frame = int(capture.get(1) or 0)
     except Exception:  # pragma: no cover - native backend safety
@@ -76,8 +98,10 @@ def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_
     if current_next_frame is not None:
         delta = target_frame - current_next_frame
         increment_counter(stats, "position_frame_distance_total", abs(delta))
+        increment_labeled_counter(stats, "position_frame_distance_total", label, abs(delta))
         if current_next_frame == target_frame:
             increment_counter(stats, "position_noop_calls")
+            increment_labeled_counter(stats, "position_noop_calls", label)
             return True
         if (
             max_forward_grab_frames > 0
@@ -85,10 +109,13 @@ def position_capture_for_read(capture, frame_number, stats, *, max_forward_grab_
         ):
             increment_counter(stats, "position_forward_grab_calls")
             increment_counter(stats, "position_forward_grab_frames", int(delta))
+            increment_labeled_counter(stats, "position_forward_grab_calls", label)
+            increment_labeled_counter(stats, "position_forward_grab_frames", label, int(delta))
             return advance_frames_by_grab(capture, delta, stats)
 
     increment_counter(stats, "position_seek_fallback_calls")
-    return seek_to_frame(capture, target_frame, stats)
+    increment_labeled_counter(stats, "position_seek_fallback_calls", label)
+    return seek_to_frame(capture, target_frame, stats, label=label)
 
 
 def read_video_frame(capture, stats):

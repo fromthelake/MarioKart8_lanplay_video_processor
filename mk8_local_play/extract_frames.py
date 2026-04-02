@@ -461,6 +461,22 @@ def print_extract_profiler_summary(video_name, stats):
             f"long {int(stats.get('seek_long_calls', 0)):,} | "
             f"distance {int(stats.get('seek_frame_distance_total', 0)):,} frames"
         )
+    labeled_seek_calls = {
+        key.split("__", 1)[1]: int(value)
+        for key, value in stats.items()
+        if key.startswith("seek_calls__") and int(value) > 0
+    }
+    if labeled_seek_calls:
+        top_seek_labels = sorted(labeled_seek_calls.items(), key=lambda item: (-item[1], item[0]))[:5]
+        formatted_labels = []
+        for label, call_count in top_seek_labels:
+            backward_calls = int(stats.get(f"seek_backward_calls__{label}", 0))
+            long_calls = int(stats.get(f"seek_long_calls__{label}", 0))
+            distance = int(stats.get(f"seek_frame_distance_total__{label}", 0))
+            formatted_labels.append(
+                f"{label} {call_count}c/{backward_calls}b/{long_calls}l/{distance:,}f"
+            )
+        extra_lines.append("seek hotspots: " + " | ".join(formatted_labels))
     if int(stats.get("score_ready_results_max", 0)) > 1 or int(stats.get("score_out_of_order_results", 0)) > 0:
         extra_lines.append(
             f"parallel score result backlog: "

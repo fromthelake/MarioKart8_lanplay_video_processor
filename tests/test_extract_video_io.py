@@ -54,6 +54,25 @@ class ExtractVideoIoTests(unittest.TestCase):
         grab_mock.assert_not_called()
         self.assertEqual(seek_mock.call_count, 2)
 
+    def test_position_capture_for_read_tracks_labeled_seek_fallbacks(self):
+        class FakeCapture:
+            def get(self, _prop):
+                return 100
+
+        stats = {"seek_calls": 0, "grab_calls": 0, "seek_time_s": 0.0, "grab_time_s": 0.0}
+        with mock.patch.object(extract_video_io, "seek_to_frame", return_value=True) as seek_mock:
+            extract_video_io.position_capture_for_read(
+                FakeCapture(),
+                150,
+                stats,
+                max_forward_grab_frames=12,
+                label="total_stable_rewind",
+            )
+
+        seek_mock.assert_called_once()
+        self.assertEqual(stats["position_calls__total_stable_rewind"], 1)
+        self.assertEqual(stats["position_seek_fallback_calls__total_stable_rewind"], 1)
+
     def test_update_repair_progress_state_resets_when_progress_advances(self):
         stalled_elapsed_s, progress_seconds = extract_video_io._update_repair_progress_state(
             12.0,
