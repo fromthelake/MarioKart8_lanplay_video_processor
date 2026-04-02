@@ -122,6 +122,9 @@ class ProgressPrinter:
             "vram_used_gb": None,
             "vram_total_gb": None,
         }
+        self.sample_count = 0
+        self.cpu_percent_sum = 0.0
+        self.ram_used_gb_sum = 0.0
 
     def update(self, completed_units, detail="", force=False, value_color_token=None):
         percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
@@ -163,6 +166,11 @@ class ProgressPrinter:
         self.last_print_time = now
 
     def _update_phase_peak(self, snapshot):
+        self.sample_count += 1
+        if snapshot.cpu_percent is not None:
+            self.cpu_percent_sum += float(snapshot.cpu_percent)
+        if snapshot.ram_used_gb is not None:
+            self.ram_used_gb_sum += float(snapshot.ram_used_gb)
         for field in ("cpu_percent", "ram_used_gb", "gpu_percent", "vram_used_gb"):
             current = getattr(snapshot, field)
             peak_value = self.phase_peak[field]
@@ -175,6 +183,12 @@ class ProgressPrinter:
 
     def peak_lines(self):
         lines = []
+        if self.sample_count > 0 and self.cpu_percent_sum > 0:
+            lines.append(f"Avg CPU: {self.cpu_percent_sum / self.sample_count:.0f}%")
+        if self.sample_count > 0 and self.ram_used_gb_sum > 0 and self.phase_peak["ram_total_gb"] is not None:
+            lines.append(
+                f"Avg RAM: {self.ram_used_gb_sum / self.sample_count:.1f} / {self.phase_peak['ram_total_gb']:.1f} GB"
+            )
         if self.phase_peak["cpu_percent"] is not None:
             lines.append(f"Peak CPU: {self.phase_peak['cpu_percent']:.0f}%")
         if self.phase_peak["ram_used_gb"] is not None and self.phase_peak["ram_total_gb"] is not None:
@@ -428,6 +442,22 @@ def print_extract_profiler_summary(video_name, stats):
             f"{int(stats.get('score_capture_frames_outside_same_run_cache_total', 0)):,} "
             f"({float(stats.get('score_capture_outside_same_run_cache_source_seconds_total', 0.0)):.2f}s source)"
         )
+    if int(stats.get("score_ready_results_max", 0)) > 1 or int(stats.get("score_out_of_order_results", 0)) > 0:
+        extra_lines.append(
+            f"parallel score result backlog: "
+            f"max ready {int(stats.get('score_ready_results_max', 0)):,} | "
+            f"out-of-order completions {int(stats.get('score_out_of_order_results', 0)):,}"
+        )
+    if int(stats.get("score_flush_io_lock_acquires", 0)) > 0:
+        extra_lines.append(
+            f"flush IO lock wait: {float(stats.get('score_flush_io_lock_wait_s', 0.0)):.2f}s "
+            f"across {int(stats.get('score_flush_io_lock_acquires', 0)):,} acquires"
+        )
+    if int(stats.get("score_callback_io_lock_acquires", 0)) > 0:
+        extra_lines.append(
+            f"callback IO lock wait: {float(stats.get('score_callback_io_lock_wait_s', 0.0)):.2f}s "
+            f"across {int(stats.get('score_callback_io_lock_acquires', 0)):,} acquires"
+        )
 
     if not lines and not extra_lines:
         return
@@ -499,6 +529,15 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
     )
     previous_total_score_players = None
 
+    def _acquire_optional_io_lock():
+        if io_lock is None:
+            return None
+        lock_wait_start = time.perf_counter()
+        io_lock.acquire()
+        video_io.add_timing(stats, "score_flush_io_lock_wait_s", lock_wait_start)
+        stats["score_flush_io_lock_acquires"] += 1
+        return io_lock
+
     def flush_result(result):
         nonlocal previous_total_score_players
         race_number = int(result["candidate"].get("race_number", 0) or 0)
@@ -517,9 +556,12 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             for row in result["debug_rows"]:
                 csv_writer.writerow(row)
         else:
-            with io_lock:
+            lock_handle = _acquire_optional_io_lock()
+            try:
                 for row in result["debug_rows"]:
                     csv_writer.writerow(row)
+            finally:
+                lock_handle.release()
         video_io.add_timing(stats, "score_flush_debug_write_s", debug_write_stage_start)
         if result["race_score_frame"] <= 0 or result["total_score_frame"] <= 0:
             return
@@ -571,8 +613,11 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
         if io_lock is None:
             saved = _save_frames()
         else:
-            with io_lock:
+            lock_handle = _acquire_optional_io_lock()
+            try:
                 saved = _save_frames()
+            finally:
+                lock_handle.release()
         video_io.add_timing(stats, "score_flush_save_frames_s", save_stage_start)
         if saved and per_race_complete_callback is not None:
             callback_stage_start = time.perf_counter()
@@ -633,6 +678,12 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 result = future.result()
                 race_number = int(task["race_number"])
                 ready_results[race_number] = result
+                stats["score_ready_results_max"] = max(
+                    int(stats.get("score_ready_results_max", 0)),
+                    len(ready_results),
+                )
+                if race_number != next_race_to_flush:
+                    stats["score_out_of_order_results"] += 1
                 if result["total_score_frame"] > 0:
                     LOGGER.log(
                         "",
@@ -695,9 +746,15 @@ def _run_total_score_phase_for_context(
                 metadata_context.flush()
                 _callback(payload)
             else:
-                with io_lock:
+                lock_wait_start = time.perf_counter()
+                io_lock.acquire()
+                video_io.add_timing(video_stats, "score_callback_io_lock_wait_s", lock_wait_start)
+                video_stats["score_callback_io_lock_acquires"] += 1
+                try:
                     metadata_context.flush()
                     _callback(payload)
+                finally:
+                    io_lock.release()
 
     process_score_candidates(
         processing_video_path,

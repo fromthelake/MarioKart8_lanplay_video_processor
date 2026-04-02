@@ -36,6 +36,24 @@ class ExtractFramesTests(unittest.TestCase):
         self.assertIn("persisted rerun OCR frame inputs: 8 (8 unique)", joined)
         self.assertIn("captured frames outside same-run in-memory OCR cache: 3 (0.10s source)", joined)
 
+    def test_print_extract_profiler_summary_reports_backlog_and_lock_wait_lines(self):
+        stats = defaultdict(float)
+        stats["score_ready_results_max"] = 3
+        stats["score_out_of_order_results"] = 5
+        stats["score_flush_io_lock_wait_s"] = 1.25
+        stats["score_flush_io_lock_acquires"] = 8
+        stats["score_callback_io_lock_wait_s"] = 0.5
+        stats["score_callback_io_lock_acquires"] = 4
+
+        with mock.patch.object(extract_frames.LOGGER, "summary_block") as summary_mock:
+            extract_frames.print_extract_profiler_summary("demo.mp4", stats)
+
+        summary_lines = summary_mock.call_args.args[1]
+        joined = "\n".join(summary_lines)
+        self.assertIn("parallel score result backlog: max ready 3 | out-of-order completions 5", joined)
+        self.assertIn("flush IO lock wait: 1.25s across 8 acquires", joined)
+        self.assertIn("callback IO lock wait: 0.50s across 4 acquires", joined)
+
     def test_prepare_video_context_uses_preflight_usable_total_frames_without_repair(self):
         class FakeCapture:
             def __init__(self, frame_count=207459, fps=30.0):
