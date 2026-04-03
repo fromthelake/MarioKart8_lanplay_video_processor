@@ -323,6 +323,10 @@ def _video_labeled_value(prefix: str, value: object, video_identity: object, suf
     return prefix + LOGGER.video_value(value, video_identity) + suffix
 
 
+OVERLAP_SCOPE_OCR = "[Run - Overlap OCR]"
+OVERLAP_SCOPE = "[Run - Overlap]".ljust(len(OVERLAP_SCOPE_OCR))
+
+
 def _short_overlap_video_label(video_label: str) -> str:
     text = str(video_label or "").strip()
     if "__" in text:
@@ -686,7 +690,7 @@ def _format_overlap_ocr_detail(event: dict, format_duration) -> str:
 def _make_overlap_ocr_progress_callback(video_label: str, format_duration, display_video_label):
     def _callback(event: dict) -> None:
         LOGGER.log(
-            "[Run - Overlap OCR]",
+            OVERLAP_SCOPE_OCR,
             _format_overlap_progress_line(
                 video_label,
                 _format_overlap_ocr_detail(event, format_duration),
@@ -1007,7 +1011,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 ocr_results.append(finalized)
             record_ocr_completed(video_label)
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_complete_with_finalize(
                     video_label,
                     int(finalized.get("race_count", 0)),
@@ -1044,7 +1048,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
             finalizing_videos.add(video_label)
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_finalize_start(video_label, total),
                 color_name="cyan",
             )
@@ -1075,7 +1079,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                         active_races_by_video[video_label] += 1
                     queued_for_video, active_for_video, queued_total, active_total = summarize_race_overlap_state(video_label)
                     LOGGER.log(
-                        "[Run - Overlap]",
+                        OVERLAP_SCOPE,
                         _format_overlap_race_event(
                             video_label,
                             "started",
@@ -1157,7 +1161,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 }
                 record_ocr_progress(video_label, progress_event)
                 LOGGER.log(
-                    "[Run - Overlap]",
+                    OVERLAP_SCOPE,
                     _format_overlap_race_event(
                         video_label,
                         "finished",
@@ -1168,7 +1172,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     color_name="green",
                 )
                 LOGGER.log(
-                    "[Run - Overlap OCR]",
+                    OVERLAP_SCOPE_OCR,
                     _format_overlap_progress_line(
                         video_label,
                         _format_overlap_ocr_detail(progress_event, extract_frames.format_duration),
@@ -1211,7 +1215,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             video_expected_race_revisions[video_label][race_number] = max(previous_revision, ocr_revision)
             queued_for_video, _active_for_video, queued_total, _active_total = summarize_race_overlap_state(video_label)
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_race_event(
                     video_label,
                     "queued",
@@ -1244,7 +1248,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 if str(race_class) == video_label
             }
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_extraction_complete(video_label, len(grouped_items)),
                 color_name="cyan",
             )
@@ -1285,7 +1289,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 video_label = str(event.get("video_label", "unknown"))
                 if event.get("event") == "worker_start":
                     LOGGER.log(
-                        "[Run - Overlap]",
+                        OVERLAP_SCOPE,
                         _format_overlap_start_video(video_label),
                         color_name="cyan",
                     )
@@ -1293,7 +1297,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     continue
                 record_ocr_progress(video_label, event)
                 LOGGER.log(
-                    "[Run - Overlap OCR]",
+                    OVERLAP_SCOPE_OCR,
                     _format_overlap_progress_line(
                         video_label,
                         _format_overlap_ocr_detail(event, extract_frames.format_duration),
@@ -1322,7 +1326,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 ocr_results.append(result)
                 record_ocr_completed(str(message["video_label"]))
                 LOGGER.log(
-                    "[Run - Overlap]",
+                    OVERLAP_SCOPE,
                     _format_overlap_complete(
                         str(message["video_label"]),
                         int(result.get("race_count", 0)),
@@ -1339,7 +1343,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 if ocr_start_time_holder["value"] is None:
                     ocr_start_time_holder["value"] = time.time()
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
             )
@@ -1382,7 +1386,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                         if ocr_start_time_holder["value"] is None:
                             ocr_start_time_holder["value"] = time.time()
                     LOGGER.log(
-                        "[Run - Overlap]",
+                        OVERLAP_SCOPE,
                         _format_overlap_start_video(str(job["video_label"])),
                         color_name="cyan",
                     )
@@ -1401,7 +1405,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                     ocr_results.append(result)
                     record_ocr_completed(str(job["video_label"]))
                     LOGGER.log(
-                        "[Run - Overlap]",
+                        OVERLAP_SCOPE,
                         _format_overlap_complete(
                             str(job["video_label"]),
                             int(result.get("race_count", 0)),
@@ -1419,7 +1423,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
         def enqueue_completed_video(video_payload: dict) -> None:
             LOGGER.log(
-                "[Run - Overlap]",
+                OVERLAP_SCOPE,
                 _format_overlap_queue_video(str(video_payload["video_label"])),
                 color_name="cyan",
             )

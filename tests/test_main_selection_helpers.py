@@ -35,6 +35,10 @@ def _make_case_dir(case_name: str) -> Path:
 
 
 class MainSelectionHelpersTests(unittest.TestCase):
+    def test_overlap_scopes_use_equal_width_for_aligned_columns(self):
+        self.assertEqual(len(main.OVERLAP_SCOPE), len(main.OVERLAP_SCOPE_OCR))
+        self.assertTrue(main.OVERLAP_SCOPE.startswith("[Run - Overlap]"))
+
     def test_short_overlap_video_label_drops_subfolder_prefix(self):
         self.assertEqual(
             main._short_overlap_video_label("2026-03-28__Wild_2026-03-27_21-50-56"),
