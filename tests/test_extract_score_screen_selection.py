@@ -272,6 +272,11 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
             mock.patch.object(extract_score_screen_selection, "position_capture_for_read") as position_mock,
             mock.patch.object(
                 extract_score_screen_selection,
+                "_frame_has_total_score_signature",
+                side_effect=[False, False],
+            ),
+            mock.patch.object(
+                extract_score_screen_selection,
                 "read_video_frame",
                 side_effect=[(True, np.zeros((10, 10, 3), dtype=np.uint8))] * len(signatures),
             ),
@@ -448,6 +453,12 @@ class ExtractScoreScreenSelectionTests(unittest.TestCase):
             )
 
         self.assertEqual(result["total_score_visible_players"], 11)
+        self.assertEqual(result["analysis_trace"]["candidate_frame"], 100)
+        self.assertEqual(result["analysis_trace"]["score_hit_frame"], 10)
+        self.assertEqual(result["analysis_trace"]["transition_frame"], 150)
+        self.assertEqual(result["analysis_trace"]["selected_points_anchor_frame"], 148)
+        self.assertEqual(result["analysis_trace"]["stable_total_score_frame"], 200)
+        self.assertFalse(result["analysis_trace"]["total_score_used_fallback"])
         count_mock.assert_called_once_with(total_score_image, "lan2_split_2p")
 
 

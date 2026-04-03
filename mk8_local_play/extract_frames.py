@@ -35,6 +35,7 @@ start_run_time = time.time()
 APP_CONFIG = load_app_config()
 EASYOCR_RUNTIME = detect_easyocr_runtime(APP_CONFIG)
 INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
+TOTAL_SCORE_TRACE_ENABLED = os.environ.get("MK8_TRACE_TOTAL_SCORE_FRAMES", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 SCORE_ANALYSIS_WORKERS = APP_CONFIG.score_analysis_workers
 PARALLEL_VIDEO_SCORE_WORKERS = max(1, int(APP_CONFIG.parallel_video_score_workers))
@@ -99,6 +100,77 @@ class MetadataCsvWriter:
 
     def writerow(self, row):
         self._csv_writer.writerow(row)
+
+
+def _frame_delta_text(later_frame, earlier_frame):
+    if later_frame is None or earlier_frame is None:
+        return ""
+    return str(int(later_frame) - int(earlier_frame))
+
+
+def _timecode_or_empty(frame_number, fps):
+    if frame_number is None:
+        return ""
+    return frame_to_timecode(int(frame_number), fps)
+
+
+def _write_total_score_trace_row(trace_writer, video_label, video_source_path, fps, result):
+    if trace_writer is None:
+        return
+    trace = dict(result.get("analysis_trace") or {})
+    candidate = result.get("candidate") or {}
+    candidate_frame = trace.get("candidate_frame")
+    score_hit_frame = trace.get("score_hit_frame")
+    race_score_frame = int(result.get("race_score_frame") or 0) or None
+    total_score_frame = int(result.get("total_score_frame") or 0) or None
+    actual_race_score_frame = result.get("actual_race_score_frame")
+    actual_total_score_frame = result.get("actual_total_score_frame")
+    transition_frame = trace.get("transition_frame")
+    stable_total_score_frame = trace.get("stable_total_score_frame")
+    selected_points_anchor_frame = trace.get("selected_points_anchor_frame")
+    actual_points_anchor_frame = result.get("actual_points_anchor_frame")
+    trace_writer.writerow(
+        [
+            str(video_label),
+            str(video_source_path),
+            int(trace.get("race_number", candidate.get("race_number", 0) or 0)),
+            str(trace.get("score_layout_id") or candidate.get("score_layout_id") or ""),
+            int(candidate_frame or 0),
+            _timecode_or_empty(candidate_frame, fps),
+            int(trace.get("detail_start_frame") or 0),
+            int(trace.get("detail_end_frame") or 0),
+            int(score_hit_frame or 0) if score_hit_frame is not None else "",
+            _timecode_or_empty(score_hit_frame, fps),
+            _frame_delta_text(score_hit_frame, candidate_frame),
+            int(race_score_frame or 0) if race_score_frame is not None else "",
+            _timecode_or_empty(race_score_frame, fps),
+            _frame_delta_text(race_score_frame, candidate_frame),
+            int(actual_race_score_frame or 0) if actual_race_score_frame is not None else "",
+            _timecode_or_empty(actual_race_score_frame, fps),
+            _frame_delta_text(actual_race_score_frame, race_score_frame),
+            int(transition_frame or 0) if transition_frame is not None else "",
+            _timecode_or_empty(transition_frame, fps),
+            _frame_delta_text(transition_frame, race_score_frame),
+            int(selected_points_anchor_frame or 0) if selected_points_anchor_frame is not None else "",
+            _timecode_or_empty(selected_points_anchor_frame, fps),
+            _frame_delta_text(selected_points_anchor_frame, transition_frame),
+            int(actual_points_anchor_frame or 0) if actual_points_anchor_frame is not None else "",
+            _timecode_or_empty(actual_points_anchor_frame, fps),
+            _frame_delta_text(actual_points_anchor_frame, selected_points_anchor_frame),
+            int(stable_total_score_frame or 0) if stable_total_score_frame is not None else "",
+            _timecode_or_empty(stable_total_score_frame, fps),
+            int(total_score_frame or 0) if total_score_frame is not None else "",
+            _timecode_or_empty(total_score_frame, fps),
+            _frame_delta_text(total_score_frame, transition_frame),
+            int(actual_total_score_frame or 0) if actual_total_score_frame is not None else "",
+            _timecode_or_empty(actual_total_score_frame, fps),
+            _frame_delta_text(actual_total_score_frame, total_score_frame),
+            int(result.get("total_score_visible_players") or 0) if result.get("total_score_visible_players") is not None else "",
+            1 if bool(trace.get("total_score_used_fallback")) else 0,
+            1 if bool(trace.get("ignored_candidate")) else 0,
+            str(trace.get("ignore_label") or ""),
+        ]
+    )
 
 
 class ProgressPrinter:
@@ -794,7 +866,7 @@ def collect_consensus_frames(video_path, video_label, center_frame, fps, left, t
 
 def process_score_candidates(video_path, video_label, video_source_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
                              crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None,
-                             per_race_complete_callback=None, analysis_workers_override=None, io_lock=None):
+                             per_race_complete_callback=None, analysis_workers_override=None, io_lock=None, trace_writer=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
         return
@@ -976,6 +1048,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 result,
                 immediate_expected_players if int(task["race_number"]) >= 2 else None,
             )
+            _write_total_score_trace_row(trace_writer, video_label, video_source_path, fps, result)
             _persist_saved_result(result, revision=1)
     else:
         chunk_size = 2
@@ -1053,6 +1126,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     result,
                     immediate_expected_players if race_number >= 2 else None,
                 )
+                _write_total_score_trace_row(trace_writer, video_label, video_source_path, fps, result)
                 _persist_saved_result(result, revision=1)
             worker_summaries = [future.result() for future in futures]
         stats["score_scheduler_capture_opens"] = sum(
@@ -1072,6 +1146,7 @@ def _run_total_score_phase_for_context(
     metadata_context,
     csv_writer,
     metadata_writer,
+    trace_writer,
     per_race_complete_callback,
     per_video_complete_callback,
     include_subfolders,
@@ -1145,6 +1220,7 @@ def _run_total_score_phase_for_context(
         per_race_complete_callback=race_complete_callback,
         analysis_workers_override=analysis_workers_override,
         io_lock=io_lock,
+        trace_writer=trace_writer,
     )
     exported_counts = count_exported_detection_files(video_label)
     video_stats["video_total_s"] = time.perf_counter() - context["video_start"]
@@ -1895,6 +1971,7 @@ def _extract_frames_parallel_video_scan(
     total_source_seconds,
     return_frame_cache,
     phase_start_time,
+    trace_writer=None,
 ):
     workflow_plan, total_source_seconds = build_workflow_video_plan(
         video_paths,
@@ -2018,6 +2095,7 @@ def _extract_frames_parallel_video_scan(
                         metadata_context,
                         csv_writer,
                         metadata_writer,
+                        trace_writer,
                         per_race_complete_callback,
                         per_video_complete_callback,
                         include_subfolders,
@@ -2120,6 +2198,7 @@ def extract_frames(
 
     csv_output_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'debug_max_val.csv')
     metadata_output_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'exported_frame_metadata.csv')
+    total_score_trace_output_path = os.path.join(PROJECT_ROOT, 'Output_Results', 'Debug', 'total_score_frame_trace.csv')
     video_paths = load_videos_from_folder(folder_path, include_subfolders=include_subfolders)
     if selected_videos:
         selected_names = {str(name).replace("\\", "/").lower() for name in selected_videos}
@@ -2162,6 +2241,56 @@ def extract_frames(
         csv_writer = NullCsvWriter()
         metadata_context = None
         metadata_writer = None
+
+    if TOTAL_SCORE_TRACE_ENABLED:
+        os.makedirs(os.path.dirname(total_score_trace_output_path), exist_ok=True)
+        total_score_trace_context = open(total_score_trace_output_path, mode='w', newline='')
+        trace_writer = csv.writer(total_score_trace_context, delimiter=';')
+        trace_writer.writerow(
+            [
+                "VideoLabel",
+                "Video",
+                "Race",
+                "Score Layout",
+                "Candidate Frame",
+                "Candidate Time",
+                "Detail Start Frame",
+                "Detail End Frame",
+                "Score Hit Frame",
+                "Score Hit Time",
+                "Score Hit Minus Candidate",
+                "Race Anchor Frame",
+                "Race Anchor Time",
+                "Race Anchor Minus Candidate",
+                "Actual Race Anchor Frame",
+                "Actual Race Anchor Time",
+                "Actual Race Minus Requested",
+                "Transition Frame",
+                "Transition Time",
+                "Transition Minus Race Anchor",
+                "Points Anchor Frame",
+                "Points Anchor Time",
+                "Points Anchor Minus Transition",
+                "Actual Points Anchor Frame",
+                "Actual Points Anchor Time",
+                "Actual Points Minus Requested",
+                "Stable Total Frame",
+                "Stable Total Time",
+                "Total Anchor Frame",
+                "Total Anchor Time",
+                "Total Anchor Minus Transition",
+                "Actual Total Anchor Frame",
+                "Actual Total Anchor Time",
+                "Actual Total Minus Requested",
+                "Visible Players",
+                "Used Total Fallback",
+                "Ignored Candidate",
+                "Ignore Label",
+            ]
+        )
+    else:
+        total_score_trace_context = None
+        trace_writer = None
 
     total_source_seconds = 0.0
     for video_path in video_paths:
@@ -2210,6 +2339,7 @@ def extract_frames(
                 total_source_seconds,
                 return_frame_cache,
                 phase_start_time,
+                trace_writer=trace_writer,
             )
         total_videos = len(video_paths)
         total_score_screens_found = 0
@@ -2663,6 +2793,7 @@ def extract_frames(
                 total_videos=total_videos,
                 progress=total_score_progress,
                 per_race_complete_callback=race_complete_callback,
+                trace_writer=trace_writer,
             )
             exported_counts = count_exported_detection_files(processing_video_path if not include_subfolders else video_label)
             total_score_screens_found += exported_counts["score"]
@@ -2741,6 +2872,8 @@ def extract_frames(
             csv_context.close()
         if metadata_context is not None:
             metadata_context.close()
+        if total_score_trace_context is not None:
+            total_score_trace_context.close()
 
     # Record the end time
     end_time = time.time()

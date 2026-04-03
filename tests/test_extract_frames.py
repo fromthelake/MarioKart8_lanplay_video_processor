@@ -1,11 +1,58 @@
 import unittest
 from collections import defaultdict
+from io import StringIO
 from unittest import mock
+import csv
 
 from mk8_local_play import extract_frames
 
 
 class ExtractFramesTests(unittest.TestCase):
+    def test_write_total_score_trace_row_writes_key_frame_relationships(self):
+        buffer = StringIO()
+        writer = csv.writer(buffer, delimiter=';')
+        result = {
+            "candidate": {"race_number": 7, "score_layout_id": "lan2_split_2p"},
+            "race_score_frame": 120,
+            "total_score_frame": 200,
+            "actual_race_score_frame": 121,
+            "actual_total_score_frame": 201,
+            "actual_points_anchor_frame": 148,
+            "total_score_visible_players": 11,
+            "analysis_trace": {
+                "race_number": 7,
+                "score_layout_id": "lan2_split_2p",
+                "candidate_frame": 100,
+                "detail_start_frame": 10,
+                "detail_end_frame": 490,
+                "score_hit_frame": 99,
+                "transition_frame": 150,
+                "stable_total_score_frame": 198,
+                "selected_points_anchor_frame": 148,
+                "total_score_used_fallback": False,
+                "ignored_candidate": False,
+                "ignore_label": "",
+            },
+        }
+
+        extract_frames._write_total_score_trace_row(
+            writer,
+            "demo",
+            "2026-03-28/demo.mp4",
+            30.0,
+            result,
+        )
+
+        row = buffer.getvalue().strip().split(";")
+        self.assertEqual(row[0], "demo")
+        self.assertEqual(row[2], "7")
+        self.assertEqual(row[4], "100")
+        self.assertEqual(row[10], "-1")
+        self.assertEqual(row[19], "30")
+        self.assertEqual(row[30], "50")
+        self.assertEqual(row[34], "11")
+        self.assertEqual(row[35], "0")
+
     def test_wrap_console_line_wraps_pipe_segments(self):
         wrapped = extract_frames._wrap_console_line(
             "seek profile: forward 211 | backward 288 | short 194 | medium 192 | long 115 | distance 1,093,437 frames",
