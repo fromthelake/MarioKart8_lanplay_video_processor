@@ -66,7 +66,7 @@ PROFILE_OUTPUT = DEBUG_DIR / "performance_profile.txt"
 OCR_TRACE_DIR = DEBUG_DIR / "OCR_Tracing"
 
 
-SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mkv", ".mov", ".avi", ".webm"}
+SUPPORTED_VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm"}
 
 
 def configure_headless_debug_outputs(enabled: bool | None) -> None:
@@ -353,11 +353,11 @@ def _summarize_pipeline_bottleneck(
     extract_share = extract_duration_s / total_processing_seconds
     ocr_share = ocr_duration_s / total_processing_seconds
     if extract_share >= 0.75 and extract_duration_s >= (ocr_duration_s * 1.15):
-        return "Video loading and frame extraction"
+        return "Video decode and frame extraction"
     if ocr_share >= 0.65 and ocr_duration_s >= (extract_duration_s * 0.90):
         return "OCR and workbook export"
     if extract_share >= 0.55:
-        return "Mostly video loading and frame extraction"
+        return "Mostly video decode and frame extraction"
     if ocr_share >= 0.45:
         return "Mixed, leaning OCR and export"
     return "Mixed pipeline"
@@ -1033,9 +1033,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 per_video_ocr_durations={video_label: float(video_race_durations[video_label])},
                 progress_peak_lines=[],
                 ocr_profiler_lines=[
-                    "Overlapped per-race OCR mode",
+                    "OCR mode: overlap by race",
                     f"OCR consumers: {overlap_ocr_consumers}",
-                    "Detailed OCR call profiling is omitted from the combined summary in overlap mode.",
+                    "Detailed per-call OCR timings are hidden in overlap mode.",
                 ],
                 write_outputs=False,
                 emit_logs=False,
@@ -1541,9 +1541,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     per_video_summary = {}
     progress_peak_lines = []
     ocr_profiler_lines = [
-        f"Overlapped per-{overlap_ocr_mode} OCR mode",
+        f"OCR mode: overlap by {overlap_ocr_mode}",
         f"OCR consumers: {overlap_ocr_consumers}",
-        "Detailed OCR call profiling is omitted from the combined summary in overlap mode.",
+        "Detailed per-call OCR timings are hidden in overlap mode.",
     ]
     for result in ocr_results:
         per_video_durations.update(result.get("per_video_durations", {}))
@@ -1598,11 +1598,11 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     performance_lines = [
         "Run totals",
         *_format_metric_table([
-            ("Source video length", extract_frames.format_duration(total_source_seconds)),
+            ("Source length", extract_frames.format_duration(total_source_seconds)),
             ("Processing time", extract_frames.format_duration(total_processing_seconds)),
-            ("Playback ratio", f"{ratio:.1f}x real-time"),
-            ("Overlap time saved", extract_frames.format_duration(overlap_time_saved_s)),
-            ("Likely bottleneck", likely_bottleneck),
+            ("Speed vs playback", f"{ratio:.1f}x real-time"),
+            ("Time saved by overlap", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Main slowdown", likely_bottleneck),
         ]),
         "",
         "Phase timings",
@@ -1824,11 +1824,11 @@ def run_all(
     performance_lines = [
         "Run totals",
         *_format_metric_table([
-            ("Source video length", extract_frames.format_duration(total_source_seconds)),
+            ("Source length", extract_frames.format_duration(total_source_seconds)),
             ("Processing time", extract_frames.format_duration(total_processing_seconds)),
-            ("Playback ratio", f"{ratio:.1f}x real-time"),
-            ("Overlap time saved", extract_frames.format_duration(overlap_time_saved_s)),
-            ("Likely bottleneck", likely_bottleneck),
+            ("Speed vs playback", f"{ratio:.1f}x real-time"),
+            ("Time saved by overlap", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Main slowdown", likely_bottleneck),
         ]),
         "",
         "Phase timings",

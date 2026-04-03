@@ -302,8 +302,8 @@ def print_timing_summary(video_name, stats):
 
     lines = []
     if ranked:
-        lines.append(f"Likely bottleneck: {ranked[0][0]}")
-        lines.append("Biggest time sinks")
+        lines.append(f"Main slowdown: {ranked[0][0]}")
+        lines.append("Where time went")
     for label, value in ranked[:3]:
         percent = (value / total_time) * 100 if total_time > 0 else 0.0
         lines.append(f"- {label}: {format_duration(value)} ({percent:.0f}%)")
@@ -416,7 +416,7 @@ def print_extract_profiler_summary(video_name, stats):
     profile_entries.sort(key=lambda item: (-item[1], item[0]))
     lines = [item[3] for item in profile_entries]
 
-    summary_lines = [f"Likely bottleneck: {_describe_video_bottleneck(stats)}"]
+    summary_lines = [f"Main slowdown: {_describe_video_bottleneck(stats)}"]
     top_costs = _top_profiler_costs(stats)
     if top_costs:
         summary_lines.append("Top measured costs")

@@ -1,4 +1,3 @@
-import shutil
 import time
 import unittest
 import uuid
@@ -55,7 +54,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
                 ocr_duration_s=120.0,
                 total_processing_seconds=600.0,
             ),
-            "Video loading and frame extraction",
+            "Video decode and frame extraction",
         )
 
     def test_display_video_name_for_table_removes_extension_but_keeps_subfolders(self):
