@@ -6,6 +6,16 @@ from mk8_local_play import extract_frames
 
 
 class ExtractFramesTests(unittest.TestCase):
+    def test_wrap_console_line_wraps_pipe_segments(self):
+        wrapped = extract_frames._wrap_console_line(
+            "seek profile: forward 211 | backward 288 | short 194 | medium 192 | long 115 | distance 1,093,437 frames",
+            width=60,
+        )
+
+        self.assertGreater(len(wrapped), 1)
+        self.assertEqual(wrapped[0], "seek profile: forward 211 | backward 288 | short 194")
+        self.assertTrue(wrapped[1].startswith("    medium 192"))
+
     def test_print_extract_profiler_summary_reports_capture_usage_lines(self):
         stats = defaultdict(float)
         stats["score_capture_frame_events_total"] = 12

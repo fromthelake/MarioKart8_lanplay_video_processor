@@ -461,6 +461,21 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     return lines, per_video_summary
 
 
+def _build_saved_file_lines(workbook_payload):
+    entries = [
+        ("Results workbook", workbook_payload["output_excel_path"]),
+        ("Debug workbook", workbook_payload["debug_output_excel_path"]),
+        ("Results CSV", workbook_payload["output_csv_path"]),
+        ("Final standings CSV", workbook_payload["final_standings_csv_path"]),
+        ("Debug CSV", workbook_payload["debug_output_csv_path"]),
+    ]
+    lines = ["", "Saved files"]
+    for label, path in entries:
+        lines.append(f"- {label}")
+        lines.append(f"  {path}")
+    return lines
+
+
 def build_completion_payload(df, folder_path, phase_start_time, progress_peak_lines, ocr_profiler_lines,
                              per_video_durations, build_race_warning_messages, pluralize, format_duration):
     """Prepare workbook output and the final OCR summary payload in one place."""
@@ -473,17 +488,7 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
     lines.extend(ocr_profiler_lines)
     summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     lines.extend(summary_lines)
-    lines.extend(
-        [
-            "",
-            "Saved files",
-            f"- Results workbook: {workbook_payload['output_excel_path']}",
-            f"- Debug workbook: {workbook_payload['debug_output_excel_path']}",
-            f"- Results CSV: {workbook_payload['output_csv_path']}",
-            f"- Final standings CSV: {workbook_payload['final_standings_csv_path']}",
-            f"- Debug CSV: {workbook_payload['debug_output_csv_path']}",
-        ]
-    )
+    lines.extend(_build_saved_file_lines(workbook_payload))
 
     return {
         "user_df": workbook_payload["user_df"],

@@ -345,6 +345,24 @@ def _describe_video_bottleneck(stats) -> str:
     return "Mixed extraction work"
 
 
+def _wrap_console_line(text: str, *, width: int = 108, continuation_prefix: str = "    ") -> list[str]:
+    text = str(text)
+    if not text or len(text) <= width or " | " not in text:
+        return [text]
+    parts = text.split(" | ")
+    wrapped: list[str] = []
+    current = parts[0]
+    for part in parts[1:]:
+        candidate = f"{current} | {part}"
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        wrapped.append(current)
+        current = f"{continuation_prefix}{part}"
+    wrapped.append(current)
+    return wrapped
+
+
 def print_extract_profiler_summary(video_name, stats):
     """Print per-function/bucket call counts, total time, and average milliseconds."""
     profile_rows = [
@@ -566,9 +584,15 @@ def print_extract_profiler_summary(video_name, stats):
 
     if not lines and not extra_lines:
         return
+    wrapped_summary_lines = []
+    for line in [*summary_lines, "", *lines, *extra_lines]:
+        if not line:
+            wrapped_summary_lines.append("")
+            continue
+        wrapped_summary_lines.extend(_wrap_console_line(line))
     LOGGER.summary_block(
         f"[{video_name} - Extract Profiler]",
-        [*summary_lines, "", *lines, *extra_lines],
+        wrapped_summary_lines,
         color_name="dim",
     )
 
@@ -1140,11 +1164,12 @@ def _run_total_score_phase_for_context(
     )
     print_timing_summary(video_name, video_stats)
     print_extract_profiler_summary(video_name, video_stats)
+    complete_label = Path(str(video_name)).stem or str(video_name)
     LOGGER.log(
         color_video_scope(f"[Video {video_index}/{total_videos} - Complete]", video_label),
-        f"{video_name} | Elapsed until complete: {format_duration(video_stats['video_total_s'])} | "
-        f"Source length: {format_duration(total_frames / max(fps, 1))} | Track screens: {exported_counts['track']} | "
-        f"Race numbers: {exported_counts['race']} | Total score screens: {exported_counts['total']}",
+        f"{complete_label} | Time {format_duration(video_stats['video_total_s'])} | "
+        f"Source {format_duration(total_frames / max(fps, 1))} | Track {exported_counts['track']} | "
+        f"Race {exported_counts['race']} | Score {exported_counts['total']}",
         color_name="green",
     )
 

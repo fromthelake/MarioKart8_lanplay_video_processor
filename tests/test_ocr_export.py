@@ -4,6 +4,7 @@ import pandas as pd
 
 from mk8_local_play.ocr_export import (
     _dedupe_review_reason_parts,
+    _build_saved_file_lines,
     _select_most_used_character,
     build_player_count_summary_lines,
     build_final_standings_df,
@@ -76,3 +77,18 @@ class OcrExportTests(unittest.TestCase):
         self.assertIn("Player count check", lines)
         self.assertIn("- Demo: 2 races | consistent at 2 players", lines)
         self.assertEqual(summary["Demo"]["player_count_summary"], "consistent (2 players)")
+
+    def test_build_saved_file_lines_puts_paths_on_separate_lines(self):
+        lines = _build_saved_file_lines(
+            {
+                "output_excel_path": "C:/Results.xlsx",
+                "debug_output_excel_path": "C:/Debug.xlsx",
+                "output_csv_path": "C:/Results.csv",
+                "final_standings_csv_path": "C:/Final.csv",
+                "debug_output_csv_path": "C:/Debug.csv",
+            }
+        )
+
+        self.assertEqual(lines[:2], ["", "Saved files"])
+        self.assertIn("- Results workbook", lines)
+        self.assertIn("  C:/Results.xlsx", lines)

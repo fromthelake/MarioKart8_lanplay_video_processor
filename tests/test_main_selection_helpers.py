@@ -58,6 +58,12 @@ class MainSelectionHelpersTests(unittest.TestCase):
             "Video loading and frame extraction",
         )
 
+    def test_display_video_name_for_table_removes_extension_but_keeps_subfolders(self):
+        self.assertEqual(
+            main._display_video_name_for_table("2026-03-28/Kampioen_2026-03-27 21-50-56.mp4"),
+            "2026-03-28/Kampioen_2026-03-27 21-50-56",
+        )
+
     def test_overlap_scopes_use_equal_width_for_aligned_columns(self):
         self.assertEqual(len(main.OVERLAP_SCOPE), len(main.OVERLAP_SCOPE_OCR))
         self.assertTrue(main.OVERLAP_SCOPE.startswith("[Run - Overlap]"))

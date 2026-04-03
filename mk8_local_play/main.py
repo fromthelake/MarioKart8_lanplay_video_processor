@@ -330,6 +330,18 @@ def _format_input_summary_lines(source_summaries: list[tuple[str, str]], total_s
     return lines
 
 
+def _display_video_name_for_table(video_name: str) -> str:
+    text = str(video_name or "").strip()
+    if not text:
+        return ""
+    normalized = text.replace("\\", "/")
+    if "/" in normalized:
+        parent, filename = normalized.rsplit("/", 1)
+        stem = Path(filename).stem or filename
+        return f"{parent}/{stem}" if parent else stem
+    return Path(normalized).stem or normalized
+
+
 def _summarize_pipeline_bottleneck(
     *,
     extract_duration_s: float,
@@ -1660,7 +1672,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             video_ocr_summary = per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
             per_video_rows.append([
-                summary["video_name"],
+                _display_video_name_for_table(summary["video_name"]),
                 extract_frames.format_duration(summary["source_length_s"]),
                 extract_frames.format_duration(summary["processing_duration_s"]),
                 extract_frames.format_duration(summary["scan_duration_s"]),
@@ -1841,7 +1853,7 @@ def run_all(
             video_ocr_summary = ocr_per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
             per_video_rows.append([
-                summary["video_name"],
+                _display_video_name_for_table(summary["video_name"]),
                 extract_frames.format_duration(summary["source_length_s"]),
                 extract_frames.format_duration(summary["processing_duration_s"]),
                 extract_frames.format_duration(summary["scan_duration_s"]),
