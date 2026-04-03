@@ -11,7 +11,8 @@ from mk8_local_play.project_paths import PROJECT_ROOT
 def parse_args():
     parser = argparse.ArgumentParser(description="Benchmark Total Score timing fast path on a fixed video selection.")
     parser.add_argument("--subfolders", action="store_true", help="Resolve videos relative to Input_Videos with subfolder support")
-    parser.add_argument("--videos", nargs="+", required=True, help="Video paths to pass to --videos")
+    parser.add_argument("--videos", nargs="+", help="Video paths to pass to --videos")
+    parser.add_argument("--selection-file", help="Text file with one video path per line")
     parser.add_argument(
         "--report",
         default=str(PROJECT_ROOT / ".codex_tmp" / "total_score_fast_path_benchmark.md"),
@@ -42,9 +43,11 @@ def _extract_paths(text: str):
     return Path(results_csv) if results_csv else None, Path(final_csv) if final_csv else None
 
 
-def run_variant(videos, *, subfolders: bool, enabled: bool):
+def run_variant(videos, *, subfolders: bool, enabled: bool, transition_primary: bool = True, stable_hint: bool = False):
     env = os.environ.copy()
     env["MK8_TOTAL_SCORE_TIMING_FAST_PATH"] = "1" if enabled else "0"
+    env["MK8_TOTAL_SCORE_TRANSITION_PRIMARY"] = "1" if transition_primary else "0"
+    env["MK8_TOTAL_SCORE_STABLE_HINT"] = "1" if stable_hint else "0"
     command = [
         str(PROJECT_ROOT / ".venv" / "Scripts" / "mk8-local-play.exe"),
         "--selection",
@@ -102,11 +105,72 @@ def write_report(path: Path, videos, baseline, fast_path):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_multi_report(path: Path, videos, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    lines.append("# Total Score Fast Path Benchmark")
+    lines.append("")
+    lines.append("## Selection")
+    lines.append("")
+    for video in videos:
+        lines.append(f"- `{video}`")
+    lines.append("")
+    lines.append("| Variant | Total | Extract | OCR | Results Hash | Final Hash |")
+    lines.append("| --- | ---: | ---: | ---: | --- | --- |")
+    for label, result in rows:
+        lines.append(
+            f"| {label} | {result['processing_time']} | {result['extract_time']} | {result['ocr_time']} | "
+            f"`{result['results_hash']}` | `{result['final_hash']}` |"
+        )
+    lines.append("")
+    baseline = rows[0][1]
+    for label, result in rows[1:]:
+        hash_match = (
+            baseline["results_hash"] == result["results_hash"]
+            and baseline["final_hash"] == result["final_hash"]
+        )
+        lines.append(f"- Hash match vs baseline for `{label}`: `{'yes' if hash_match else 'no'}`")
+    lines.append("")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main():
     args = parse_args()
-    baseline = run_variant(args.videos, subfolders=args.subfolders, enabled=False)
-    fast_path = run_variant(args.videos, subfolders=args.subfolders, enabled=True)
-    write_report(Path(args.report), args.videos, baseline, fast_path)
+    videos = list(args.videos or [])
+    if args.selection_file:
+        videos.extend(
+            [
+                line.strip()
+                for line in Path(args.selection_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        )
+    if not videos:
+        raise SystemExit("Provide --videos or --selection-file")
+    baseline = run_variant(videos, subfolders=args.subfolders, enabled=False)
+    transition_only = run_variant(
+        videos,
+        subfolders=args.subfolders,
+        enabled=True,
+        transition_primary=True,
+        stable_hint=False,
+    )
+    full_fast_path = run_variant(
+        videos,
+        subfolders=args.subfolders,
+        enabled=True,
+        transition_primary=True,
+        stable_hint=True,
+    )
+    write_multi_report(
+        Path(args.report),
+        videos,
+        [
+            ("fast-path off", baseline),
+            ("transition-only", transition_only),
+            ("transition + stable-hint", full_fast_path),
+        ],
+    )
     print(Path(args.report))
 
 

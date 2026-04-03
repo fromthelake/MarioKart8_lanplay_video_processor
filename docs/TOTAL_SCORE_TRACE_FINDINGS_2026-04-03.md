@@ -271,6 +271,123 @@ Rapport:
 
 - `.codex_tmp/fast_path_benchmark_60fps.md`
 
+## Brede acceptatietest op top-30 langste video's
+
+Na de gerichte validaties is ook een brede acceptatietest gedaan op de `30` langste video's uit `Input_Videos/` en subfolders.
+
+Rapport:
+
+- `.codex_tmp/fast_path_benchmark_top30.md`
+- `.codex_tmp/fast_path_transition_only_top30.md`
+
+### Resultaat van de brede test
+
+Volledige fast-path (`transition + stable-hint`):
+
+- fast-path uit:
+  - total `01:06:06`
+  - extract `01:04:55`
+  - OCR `01:02:47`
+- fast-path aan:
+  - total `00:35:52`
+  - extract `00:33:17`
+  - OCR `00:33:10`
+- hashes:
+  - `Tournament_Results.csv`: **verschillend**
+  - `Final_Standings.csv`: **verschillend**
+
+Transition-only (`stable-hint` uit):
+
+- transition-only:
+  - total `00:49:29`
+  - extract `00:47:12`
+  - OCR `00:46:41`
+- hashes:
+  - `Tournament_Results.csv`: **verschillend**
+  - `Final_Standings.csv`: **verschillend**
+
+Conclusie:
+
+- de timing-fast-path is **inhoudelijk kansrijk** en levert grote wall-clock winst op
+- maar is **nog niet baseline-veilig** over een brede videomix
+- ook de lichtere `transition-only` variant is nog niet output-identiek
+
+### Welke video's gaven andere resultaten?
+
+Verschillen in `Tournament_Results.csv` per video-label tussen baseline en `transition-only`:
+
+- `41` rows:
+  - `Mario_Kart_Toernooien__Level_Level__2023-10-12__Toernooi_1_-_Ronde_1_-_Groep_2`
+- `24` rows:
+  - `Mario_Kart_Toernooien__Stolk_staal__2025-05-16__2025-05-16_22-21-17`
+- `16` rows:
+  - `videos__Input_Videos__Toernooi_1_-_Ronde_2_-_Divisie_2`
+- `2` rows:
+  - `backup__20250103_Groep1`
+- `1` row:
+  - `Mario_Kart__Mario_Kart__Stolk_Staal_opnames__Stolk_Staal_Mario_Kart_toernooi_-_Oktober_2025_-_Finale_poule_C`
+
+### Low-res versus normale resolutie
+
+De verschillen zaten **niet alleen** op `480p` of lager.
+
+Gecontroleerde probleemvideo's:
+
+- `1280x720`
+  - `Mario Kart Toernooien/Level Level/2023-10-12/Toernooi 1 - Ronde 1 - Groep 2.mp4`
+  - `Mario Kart Toernooien/Stolk staal/2025-05-16/2025-05-16 22-21-17.mkv`
+  - `backup/20250103_Groep1.mp4`
+  - `Mario Kart/Mario Kart/Stolk Staal opnames/Stolk Staal Mario Kart toernooi - Oktober 2025 - Finale poule C.mp4`
+- `640x360`
+  - `videos/Input_Videos/Toernooi 1 - Ronde 2 - Divisie 2.mp4`
+
+Dus:
+
+- één afwijkende video zat op `640x360`
+- meerdere afwijkende video's zaten op `1280x720`
+
+Daarmee kan de regressie **niet** worden afgedaan als alleen een low-res OCR-gevoeligheid.
+
+## Eindbeoordeling
+
+Wat veilig behouden kan blijven:
+
+- de trace-instrumentatie
+- de selectietool voor lange video's
+- de analysetools en benchmarktooling
+- de gedocumenteerde frame-relaties en clusterbevindingen
+
+Wat **niet** als default behouden mag blijven:
+
+- de timing-fast-path in de productieflow
+
+Waarom niet:
+
+- de brede top-30 acceptatietest toont business-output drift
+- die drift treedt op in zowel normale `1280x720` video's als in een `640x360` video
+- daarmee is de optimalisatie nog niet voldoende bewezen om de baseline te vervangen
+
+Praktische status:
+
+- de fast-path code blijft beschikbaar als **expliciet experiment** via env vars
+- de default flow blijft de bewezen baseline
+
+## Vervolgvoorstel
+
+De bevindingen blijven wel waardevol voor een volgende, veiligere ronde.
+
+De meest kansrijke vervolgroute is:
+
+1. de transition-fast-path alleen verder onderzoeken op de concrete afwijkingsvideo's hierboven
+2. per afwijkingsvideo exact bepalen waar `transition-only` een andere total-score-anchor kiest
+3. daaruit afleiden welke extra guard of fallback-conditie ontbreekt
+4. pas opnieuw accepteren als een brede top-30 benchmark weer hash-identiek wordt
+
+Dus:
+
+- **de meetdata bewijst dat er grote skip-winst mogelijk is**
+- **de huidige implementatie bewijst nog niet dat die winst zonder kwaliteitsverlies generiek veilig is**
+
 ## Eindconclusie
 
 Data-gedreven conclusie:

@@ -115,7 +115,10 @@ TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS = 95
 
 
 APP_CONFIG = load_app_config()
-TOTAL_SCORE_TIMING_FAST_PATH_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TIMING_FAST_PATH", "1").strip().lower() not in {"0", "false", "no", "off"}
+# Experimental timing shortcuts stay opt-in until broad benchmark parity is proven.
+TOTAL_SCORE_TIMING_FAST_PATH_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TIMING_FAST_PATH", "0").strip().lower() not in {"0", "false", "no", "off"}
+TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TRANSITION_PRIMARY", "0").strip().lower() not in {"0", "false", "no", "off"}
+TOTAL_SCORE_STABLE_HINT_ENABLED = os.environ.get("MK8_TOTAL_SCORE_STABLE_HINT", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _build_score_analysis_trace(
@@ -477,7 +480,7 @@ def _find_points_transition_frame_in_range(
 
 
 def _find_points_transition_frame(local_cap, start_frame, end_frame, left, top, crop_width, crop_height, score_layout_id, stats, fps=30.0):
-    if not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED:
+    if not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED or not TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED:
         return _find_points_transition_frame_in_range(
             local_cap,
             start_frame,
@@ -557,7 +560,7 @@ def _frame_has_total_score_signature(
 def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, crop_width, crop_height, score_layout_id, stats):
     stable_frames_required = max(1, fps_scaled_frames(TOTAL_SCORE_STABLE_FRAMES_30FPS, fps))
     search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
-    if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED:
+    if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
         early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
         late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
         early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
