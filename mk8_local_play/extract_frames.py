@@ -76,6 +76,14 @@ def color_video_message(parts: list[str | tuple[str, object]]) -> str:
     return "".join(formatted_parts)
 
 
+def _format_total_score_progress_detail(video_label: str, completed_count: int, total_tasks: int, race_number: int) -> str:
+    return (
+        color_video_detail("races ", f"{completed_count:02}/{total_tasks:02}", video_label)
+        + " | last R"
+        + LOGGER.video_value(f"{int(race_number):03}", video_label)
+    )
+
+
 class NullCsvWriter:
     """Drop debug CSV rows when debug output is disabled."""
 
@@ -283,20 +291,58 @@ def print_timing_summary(video_name, stats):
         return
 
     major_buckets = [
-        ("calibration", float(stats.get("scaling_scan_s", 0.0))),
-        ("initial result-screen scan", float(stats.get("main_scan_loop_s", 0.0))),
-        ("score screen selection", float(stats.get("score_candidate_pass_s", 0.0))),
-        ("frame export", float(stats.get("output_frame_capture_s", 0.0))),
-        ("video seek/read/grab", float(stats.get("seek_time_s", 0.0) + stats.get("read_time_s", 0.0) + stats.get("grab_time_s", 0.0))),
+        ("Video loading (seek/read/grab)", float(stats.get("seek_time_s", 0.0) + stats.get("read_time_s", 0.0) + stats.get("grab_time_s", 0.0))),
+        ("Total Score analysis", float(stats.get("score_candidate_pass_s", 0.0))),
+        ("Saving frame images", float(stats.get("output_frame_capture_s", 0.0))),
+        ("Initial scan", float(stats.get("main_scan_loop_s", 0.0))),
+        ("Calibration", float(stats.get("scaling_scan_s", 0.0))),
     ]
     ranked = [(label, value) for label, value in major_buckets if value > 0.0]
     ranked.sort(key=lambda item: item[1], reverse=True)
 
     lines = []
+    if ranked:
+        lines.append(f"Likely bottleneck: {ranked[0][0]}")
+        lines.append("Biggest time sinks")
     for label, value in ranked[:3]:
         percent = (value / total_time) * 100 if total_time > 0 else 0.0
-        lines.append(f"{label}: {format_duration(value)} ({percent:.0f}%)")
-    LOGGER.summary_block(f"[{video_name} - Debug Timing]", lines, color_name="dim")
+        lines.append(f"- {label}: {format_duration(value)} ({percent:.0f}%)")
+    LOGGER.summary_block(f"[{video_name} - Time Summary]", lines, color_name="dim")
+
+
+def _top_profiler_costs(stats, *, limit=4):
+    candidates = [
+        ("video grab", float(stats.get("grab_time_s", 0.0))),
+        ("video read", float(stats.get("read_time_s", 0.0))),
+        ("video seek", float(stats.get("seek_time_s", 0.0))),
+        ("frame export", float(stats.get("output_frame_capture_s", 0.0))),
+        ("flush save score frames", float(stats.get("score_flush_save_frames_s", 0.0))),
+        ("save image writes", float(stats.get("score_save_image_write_s", 0.0))),
+        ("flush refine/expand", float(stats.get("score_flush_refine_expand_s", 0.0))),
+        ("static gallery check", float(stats.get("score_flush_static_gallery_check_s", 0.0))),
+        ("initial scan", float(stats.get("main_scan_loop_s", 0.0))),
+        ("score screen selection", float(stats.get("score_candidate_pass_s", 0.0))),
+    ]
+    ranked = [(label, seconds) for label, seconds in candidates if seconds > 0.0]
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked[:limit]
+
+
+def _describe_video_bottleneck(stats) -> str:
+    seek_read_grab = float(stats.get("seek_time_s", 0.0)) + float(stats.get("read_time_s", 0.0)) + float(stats.get("grab_time_s", 0.0))
+    frame_export = float(stats.get("output_frame_capture_s", 0.0))
+    save_frames = float(stats.get("score_flush_save_frames_s", 0.0))
+    refine_expand = float(stats.get("score_flush_refine_expand_s", 0.0))
+    score_pass = float(stats.get("score_candidate_pass_s", 0.0))
+    if seek_read_grab >= max(frame_export + save_frames, refine_expand, score_pass * 0.35):
+        return "Video loading and decoder seeks"
+    if frame_export + save_frames >= max(seek_read_grab, refine_expand):
+        return "Frame export and image writes"
+    if refine_expand >= max(seek_read_grab, frame_export + save_frames):
+        return "Result refinement"
+    if score_pass > 0:
+        return "Total Score analysis"
+    return "Mixed extraction work"
 
 
 def print_extract_profiler_summary(video_name, stats):
@@ -337,7 +383,7 @@ def print_extract_profiler_summary(video_name, stats):
         ("12th preprocess", "score_detail_12th_preprocess_s", None),
         ("frame export", "output_frame_capture_s", None),
     ]
-    lines = []
+    profile_entries = []
     for label, seconds_key, calls_key in profile_rows:
         total_s = float(stats.get(seconds_key, 0.0))
         calls = int(stats.get(calls_key, 0)) if calls_key is not None else 0
@@ -345,9 +391,19 @@ def print_extract_profiler_summary(video_name, stats):
             continue
         avg_ms = (total_s / calls * 1000.0) if calls > 0 else 0.0
         if calls > 0:
-            lines.append(f"{label}: calls {calls:,} | total {total_s:.2f}s | avg {avg_ms:.1f} ms")
+            line = f"{label}: calls {calls:,} | total {total_s:.2f}s | avg {avg_ms:.1f} ms"
         else:
-            lines.append(f"{label}: total {total_s:.2f}s")
+            line = f"{label}: total {total_s:.2f}s"
+        profile_entries.append((label, total_s, calls, line))
+    profile_entries.sort(key=lambda item: (-item[1], item[0]))
+    lines = [item[3] for item in profile_entries]
+
+    summary_lines = [f"Likely bottleneck: {_describe_video_bottleneck(stats)}"]
+    top_costs = _top_profiler_costs(stats)
+    if top_costs:
+        summary_lines.append("Top measured costs")
+        for label, seconds in top_costs:
+            summary_lines.append(f"- {label}: {seconds:.2f}s")
 
     extra_lines = []
     if int(stats.get("score_layout_evaluation_calls", 0)) > 0:
@@ -512,7 +568,7 @@ def print_extract_profiler_summary(video_name, stats):
         return
     LOGGER.summary_block(
         f"[{video_name} - Extract Profiler]",
-        [*lines, *extra_lines],
+        [*summary_lines, "", *lines, *extra_lines],
         color_name="dim",
     )
 
@@ -888,9 +944,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                 )
             local_progress.update(
                 completed_count,
-                color_video_detail("done ", f"{completed_count:02}/{len(tasks):02}", video_label)
-                + " | last race "
-                + LOGGER.video_value(f"{task['race_number']:03}/{len(tasks):03}", video_label),
+                _format_total_score_progress_detail(video_label, completed_count, len(tasks), int(task["race_number"])),
                 value_color_token=video_label,
             )
             _write_debug_rows(result)
@@ -967,9 +1021,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
                     )
                 local_progress.update(
                     completed_count,
-                    color_video_detail("done ", f"{completed_count:02}/{len(tasks):02}", video_label)
-                    + " | last race "
-                    + LOGGER.video_value(f"{task['race_number']:03}/{len(tasks):03}", video_label),
+                    _format_total_score_progress_detail(video_label, completed_count, len(tasks), int(task["race_number"])),
                     value_color_token=video_label,
                 )
                 _write_debug_rows(result)
@@ -1014,6 +1066,13 @@ def _run_total_score_phase_for_context(
     total_frames = context["total_frames"]
 
     LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Total Score - Phase Start]", video_label), "")
+    configured_workers = max(1, int(analysis_workers_override or SCORE_ANALYSIS_WORKERS))
+    active_workers = min(configured_workers, max(1, len(score_candidates)))
+    LOGGER.log(
+        color_video_scope(f"[Video {video_index}/{total_videos} - Total Score]", video_label),
+        f"Races queued: {len(score_candidates)} | Workers: {active_workers}",
+        color_name="cyan",
+    )
     total_score_progress = ProgressPrinter(
         color_video_scope(f"[Video {video_index}/{total_videos} - Total Score]", video_label),
         max(1, len(score_candidates)),
@@ -1641,6 +1700,11 @@ def _run_scan_phase_for_context(context, templates, csv_writer, metadata_writer)
 
     if context["detection_segment_tasks"]:
         LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
+        LOGGER.log(
+            color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
+            f"Source: {format_duration(total_frames / max(fps, 1.0))} | Mode: segmented | Workers: {len(context['detection_segment_tasks'])}",
+            color_name="cyan",
+        )
         scan_progress = ProgressPrinter(
             color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
             total_frames,
@@ -1691,6 +1755,11 @@ def _run_scan_phase_for_context(context, templates, csv_writer, metadata_writer)
         }
 
     LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_label), "")
+    LOGGER.log(
+        color_video_scope(f"[Video {video_index}/{total_videos} - Scan]", video_label),
+        f"Source: {format_duration(total_frames / max(fps, 1.0))} | Mode: sequential | Workers: 1",
+        color_name="cyan",
+    )
     scan_result = _run_serial_initial_scan(context, templates, csv_writer, metadata_writer)
     if scan_result.get("aborted"):
         return scan_result

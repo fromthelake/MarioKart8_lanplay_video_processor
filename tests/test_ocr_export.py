@@ -5,6 +5,7 @@ import pandas as pd
 from mk8_local_play.ocr_export import (
     _dedupe_review_reason_parts,
     _select_most_used_character,
+    build_player_count_summary_lines,
     build_final_standings_df,
     format_review_reason_for_export,
 )
@@ -55,3 +56,23 @@ class OcrExportTests(unittest.TestCase):
                 {"VideoName": "Demo", "Races": 2, "Position": 1, "PlayerName": "Beta", "TotalPoints": 20, "Character": "Yoshi", "CharacterRosterName": "Yoshi"},
             ],
         )
+
+    def test_build_player_count_summary_lines_uses_compact_consistent_message(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 2, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 2, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+            ]
+        )
+
+        lines, summary = build_player_count_summary_lines(
+            df,
+            lambda *_args, **_kwargs: [],
+            lambda count, singular, plural=None: singular if count == 1 else (plural or f"{singular}s"),
+        )
+
+        self.assertIn("Player count check", lines)
+        self.assertIn("- Demo: 2 races | consistent at 2 players", lines)
+        self.assertEqual(summary["Demo"]["player_count_summary"], "consistent (2 players)")

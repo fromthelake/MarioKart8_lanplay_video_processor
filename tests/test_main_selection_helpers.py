@@ -35,6 +35,29 @@ def _make_case_dir(case_name: str) -> Path:
 
 
 class MainSelectionHelpersTests(unittest.TestCase):
+    def test_format_input_summary_lines_returns_compact_selection_block(self):
+        lines = main._format_input_summary_lines(
+            [
+                ("Video_A", "Group 1/Video_A.mp4 (01:55:15)"),
+                ("Video_B", "Group 1/Video_B.mp4 (01:54:00)"),
+            ],
+            2 * 3600,
+        )
+
+        self.assertEqual(lines[:2], ["Videos selected: 2", "Total source length: 02:00:00"])
+        self.assertIn("Selection", lines)
+        self.assertIn("01. Group 1/Video_A.mp4 (01:55:15)", lines)
+
+    def test_summarize_pipeline_bottleneck_prefers_extract_when_it_dominates(self):
+        self.assertEqual(
+            main._summarize_pipeline_bottleneck(
+                extract_duration_s=500.0,
+                ocr_duration_s=120.0,
+                total_processing_seconds=600.0,
+            ),
+            "Video loading and frame extraction",
+        )
+
     def test_overlap_scopes_use_equal_width_for_aligned_columns(self):
         self.assertEqual(len(main.OVERLAP_SCOPE), len(main.OVERLAP_SCOPE_OCR))
         self.assertTrue(main.OVERLAP_SCOPE.startswith("[Run - Overlap]"))

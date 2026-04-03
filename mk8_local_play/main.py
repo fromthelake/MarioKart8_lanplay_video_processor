@@ -259,20 +259,28 @@ def show_error(title: str, message: str) -> None:
         print(f"{title}: {message}", file=sys.stderr)
 
 
-def _format_simple_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+def _pad_table_cell(value: object, width: int, alignment: str = "left") -> str:
+    text = str(value)
+    if alignment == "right":
+        return text.rjust(width)
+    return text.ljust(width)
+
+
+def _format_simple_table(headers: list[str], rows: list[list[str]], alignments: list[str] | None = None) -> list[str]:
     if not rows:
         return []
+    alignments = list(alignments or ["left"] * len(headers))
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
             widths[index] = max(widths[index], len(str(value)))
     table_lines = [
-        "  " + "  ".join(headers[index].ljust(widths[index]) for index in range(len(headers))),
+        "  " + "  ".join(_pad_table_cell(headers[index], widths[index], alignments[index]) for index in range(len(headers))),
         "  " + "  ".join(("-" * widths[index]).ljust(widths[index]) for index in range(len(headers))),
     ]
     for row in rows:
         table_lines.append(
-            "  " + "  ".join(str(row[index]).ljust(widths[index]) for index in range(len(headers)))
+            "  " + "  ".join(_pad_table_cell(row[index], widths[index], alignments[index]) for index in range(len(headers)))
         )
     return table_lines
 
@@ -301,12 +309,46 @@ def _format_simple_table_widths(headers: list[str], rows: list[list[str]]) -> li
     return widths
 
 
-def _format_colored_table_row(values: list[str], widths: list[int], video_identity: object) -> str:
+def _format_colored_table_row(values: list[str], widths: list[int], video_identity: object, alignments: list[str] | None = None) -> str:
+    alignments = list(alignments or ["left"] * len(values))
     padded_values = [
-        LOGGER.video_value(str(values[index]).ljust(widths[index]), video_identity)
+        LOGGER.video_value(_pad_table_cell(values[index], widths[index], alignments[index]), video_identity)
         for index in range(len(values))
     ]
     return "  " + "  ".join(padded_values)
+
+
+def _format_input_summary_lines(source_summaries: list[tuple[str, str]], total_source_seconds: float) -> list[str]:
+    lines = [
+        f"Videos selected: {len(source_summaries)}",
+        f"Total source length: {extract_frames.format_duration(total_source_seconds)}",
+    ]
+    if source_summaries:
+        lines.extend(["", "Selection"])
+        for index, (_video_identity, summary) in enumerate(source_summaries, start=1):
+            lines.append(f"{index:02}. {summary}")
+    return lines
+
+
+def _summarize_pipeline_bottleneck(
+    *,
+    extract_duration_s: float,
+    ocr_duration_s: float,
+    total_processing_seconds: float,
+) -> str:
+    if total_processing_seconds <= 0:
+        return "n/a"
+    extract_share = extract_duration_s / total_processing_seconds
+    ocr_share = ocr_duration_s / total_processing_seconds
+    if extract_share >= 0.75 and extract_duration_s >= (ocr_duration_s * 1.15):
+        return "Video loading and frame extraction"
+    if ocr_share >= 0.65 and ocr_duration_s >= (extract_duration_s * 0.90):
+        return "OCR and workbook export"
+    if extract_share >= 0.55:
+        return "Mostly video loading and frame extraction"
+    if ocr_share >= 0.45:
+        return "Mixed, leaning OCR and export"
+    return "Mixed pipeline"
 
 
 def _review_summary_text(video_ocr_summary: dict) -> str:
@@ -1536,13 +1578,19 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     total_repairs = int(extract_summary.get('repair_count', 0))
     cumulative_elapsed_s = sum(float(summary.get("processing_duration_s", 0.0)) for summary in extract_summary.get("per_video_summaries", []))
     overlap_time_saved_s = max(0.0, cumulative_elapsed_s - total_processing_seconds)
+    likely_bottleneck = _summarize_pipeline_bottleneck(
+        extract_duration_s=float(extract_summary.get("duration_s", 0.0)),
+        ocr_duration_s=total_ocr_duration_s,
+        total_processing_seconds=total_processing_seconds,
+    )
     performance_lines = [
         "Run totals",
         *_format_metric_table([
-            ("Total source video length", extract_frames.format_duration(total_source_seconds)),
-            ("Total processing time", extract_frames.format_duration(total_processing_seconds)),
-            ("Source/process ratio", f"{ratio:.1f}x real-time"),
-            ("Pipeline time avoided", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Source video length", extract_frames.format_duration(total_source_seconds)),
+            ("Processing time", extract_frames.format_duration(total_processing_seconds)),
+            ("Playback ratio", f"{ratio:.1f}x real-time"),
+            ("Overlap time saved", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Likely bottleneck", likely_bottleneck),
         ]),
         "",
         "Phase timings",
@@ -1555,6 +1603,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 ["Repair file creation", extract_frames.format_duration(total_repair_s), f"{total_repairs} {('video' if total_repairs == 1 else 'videos')}"],
                 ["Mode", "", f"overlapped by {overlap_ocr_mode} ({overlap_ocr_consumers} GPU OCR consumer{'s' if overlap_ocr_consumers != 1 else ''})"],
             ],
+            alignments=["left", "right", "left"],
         ),
     ]
     if diagnostics_enabled:
@@ -1603,6 +1652,8 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             performance_lines.append(f"- Avg RAM during extract while OCR active: {avg_ram_extract:.1f} GB")
     if extract_summary.get("per_video_summaries"):
         performance_lines.extend(["", "Per-video summary"])
+        table_headers = ["Video", "Source", "Total", "Scan", "Score", "OCR", "Races", "Players", "Review"]
+        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "left", "left"]
         per_video_rows = []
         for summary in extract_summary["per_video_summaries"]:
             video_identity = str(summary.get("video_label") or build_video_identity(Path(summary["video_name"]), include_subfolders=include_subfolders))
@@ -1623,11 +1674,12 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 _review_summary_text(video_ocr_summary),
             ])
         formatted_table = _format_simple_table(
-            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            table_headers,
             per_video_rows,
+            alignments=table_alignments,
         )
         row_widths = _format_simple_table_widths(
-            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            table_headers,
             per_video_rows,
         )
         performance_lines.extend(formatted_table[:2])
@@ -1636,7 +1688,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 extract_summary["per_video_summaries"][index].get("video_label")
                 or build_video_identity(Path(extract_summary["per_video_summaries"][index]["video_name"]), include_subfolders=include_subfolders)
             )
-            performance_lines.append(_format_colored_table_row(row_values, row_widths, video_identity))
+            performance_lines.append(_format_colored_table_row(row_values, row_widths, video_identity, alignments=table_alignments))
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
     LOGGER.summary_block("[Run - Performance Summary]", performance_lines, color_name="cyan")
     LOGGER.blank_lines(2)
@@ -1705,12 +1757,11 @@ def run_all(
         video_files,
         include_subfolders=include_subfolders,
     )
-    LOGGER.log("[Run - Input Summary]", f"Videos: {len(source_summaries)} | Total source length: {extract_frames.format_duration(total_source_seconds)}", color_name="cyan")
-    for index, (video_identity, summary) in enumerate(source_summaries, start=1):
-        LOGGER.log(
-            "[Run - Input Summary]",
-            LOGGER.video_value(f"{index:03}.", video_identity) + " " + LOGGER.color_video_identity(summary, video_identity),
-        )
+    LOGGER.summary_block(
+        "[Run - Input Summary]",
+        _format_input_summary_lines(source_summaries, total_source_seconds),
+        color_name="cyan",
+    )
     if selection_mode:
         cleared = clear_output_results_for_videos(video_files, include_subfolders=include_subfolders)
         cleanup_message = (
@@ -1753,13 +1804,19 @@ def run_all(
     total_repairs = int(extract_summary.get('repair_count', 0))
     cumulative_elapsed_s = sum(float(summary.get("processing_duration_s", 0.0)) for summary in per_video_summaries)
     overlap_time_saved_s = max(0.0, cumulative_elapsed_s - total_processing_seconds)
+    likely_bottleneck = _summarize_pipeline_bottleneck(
+        extract_duration_s=float(extract_summary.get('duration_s', 0.0)),
+        ocr_duration_s=float(ocr_result.get('duration_s', 0.0)),
+        total_processing_seconds=total_processing_seconds,
+    )
     performance_lines = [
         "Run totals",
         *_format_metric_table([
-            ("Total source video length", extract_frames.format_duration(total_source_seconds)),
-            ("Total processing time", extract_frames.format_duration(total_processing_seconds)),
-            ("Source/process ratio", f"{ratio:.1f}x real-time"),
-            ("Pipeline time avoided", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Source video length", extract_frames.format_duration(total_source_seconds)),
+            ("Processing time", extract_frames.format_duration(total_processing_seconds)),
+            ("Playback ratio", f"{ratio:.1f}x real-time"),
+            ("Overlap time saved", extract_frames.format_duration(overlap_time_saved_s)),
+            ("Likely bottleneck", likely_bottleneck),
         ]),
         "",
         "Phase timings",
@@ -1771,10 +1828,13 @@ def run_all(
                 ["Corrupt preflight checks", extract_frames.format_duration(total_corrupt_check_s), ""],
                 ["Repair file creation", extract_frames.format_duration(total_repair_s), f"{total_repairs} {('video' if total_repairs == 1 else 'videos')}"],
             ],
+            alignments=["left", "right", "left"],
         ),
     ]
     if per_video_summaries:
         performance_lines.extend(["", "Per-video summary"])
+        table_headers = ["Video", "Source", "Total", "Scan", "Score", "OCR", "Races", "Players", "Review"]
+        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "left", "left"]
         per_video_rows = []
         for summary in per_video_summaries:
             video_identity = str(summary.get("video_label") or Path(summary["video_name"]).stem)
@@ -1795,11 +1855,12 @@ def run_all(
                 _review_summary_text(video_ocr_summary),
             ])
         formatted_table = _format_simple_table(
-            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            table_headers,
             per_video_rows,
+            alignments=table_alignments,
         )
         row_widths = _format_simple_table_widths(
-            ["Video", "Source", "Elapsed", "Scan", "Score", "OCR", "Races", "Players", "Review"],
+            table_headers,
             per_video_rows,
         )
         performance_lines.extend(formatted_table[:2])
@@ -1809,6 +1870,7 @@ def run_all(
                     row_values,
                     row_widths,
                     str(per_video_summaries[index].get("video_label") or Path(per_video_summaries[index]["video_name"]).stem),
+                    alignments=table_alignments,
                 )
             )
     performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])

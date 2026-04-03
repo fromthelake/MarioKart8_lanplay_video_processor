@@ -1170,7 +1170,7 @@ def _color_detection_message(video_label, race_number: int, description: str, ti
 
 def _color_live_detection_detail(video_label, score_count: int, track_count: int, race_count: int) -> str:
     return (
-        "Live detections: score "
+        "Found score "
         + LOGGER.video_value(f"{int(score_count):2d}", video_label)
         + " | track "
         + LOGGER.video_value(f"{int(track_count):2d}", video_label)

@@ -408,7 +408,7 @@ def write_results_workbooks(df, folder_path):
 def build_player_count_summary_lines(df, build_race_warning_messages, pluralize):
     """Build the human-readable OCR completion summary shown in the console."""
     per_video_summary = {}
-    lines = ["", "Per-video player count summary"]
+    lines = ["", "Player count check"]
     for race_class, race_group in df.groupby("RaceClass", sort=False):
         race_count_for_class = int(race_group["RaceIDNumber"].nunique())
         player_count_distribution = race_group.groupby("RaceIDNumber").size().value_counts().sort_index(ascending=False)
@@ -446,14 +446,14 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
         if not inconsistent_races:
             lines.append(
                 f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | "
-                f"Player count was consistent ({dominant_players} players)"
+                f"consistent at {dominant_players} players"
             )
             continue
 
-        lines.append(f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | Player count was not consistent")
-        lines.append(f"  Most races showed {dominant_players} players")
-        lines.append(f"  Summary: {distribution_text}")
-        lines.append("  Please review these races:")
+        lines.append(f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | mixed player counts")
+        lines.append(f"  Most common: {dominant_players} players")
+        lines.append(f"  Breakdown: {distribution_text}")
+        lines.append("  Review these races:")
         for race_id, track_name, messages in inconsistent_races:
             for message in messages:
                 lines.append(f"  - Race {race_id:03} | Track: {track_name} | {message}")
@@ -469,19 +469,19 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
 
     lines = [f"Duration: {format_duration(time.time() - phase_start_time)}", f"Races processed: {race_count}"]
     lines.extend(progress_peak_lines)
-    lines.extend(["", "OCR call profile"])
+    lines.extend(["", "OCR mode"])
     lines.extend(ocr_profiler_lines)
     summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     lines.extend(summary_lines)
     lines.extend(
         [
             "",
-            "Output files:",
-            str(workbook_payload["output_excel_path"]),
-            str(workbook_payload["debug_output_excel_path"]),
-            str(workbook_payload["output_csv_path"]),
-            str(workbook_payload["final_standings_csv_path"]),
-            str(workbook_payload["debug_output_csv_path"]),
+            "Saved files",
+            f"- Results workbook: {workbook_payload['output_excel_path']}",
+            f"- Debug workbook: {workbook_payload['debug_output_excel_path']}",
+            f"- Results CSV: {workbook_payload['output_csv_path']}",
+            f"- Final standings CSV: {workbook_payload['final_standings_csv_path']}",
+            f"- Debug CSV: {workbook_payload['debug_output_csv_path']}",
         ]
     )
 
