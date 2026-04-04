@@ -1178,7 +1178,10 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
     """
     for metric in reversed(row_metrics):
         row_number = int(metric.get("row_number", 0))
-        best_position_score = float(metric.get("best_position_score", 0.0))
+        best_position_score = max(
+            float(metric.get("best_position_score", 0.0)),
+            float(metric.get("raw_best_position_score", 0.0)),
+        )
         occupancy_score = float(metric.get("occupancy_score", 0.0))
 
         threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
@@ -1858,6 +1861,10 @@ def extract_scoreboard_observation(
     (position_x1, position_y1), (position_x2, position_y2) = position_strip_roi(score_layout_id=score_layout.layout_id)
 
     stage_start = time.perf_counter()
+    raw_position_metrics = build_position_signal_metrics(processed_img, score_layout_id=score_layout.layout_id)
+    record_observation_stage("build_position_signal_metrics_raw", time.perf_counter() - stage_start)
+
+    stage_start = time.perf_counter()
     normalized_position_strip = build_normalized_position_strip(processed_img, score_layout_id=score_layout.layout_id)
     record_observation_stage("normalize_position_strip", time.perf_counter() - stage_start)
 
@@ -1950,8 +1957,11 @@ def extract_scoreboard_observation(
     stage_start = time.perf_counter()
     position_metrics = build_position_signal_metrics(processed_img, score_layout_id=score_layout.layout_id)
     record_observation_stage("build_position_signal_metrics", time.perf_counter() - stage_start)
-    for row_metric, position_metric in zip(row_metrics, position_metrics):
+    for row_metric, position_metric, raw_position_metric in zip(row_metrics, position_metrics, raw_position_metrics):
         row_metric.update(position_metric)
+        row_metric["raw_expected_position_score"] = round(float(raw_position_metric.get("expected_position_score", 0.0)), 3)
+        row_metric["raw_best_position_score"] = round(float(raw_position_metric.get("best_position_score", 0.0)), 3)
+        row_metric["raw_best_position_template"] = int(raw_position_metric.get("best_position_template", 0) or 0)
     valid_rows = [bool(metric["legacy_row_present"]) for metric in row_metrics]
 
     visible_rows = 0
@@ -2784,7 +2794,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     )
     score_count_observations = (
         late_override_observations if late_override_observations
-        else select_consensus_window(score_core_observations, "early")
+        else select_consensus_window(score_core_observations, "late")
     )
     total_consensus_observations = total_observations
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)

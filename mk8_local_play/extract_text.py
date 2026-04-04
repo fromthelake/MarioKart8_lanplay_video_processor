@@ -1836,7 +1836,9 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         mid_index = len(race_context_entries) // 2
         preselected_points_anchor_frame = int(race_context_entries[mid_index][0])
         preselected_point_frames = [frame for _frame_number, frame in race_context_entries[:mid_index + 1]]
-        preselected_late_frames = [frame for _frame_number, frame in race_context_entries[mid_index:]]
+        preselected_late_frames = [
+            frame for _frame_number, frame in race_context_entries[-TOTAL_SCORE_CONSENSUS_WINDOW_SIZE:]
+        ]
     if APP_CONFIG.write_debug_score_images:
         race_mid_index = len(race_frame_entries) // 2 if race_frame_entries else -1
         annotate_paths = []
