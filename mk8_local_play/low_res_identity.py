@@ -16,7 +16,7 @@ from .extract_common import (
     debug_low_res_resolution_path,
     find_score_bundle_anchor_path,
 )
-from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote
+from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote, weighted_similarity
 from .ocr_scoreboard_consensus import (
     character_row_roi,
     load_character_templates,
@@ -523,6 +523,50 @@ def _clean_review_reason_codes(value: object) -> str:
 
 
 def _resolve_placeholder_names(identity_state: Dict[str, dict]) -> Dict[str, dict]:
+    def merge_candidate_scores(
+        candidate_scores: dict[str, float],
+        candidate_counts: dict[str, int],
+    ) -> list[tuple[str, float, float, int]]:
+        clustered: list[dict[str, object]] = []
+        for candidate_name, score in sorted(candidate_scores.items(), key=lambda item: (-item[1], item[0])):
+            count = int(candidate_counts.get(candidate_name, 0))
+            assigned_cluster = None
+            for cluster in clustered:
+                canonical_name = str(cluster["canonical_name"])
+                if weighted_similarity(candidate_name, canonical_name) >= 0.86:
+                    assigned_cluster = cluster
+                    break
+            if assigned_cluster is None:
+                assigned_cluster = {
+                    "names": [candidate_name],
+                    "canonical_name": candidate_name,
+                    "score": 0.0,
+                    "count": 0,
+                }
+                clustered.append(assigned_cluster)
+            assigned_cluster["names"].append(candidate_name)
+            assigned_cluster["score"] = float(assigned_cluster["score"]) + float(score)
+            assigned_cluster["count"] = int(assigned_cluster["count"]) + count
+            assigned_cluster["canonical_name"] = choose_canonical_name(list(assigned_cluster["names"])) or str(candidate_name)
+        ranked = sorted(
+            [
+                (
+                    str(cluster["canonical_name"]),
+                    float(cluster["score"]),
+                    float(
+                        max(
+                            (float(candidate_scores.get(name, 0.0)) for name in cluster["names"]),
+                            default=0.0,
+                        )
+                    ),
+                    int(cluster["count"]),
+                )
+                for cluster in clustered
+            ],
+            key=lambda item: (-item[1], -item[3], item[0]),
+        )
+        return ranked
+
     evidence = {}
     resolved = {}
     used_names = set()
@@ -537,11 +581,11 @@ def _resolve_placeholder_names(identity_state: Dict[str, dict]) -> Dict[str, dic
                 continue
             candidate_scores[name] += float(item['assignment_score'])
             candidate_counts[name] += 1
-        ranked = sorted(candidate_scores.items(), key=lambda kv: (-kv[1], -candidate_counts[kv[0]], kv[0]))
+        ranked = merge_candidate_scores(candidate_scores, candidate_counts)
         top_name = ranked[0][0] if ranked else ''
         top_score = ranked[0][1] if ranked else 0.0
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-        evidence_count = sum(candidate_counts.values())
+        evidence_count = sum(item[3] for item in ranked)
         evidence[placeholder] = {
             'TopCandidate': top_name,
             'TopScore': round(top_score, 3),
@@ -568,13 +612,13 @@ def _resolve_placeholder_names(identity_state: Dict[str, dict]) -> Dict[str, dic
                     continue
                 candidate_scores[name] += float(item['assignment_score'])
                 candidate_counts[name] += 1
-            ranked = sorted(candidate_scores.items(), key=lambda kv: (-kv[1], -candidate_counts[kv[0]], kv[0]))
+            ranked = merge_candidate_scores(candidate_scores, candidate_counts)
             if not ranked:
                 continue
-            top_name, top_score = ranked[0]
+            top_name, top_score, _top_member_score, _top_count = ranked[0]
             second_score = ranked[1][1] if len(ranked) > 1 else 0.0
             ratio = top_score / max(second_score, 0.001)
-            evidence_count = sum(candidate_counts.values())
+            evidence_count = sum(item[3] for item in ranked)
             if pass_index == 1:
                 should_resolve = evidence_count >= 3 and top_score >= 2.0 and (top_score - second_score >= 1.0 or ratio >= 1.18)
                 reason = 'resolved_pass1'

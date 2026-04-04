@@ -65,7 +65,7 @@ CHARACTER_ROW_PADDING_BOTTOM = 2
 EXCLUDED_CHARACTER_TEMPLATE_INDICES = {79, 80, 81}
 OBSERVATION_STAGE_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CALL_MATRIX_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
-CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(set)
+CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(dict)
 CHARACTER_SHORTLIST_LOCK = threading.Lock()
 CHARACTER_SHORTLIST_STATS = defaultdict(int)
 PLAYER_CHARACTER_PRIORS = defaultdict(dict)
@@ -74,6 +74,7 @@ CHARACTER_SHORTLIST_MIN_MARGIN = 5.0
 CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 76.0
 CHARACTER_PRIOR_STABLE_MIN_SEEN = 2
 CHARACTER_PRIOR_MAX_FAST_ACCEPTS = 6
+CHARACTER_SHORTLIST_ACCELERATION_ENABLED = os.environ.get("MK8_CHARACTER_SHORTLIST_ACCELERATION", "0").strip().lower() not in {"0", "false", "no", "off"}
 LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE = APP_CONFIG.low_res_row12_character_fallback_min_confidence
 LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE = APP_CONFIG.low_res_row12_character_fallback_min_position_score
 ULTRA_LOW_RES_ROW_LEFT = CHARACTER_ROI_LEFT
@@ -254,6 +255,44 @@ def reset_character_shortlist_state() -> None:
         CHARACTER_SHORTLIST_BY_VIDEO.clear()
         PLAYER_CHARACTER_PRIORS.clear()
     CHARACTER_SHORTLIST_STATS.clear()
+
+
+def _eligible_character_shortlist_indices(
+    shortlist_state: Dict[int, int] | set[int] | None,
+    race_id_number: int | None,
+) -> set[int]:
+    if shortlist_state is None:
+        return set()
+    if isinstance(shortlist_state, set):
+        return {int(value) for value in shortlist_state}
+    if race_id_number is None:
+        return {int(value) for value in shortlist_state.keys()}
+    current_race = int(race_id_number)
+    return {
+        int(character_index)
+        for character_index, first_seen_race in shortlist_state.items()
+        if int(first_seen_race) < current_race
+    }
+
+
+def _eligible_player_character_priors(
+    prior_state_by_player: Dict[str, Dict[str, object]] | None,
+    race_id_number: int | None,
+) -> Dict[str, Dict[str, object]]:
+    if not prior_state_by_player:
+        return {}
+    if race_id_number is None:
+        return {str(key): dict(value) for key, value in prior_state_by_player.items()}
+    current_race = int(race_id_number)
+    eligible = {}
+    for player_key, prior_state in prior_state_by_player.items():
+        try:
+            last_race_id = int(prior_state.get("last_race_id", 0) or 0)
+        except (TypeError, ValueError):
+            last_race_id = 0
+        if last_race_id < current_race:
+            eligible[str(player_key)] = dict(prior_state)
+    return eligible
 
 
 def player_identity_key(name: str) -> str:
@@ -476,7 +515,13 @@ def best_character_matches(row_roi: np.ndarray, templates: List[Dict[str, object
     return ranked_matches[:limit]
 
 
-def update_player_character_prior(video_context: str | None, player_name: str, match: Dict[str, object]) -> None:
+def update_player_character_prior(
+    video_context: str | None,
+    player_name: str,
+    match: Dict[str, object],
+    *,
+    race_id_number: int | None = None,
+) -> None:
     if not video_context:
         return
     player_key = player_identity_key(player_name)
@@ -485,6 +530,10 @@ def update_player_character_prior(video_context: str | None, player_name: str, m
     character_index = match.get("CharacterIndex")
     if character_index is None:
         return
+    try:
+        current_race_id = int(race_id_number or 0)
+    except (TypeError, ValueError):
+        current_race_id = 0
     with CHARACTER_SHORTLIST_LOCK:
         player_priors = PLAYER_CHARACTER_PRIORS[str(video_context)]
         existing = player_priors.get(player_key)
@@ -496,6 +545,7 @@ def update_player_character_prior(video_context: str | None, player_name: str, m
                 existing["fast_accepts_since_revalidation"] = 0
             existing["CharacterMatchConfidence"] = float(match.get("CharacterMatchConfidence", existing.get("CharacterMatchConfidence", 0.0)))
             existing["Character"] = str(match.get("Character", existing.get("Character", "")))
+            existing["last_race_id"] = max(int(existing.get("last_race_id", 0) or 0), current_race_id)
         else:
             player_priors[player_key] = {
                 "CharacterIndex": int(character_index),
@@ -503,6 +553,7 @@ def update_player_character_prior(video_context: str | None, player_name: str, m
                 "CharacterMatchConfidence": float(match.get("CharacterMatchConfidence", 0.0)),
                 "seen_count": 1,
                 "fast_accepts_since_revalidation": 0,
+                "last_race_id": current_race_id,
             }
 
 
@@ -887,6 +938,7 @@ def build_character_match_metrics(
     names: List[str] | None = None,
     name_confidences: List[int] | None = None,
     video_context: str | None = None,
+    race_id_number: int | None = None,
     score_layout_id: str | None = None,
 ) -> List[Dict[str, object]]:
     """Template-match the full-color character icons for each scoreboard row."""
@@ -904,9 +956,19 @@ def build_character_match_metrics(
 
     image_height, image_width = frame_image.shape[:2]
     metrics = []
-    with CHARACTER_SHORTLIST_LOCK:
-        shortlist_indices = set(CHARACTER_SHORTLIST_BY_VIDEO.get(str(video_context or ""), set()))
-        prior_state_by_player = dict(PLAYER_CHARACTER_PRIORS.get(str(video_context or ""), {}))
+    if CHARACTER_SHORTLIST_ACCELERATION_ENABLED:
+        with CHARACTER_SHORTLIST_LOCK:
+            shortlist_indices = _eligible_character_shortlist_indices(
+                CHARACTER_SHORTLIST_BY_VIDEO.get(str(video_context or ""), {}),
+                race_id_number,
+            )
+            prior_state_by_player = _eligible_player_character_priors(
+                PLAYER_CHARACTER_PRIORS.get(str(video_context or ""), {}),
+                race_id_number,
+            )
+    else:
+        shortlist_indices = set()
+        prior_state_by_player = {}
     templates_by_index = {int(template["character_index"]): template for template in templates}
     for row_index in range(12):
         (x1, y1), (x2, y2) = character_row_roi(row_index, score_layout_id=score_layout_id)
@@ -964,7 +1026,7 @@ def build_character_match_metrics(
                 CHARACTER_SHORTLIST_STATS["prior_accepts"] += 1
                 best_match = dict(shortlist_best)
                 best_match["CharacterMatchMethod"] = "character_prior_confirm"
-                update_player_character_prior(video_context, player_name, best_match)
+                update_player_character_prior(video_context, player_name, best_match, race_id_number=race_id_number)
                 metrics.append(best_match)
                 continue
             CHARACTER_SHORTLIST_STATS["prior_fallbacks"] += 1
@@ -990,8 +1052,11 @@ def build_character_match_metrics(
                 best_index = int(best_match["CharacterIndex"])
                 with CHARACTER_SHORTLIST_LOCK:
                     shortlist = CHARACTER_SHORTLIST_BY_VIDEO[str(video_context)]
-                    if best_index not in shortlist:
-                        shortlist.add(best_index)
+                    existing_first_seen = shortlist.get(best_index)
+                    if existing_first_seen is None or (
+                        race_id_number is not None and int(race_id_number) < int(existing_first_seen)
+                    ):
+                        shortlist[best_index] = int(race_id_number or 0)
                         CHARACTER_SHORTLIST_STATS["shortlist_expansions"] += 1
 
         metrics.append(best_match or {
@@ -1001,8 +1066,8 @@ def build_character_match_metrics(
             "CharacterMatchMethod": "no_match",
         })
 
-        if metrics[-1].get("CharacterIndex") is not None:
-            update_player_character_prior(video_context, player_name, metrics[-1])
+        if CHARACTER_SHORTLIST_ACCELERATION_ENABLED and metrics[-1].get("CharacterIndex") is not None:
+            update_player_character_prior(video_context, player_name, metrics[-1], race_id_number=race_id_number)
     return metrics
 
 
@@ -1776,6 +1841,7 @@ def extract_scoreboard_observation(
     annotate_path: str | None = None,
     annotation_prefix: str = "",
     video_context: str | None = None,
+    race_id_number: int | None = None,
     score_layout_id: str | None = None,
     bundle_kind: str = "",
     name_field_name: str = "",
@@ -1867,6 +1933,7 @@ def extract_scoreboard_observation(
             names=names,
             name_confidences=confidence_scores,
             video_context=video_context,
+            race_id_number=race_id_number,
             score_layout_id=score_layout.layout_id,
         )
         record_observation_stage("character_metrics", time.perf_counter() - stage_start)
@@ -2573,6 +2640,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                                 annotate_paths: List[str | None] | None = None,
                                 total_annotate_paths: List[str | None] | None = None,
                                 video_context: str | None = None, is_low_res: bool = False,
+                                race_id_number: int | None = None,
                                 score_layout_id: str | None = None,
                                 preselected_race_point_anchor_frame: int | None = None,
                                 preselected_point_frames: List[np.ndarray] | None = None,
@@ -2597,6 +2665,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 current_annotate_path,
                 annotation_prefix="RS-",
                 video_context=video_context,
+                race_id_number=race_id_number,
                 score_layout_id=score_layout_id,
                 bundle_kind="2RaceScore",
                 name_field_name="RacePlayerName",
@@ -2625,6 +2694,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 current_total_annotate_path,
                 annotation_prefix="TS-",
                 video_context=video_context,
+                race_id_number=race_id_number,
                 score_layout_id=score_layout_id,
                 bundle_kind="3TotalScore",
                 name_field_name="TotalPlayerName",

@@ -1,5 +1,27 @@
 # Total Score Trace Findings 2026-04-03
 
+## Besluit na menselijke review
+
+Na de brede drie-modus review op de top-30 set is `transition + stable-hint` alsnog als nieuwe
+`Total Score` baseline geaccepteerd.
+
+Reden:
+
+- de grote snelheidswinst bleef overeind
+- de frame-selectie bleek inhoudelijk vrijwel volledig gelijk
+- in de kleine restgroep met andere consensusframes bleek de nieuwe selectie visueel juist beter
+- de resterende outputdrift bleek hoofdzakelijk downstream OCR/identity-logica en is daarna sterk
+  teruggebracht
+- de overblijvende verschillen zijn door menselijke review acceptabel bevonden ten opzichte van de
+  winst
+
+Praktisch betekent dit:
+
+- `transition + stable-hint` staat nu standaard aan
+- `transition-only` blijft vooral nuttig als tussenvariant voor gerichte A/B-vergelijkingen
+- de oude brede zoekmethode blijft nog steeds bereikbaar via env overrides door de fast-path
+  expliciet uit te zetten
+
 ## Scope
 
 Deze notitie legt het gerichte Total Score frame-trace onderzoek vast.
@@ -280,7 +302,7 @@ Rapport:
 - `.codex_tmp/fast_path_benchmark_top30.md`
 - `.codex_tmp/fast_path_transition_only_top30.md`
 
-### Resultaat van de brede test
+### Resultaat van de eerste brede test
 
 Volledige fast-path (`transition + stable-hint`):
 
@@ -306,11 +328,19 @@ Transition-only (`stable-hint` uit):
   - `Tournament_Results.csv`: **verschillend**
   - `Final_Standings.csv`: **verschillend**
 
-Conclusie:
+Tussenconclusie op dat moment:
 
 - de timing-fast-path is **inhoudelijk kansrijk** en levert grote wall-clock winst op
-- maar is **nog niet baseline-veilig** over een brede videomix
-- ook de lichtere `transition-only` variant is nog niet output-identiek
+- maar was in deze eerste brede meting **nog niet baseline-veilig** over een brede videomix
+- ook de lichtere `transition-only` variant was toen nog niet output-identiek
+
+Deze tussenstand is later opgevolgd met:
+
+- bundle-level review
+- downstream OCR/identity fixes
+- drie-modus menselijk reviewwerk
+
+Daarna is `transition + stable-hint` alsnog als baseline geaccepteerd; zie het besluit bovenaan dit document.
 
 ### Welke video's gaven andere resultaten?
 

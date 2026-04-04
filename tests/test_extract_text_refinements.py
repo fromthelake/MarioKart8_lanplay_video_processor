@@ -23,6 +23,8 @@ class TestExtractTextRefinements(TestCase):
         self.assertEqual(resolve_character_variant_family_name("Pink Shy Guy"), "Shy Guy")
         self.assertEqual(resolve_character_variant_family_name("Yoshi"), "Yoshi")
         self.assertEqual(resolve_character_variant_family_name("Birdo"), "Birdo")
+        self.assertEqual(resolve_character_variant_family_name("Cat Peach"), "Peach")
+        self.assertEqual(resolve_character_variant_family_name("Peachette"), "Peach")
         self.assertEqual(resolve_character_variant_family_name("Waluigi"), "")
 
     def test_character_variant_family_templates_include_default_and_colored_variants(self):
@@ -39,6 +41,22 @@ class TestExtractTextRefinements(TestCase):
         self.assertEqual(
             [template["character_name"] for template in family_templates],
             ["Shy Guy", "Pink Shy Guy", "Orange Shy Guy"],
+        )
+
+    def test_character_variant_family_templates_include_explicit_peach_family(self):
+        templates = [
+            {"character_name": "Peach", "character_index": 2},
+            {"character_name": "Cat Peach", "character_index": 6},
+            {"character_name": "Baby Peach", "character_index": 42},
+            {"character_name": "Peachette", "character_index": 64},
+            {"character_name": "Waluigi", "character_index": 26},
+        ]
+
+        family_templates = character_variant_family_templates(templates, "Cat Peach")
+
+        self.assertEqual(
+            [template["character_name"] for template in family_templates],
+            ["Peach", "Cat Peach", "Baby Peach", "Peachette"],
         )
 
     def test_diagnostic_character_variant_score_prefers_matching_family_template(self):
@@ -64,6 +82,34 @@ class TestExtractTextRefinements(TestCase):
         green_score = diagnostic_character_variant_score(source, family_templates[1]["template_image"], diagnostic_mask)
 
         self.assertGreater(green_score, shy_score)
+
+    def test_peach_family_diagnostic_mask_keeps_variant_specific_alpha_regions(self):
+        alpha_full = np.full((2, 2), 255, dtype=np.uint8)
+        alpha_cat = np.array([[255, 255], [0, 0]], dtype=np.uint8)
+        family_templates = [
+            {
+                "character_name": "Peach",
+                "character_index": 2,
+                "template_image": np.full((2, 2, 3), (0, 200, 255), dtype=np.uint8),
+                "template_alpha": alpha_full,
+            },
+            {
+                "character_name": "Cat Peach",
+                "character_index": 6,
+                "template_image": np.full((2, 2, 3), (0, 150, 255), dtype=np.uint8),
+                "template_alpha": alpha_cat,
+            },
+            {
+                "character_name": "Baby Peach",
+                "character_index": 42,
+                "template_image": np.full((2, 2, 3), (0, 180, 255), dtype=np.uint8),
+                "template_alpha": alpha_full,
+            },
+        ]
+
+        diagnostic_mask = build_character_variant_family_diagnostic_mask(family_templates, family_name="Peach")
+
+        self.assertTrue(bool(diagnostic_mask[1, 0]))
 
     def test_refine_character_variant_families_promotes_stable_diagnostic_winner(self):
         df = pd.DataFrame(
@@ -143,6 +189,82 @@ class TestExtractTextRefinements(TestCase):
                         refined = refine_character_variant_families(df, frames_folder=".")
 
         self.assertEqual(set(refined["Character"]), {"Green Shy Guy"})
+        self.assertTrue(
+            all("variant_family_diagnostic_refine" in str(value) for value in refined["CharacterMatchMethod"])
+        )
+
+    def test_refine_character_variant_families_can_stabilize_cat_peach_family(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoPeach",
+                    "RaceIDNumber": 1,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Amber",
+                    "Character": "Baby Peach",
+                    "CharacterIndex": 42,
+                    "CharacterMatchConfidence": 71.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+                {
+                    "RaceClass": "VideoPeach",
+                    "RaceIDNumber": 2,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Amber",
+                    "Character": "Peachette",
+                    "CharacterIndex": 64,
+                    "CharacterMatchConfidence": 72.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+                {
+                    "RaceClass": "VideoPeach",
+                    "RaceIDNumber": 3,
+                    "RacePosition": 1,
+                    "FixPlayerName": "Amber",
+                    "Character": "Cat Peach",
+                    "CharacterIndex": 6,
+                    "CharacterMatchConfidence": 73.0,
+                    "CharacterMatchMethod": "alpha_aware_color_template_local_search",
+                },
+            ]
+        )
+
+        frame = np.full((4, 4, 3), (30, 140, 255), dtype=np.uint8)
+        alpha = np.full((2, 2), 255, dtype=np.uint8)
+        templates = [
+            {
+                "character_name": "Peach",
+                "character_index": 2,
+                "template_image": np.full((2, 2, 3), (180, 180, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Cat Peach",
+                "character_index": 6,
+                "template_image": np.full((2, 2, 3), (30, 140, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Baby Peach",
+                "character_index": 42,
+                "template_image": np.full((2, 2, 3), (170, 170, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+            {
+                "character_name": "Peachette",
+                "character_index": 64,
+                "template_image": np.full((2, 2, 3), (200, 160, 255), dtype=np.uint8),
+                "template_alpha": alpha,
+            },
+        ]
+
+        with patch("mk8_local_play.extract_text.load_character_templates", return_value=templates):
+            with patch("mk8_local_play.extract_text.find_score_bundle_anchor_path", return_value="dummy.png"):
+                with patch("mk8_local_play.extract_text.cv2.imread", return_value=frame):
+                    with patch("mk8_local_play.extract_text.character_row_roi", return_value=((0, 0), (2, 2))):
+                        refined = refine_character_variant_families(df, frames_folder=".")
+
+        self.assertEqual(set(refined["Character"]), {"Cat Peach"})
         self.assertTrue(
             all("variant_family_diagnostic_refine" in str(value) for value in refined["CharacterMatchMethod"])
         )

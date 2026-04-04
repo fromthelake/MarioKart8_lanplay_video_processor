@@ -9,6 +9,26 @@ from mk8_local_play.ocr_scoreboard_consensus import map_total_rows_to_race_rows
 
 
 class OcrScoreboardConsensusTests(unittest.TestCase):
+    def test_eligible_character_shortlist_indices_ignore_future_races(self):
+        shortlist_state = {42: 11, 43: 9, 44: 12}
+        self.assertEqual(
+            ocr_scoreboard_consensus._eligible_character_shortlist_indices(shortlist_state, 11),
+            {43},
+        )
+        self.assertEqual(
+            ocr_scoreboard_consensus._eligible_character_shortlist_indices(shortlist_state, 13),
+            {42, 43, 44},
+        )
+
+    def test_eligible_player_character_priors_ignore_future_races(self):
+        priors = {
+            "ronald": {"CharacterIndex": 42, "last_race_id": 11},
+            "amber": {"CharacterIndex": 43, "last_race_id": 9},
+        }
+        filtered = ocr_scoreboard_consensus._eligible_player_character_priors(priors, 11)
+        self.assertNotIn("ronald", filtered)
+        self.assertIn("amber", filtered)
+
     def test_duplicate_names_prefer_expected_total_continuity(self):
         score_rows = [
             {

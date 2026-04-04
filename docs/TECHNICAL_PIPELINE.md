@@ -201,7 +201,12 @@ Current TotalScore selection behavior:
 - the selector now tracks the start of a continuous score-signal drop and confirms it only after `5.0 * fps` worth of uninterrupted absence
 - that absence check uses a tie-aware row-prefix rule on rows `1..6`, so tied totals do not create a false drop
 - once the drop is confirmed, the existing `-2.7s` timing offset is applied from the `drop_start_frame`, not from the later confirmation frame
-- during TotalScore stabilization, the search now also starts with coarse `+10` stepping, rewinds when a stable signature first appears, and then resumes fine-grained scanning
+- the current TotalScore baseline uses a learned timing fast-path:
+  - after `race_score_frame`, transition detection first probes a very small primary window around the measured tipping moment
+  - if that fails, it falls back to the older broad transition search
+  - after the transition, stable-total detection first probes an early and a late cluster that were learned from the trace study
+  - if neither cluster matches, it falls back to the older broad stable-total search
+  - the old broad search path therefore still exists as a safety net, but most races avoid the unnecessary decoder work
 
 ## 7. OCR Regions
 
@@ -420,6 +425,11 @@ Low-resolution behavior:
 - unresolved low-res identities remain `PlayerNameMissing_X`
 - after score OCR and identity standardization, a session-level Mii fallback can relabel a player to `Mii` when the saved `2RaceScore` frames show repeatedly weak, near-tied, unstable non-Mii character winners
 - those rows receive review reason `mii_fallback_unstable_character_match`
+- before the Mii fallback, character-family refinement can now stabilize variant families from saved `2RaceScore` anchors:
+  - catalog-backed color families such as `Birdo`, `Yoshi`, and `Shy Guy`
+  - the explicit `Peach` family: `Peach`, `Cat Peach`, `Baby Peach`, `Pink Gold Peach`, `Peachette`
+- the `Peach` family mask also uses silhouette-sensitive alpha-occupancy variance, so `Cat Peach` can win on ear/shape cues that the old color-only family mask discarded
+- debug exports now expose the family comparison directly through `Character Family`, `Character Family Best`, `Character Family Best Coeff`, `Character Family Second`, `Character Family Second Coeff`, and `Character Family Margin`
 
 Validation / review behavior:
 - session rebases remain visible in the debug export as an attention point

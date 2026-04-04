@@ -865,7 +865,7 @@ def collect_consensus_frames(video_path, video_label, center_frame, fps, left, t
 
 
 def process_score_candidates(video_path, video_label, video_source_path, score_candidates, templates, fps, csv_writer, scale_x, scale_y, left, top,
-                             crop_width, crop_height, stats, metadata_writer, video_index=None, total_videos=None, progress=None,
+                             crop_width, crop_height, stats, metadata_writer, source_height=0, video_index=None, total_videos=None, progress=None,
                              per_race_complete_callback=None, analysis_workers_override=None, io_lock=None, trace_writer=None):
     """Second pass over recorded score candidates."""
     if not score_candidates:
@@ -885,6 +885,7 @@ def process_score_candidates(video_path, video_label, video_source_path, score_c
             "top": top,
             "crop_width": crop_width,
             "crop_height": crop_height,
+            "source_height": int(source_height or 0),
             "ocr_consensus_frames": APP_CONFIG.ocr_consensus_frames,
             "score_layout_id": candidate.get("score_layout_id"),
         }
@@ -1214,6 +1215,7 @@ def _run_total_score_phase_for_context(
         context["median_crop_height"],
         video_stats,
         metadata_writer,
+        source_height=int(context.get("source_height", 0) or 0),
         video_index=video_index,
         total_videos=total_videos,
         progress=total_score_progress,
@@ -1593,11 +1595,12 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
         "capture_poisoned": capture_poisoned,
         "median_scale_x": np.median([s[0] for s in scales]),
         "median_scale_y": np.median([s[1] for s in scales]),
-        "median_left": int(np.median([s[2] for s in scales])),
-        "median_top": int(np.median([s[3] for s in scales])),
-        "median_crop_width": int(np.median([s[4] for s in scales])),
-        "median_crop_height": int(np.median([s[5] for s in scales])),
-    }
+          "median_left": int(np.median([s[2] for s in scales])),
+          "median_top": int(np.median([s[3] for s in scales])),
+          "median_crop_width": int(np.median([s[4] for s in scales])),
+          "median_crop_height": int(np.median([s[5] for s in scales])),
+          "source_height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+      }
     context["detection_segment_tasks"] = initial_scan.build_detection_segment_tasks(
         context["processing_video_path"],
         context["video_label"],
@@ -2789,6 +2792,7 @@ def extract_frames(
                 median_crop_height,
                 video_stats,
                 metadata_writer,
+                source_height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
                 video_index=video_index,
                 total_videos=total_videos,
                 progress=total_score_progress,

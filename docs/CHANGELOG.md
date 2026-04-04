@@ -36,6 +36,12 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- `Transition + stable-hint` is now the default TotalScore timing baseline. The second pass first lands in a small learned transition window, then probes early/late stable-total clusters before falling back to the old broad search path. This keeps the old safety net, but cut the reviewed top-30 benchmark from `01:03:19` to `00:37:54`.
+- Character family diagnostic refinement now also supports the `Peach` family (`Peach`, `Cat Peach`, `Baby Peach`, `Pink Gold Peach`, `Peachette`). For that family the diagnostic mask now includes silhouette-specific alpha-occupancy variance so `Cat Peach` can win on ear/shape cues instead of losing to near-tied face-color matches.
+- Debug exports now include explicit character-family review fields: `Character Family`, `Character Family Best`, `Character Family Best Coeff`, `Character Family Second`, `Character Family Second Coeff`, and `Character Family Margin`.
+- Shared EasyOCR readers are now guarded by per-reader inference locks, removing overlap-mode drift from concurrent `readtext` / `recognize` calls against the same cached reader instance.
+- Character shortlist acceleration remains available for experiments, but is disabled by default and only consults races strictly earlier than the current race when enabled, so later races can no longer leak identity priors backward.
+- Low-resolution placeholder-name rescue now clusters near-identical OCR spellings before choosing a canonical name, reducing low-res drift such as `Amber` / `Ambor`.
 - Scoped CLI runs now support `--videos` for selecting multiple explicit file paths in one run. When combined with `--subfolders`, exact relative paths are matched before basename/stem fallback so sibling folders such as `backup/` do not get pulled in accidentally.
 - Scoring recomputation now resets running tournament totals per video/race class, so repeated player names in separate captures no longer inherit totals from earlier videos in the same export.
 - Headless CLI runs now accept `--debug`, which turns on debug CSV, debug workbook, and score-layout image output for that run without changing the normal default behavior.

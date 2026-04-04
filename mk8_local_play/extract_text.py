@@ -118,6 +118,9 @@ CHARACTER_VARIANT_FAMILY_ROSTER_NAMES = {
     11: "Shy Guy",
 }
 CHARACTER_VARIANT_FAMILY_ROSTER_INDICES = set(CHARACTER_VARIANT_FAMILY_ROSTER_NAMES.keys())
+EXPLICIT_CHARACTER_VARIANT_FAMILIES = {
+    "Peach": ("Peach", "Cat Peach", "Baby Peach", "Pink Gold Peach", "Peachette"),
+}
 VARIANT_FAMILY_REFINEMENT_MIN_SUPPORT = 3
 VARIANT_FAMILY_REFINEMENT_MIN_DOMINANT_RATIO = 0.9
 VARIANT_FAMILY_REFINEMENT_MIN_AVG_MARGIN = 0.5
@@ -154,6 +157,9 @@ TOTAL_SCORE_NAME_ROW_FALLBACK_ENABLED = os.environ.get("MK8_TOTAL_SCORE_NAME_ROW
 @lru_cache(maxsize=1)
 def _character_variant_family_lookup() -> dict[str, tuple[int, str]]:
     lookup: dict[str, tuple[int, str]] = {}
+    for family_name, variant_names in EXPLICIT_CHARACTER_VARIANT_FAMILIES.items():
+        for variant_name in variant_names:
+            lookup[str(variant_name).strip()] = (-1, str(family_name))
     catalog = load_game_catalog()
     for character in catalog.characters:
         roster_index = int(character.roster_index)
@@ -187,6 +193,17 @@ def character_variant_family_templates(
         return []
 
     family_roster_index, _family_name = family_entry
+    if int(family_roster_index) < 0:
+        explicit_family_names = {
+            str(name).strip()
+            for name in EXPLICIT_CHARACTER_VARIANT_FAMILIES.get(str(_family_name), ())
+        }
+        return [
+            template
+            for template in templates
+            if str(template.get("character_name", "")).strip() in explicit_family_names
+        ]
+
     catalog_lookup = {
         str(character.name_uk).strip(): int(character.roster_index)
         for character in load_game_catalog().characters
@@ -201,6 +218,7 @@ def character_variant_family_templates(
 
 def build_character_variant_family_diagnostic_mask(
     family_templates: List[Dict[str, object]],
+    family_name: str | None = None,
 ) -> np.ndarray:
     if not family_templates:
         return np.zeros((0, 0), dtype=bool)
@@ -216,13 +234,26 @@ def build_character_variant_family_diagnostic_mask(
         axis=0,
     )
     alpha_stack = np.stack(alpha_masks, axis=0)
-    alpha_mask = np.mean(alpha_stack > 16, axis=0) > 0.9
+    alpha_presence = alpha_stack > 16
+    alpha_mean = np.mean(alpha_presence, axis=0)
+    alpha_mask = alpha_mean > 0.9
+    alpha_var = np.var(alpha_presence.astype(np.float32), axis=0)
     hue_var = np.var(hsv_stack[:, :, :, 0], axis=0)
     sat_var = np.var(hsv_stack[:, :, :, 1], axis=0)
     sat_mean = np.mean(hsv_stack[:, :, :, 1], axis=0)
     val_mean = np.mean(hsv_stack[:, :, :, 2], axis=0)
-
-    return alpha_mask & ((sat_var > 2000.0) | ((hue_var > 300.0) & (sat_mean > 40.0))) & (val_mean > 40.0)
+    diagnostic_mask = alpha_mask & ((sat_var > 2000.0) | ((hue_var > 300.0) & (sat_mean > 40.0))) & (val_mean > 40.0)
+    if str(family_name or "").strip() == "Peach":
+        # Peach-family confusion is often driven by silhouette features such as cat ears that do
+        # not survive the old "visible in almost every template" mask. Include pixels whose alpha
+        # occupancy differs strongly across the family so Cat Peach can win on those shape cues.
+        diagnostic_mask |= (
+            (alpha_mean > 0.15)
+            & (alpha_mean < 0.85)
+            & (alpha_var > 0.12)
+            & (val_mean > 25.0)
+        )
+    return diagnostic_mask
 
 
 def diagnostic_character_variant_score(
@@ -267,6 +298,17 @@ def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Pat
         return df
 
     df = df.copy()
+    for column_name in (
+        "CharacterFamilyName",
+        "CharacterFamilyBest",
+        "CharacterFamilyBestIndex",
+        "CharacterFamilyBestCoeff",
+        "CharacterFamilySecond",
+        "CharacterFamilySecondCoeff",
+        "CharacterFamilyMargin",
+    ):
+        if column_name not in df.columns:
+            df[column_name] = ""
     templates = load_character_templates()
     if not templates:
         return df
@@ -285,7 +327,7 @@ def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Pat
         family_templates, diagnostic_mask = family_template_cache.get(family_name, (None, None))
         if family_templates is None:
             family_templates = character_variant_family_templates(templates, current_character)
-            diagnostic_mask = build_character_variant_family_diagnostic_mask(family_templates)
+            diagnostic_mask = build_character_variant_family_diagnostic_mask(family_templates, family_name=family_name)
             family_template_cache[family_name] = (family_templates, diagnostic_mask)
         if not family_templates or diagnostic_mask.size == 0 or int(np.count_nonzero(diagnostic_mask)) <= 0:
             continue
@@ -333,17 +375,29 @@ def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Pat
         if not ranked_scores:
             continue
         best_name, best_index, best_score = ranked_scores[0]
+        second_name = ranked_scores[1][0] if len(ranked_scores) > 1 else ""
         second_score = ranked_scores[1][2] if len(ranked_scores) > 1 else 0.0
         row_refinements[row_index] = {
             "family_name": family_name,
             "winner_name": best_name,
             "winner_index": best_index,
             "winner_score": round(best_score, 1),
+            "runner_up_name": second_name,
+            "runner_up_score": round(second_score, 1),
             "winner_margin": round(best_score - second_score, 1),
         }
 
     if not row_refinements:
         return df
+
+    for row_index, refinement in row_refinements.items():
+        df.at[row_index, "CharacterFamilyName"] = str(refinement["family_name"])
+        df.at[row_index, "CharacterFamilyBest"] = str(refinement["winner_name"])
+        df.at[row_index, "CharacterFamilyBestIndex"] = int(refinement["winner_index"])
+        df.at[row_index, "CharacterFamilyBestCoeff"] = round(float(refinement["winner_score"]), 1)
+        df.at[row_index, "CharacterFamilySecond"] = str(refinement["runner_up_name"])
+        df.at[row_index, "CharacterFamilySecondCoeff"] = round(float(refinement["runner_up_score"]), 1)
+        df.at[row_index, "CharacterFamilyMargin"] = round(float(refinement["winner_margin"]), 1)
 
     for (race_class, player_name), player_rows in df.groupby(["RaceClass", "FixPlayerName"], sort=False):
         if not player_name or str(player_name).startswith("PlayerNameMissing_"):
@@ -478,6 +532,7 @@ OCR_PROFILER = OcrProfiler()
 PLAYER_NAME_FALLBACK_STATS = defaultdict(int)
 _EASYOCR_READERS: dict[tuple[str, ...], object] = {}
 _EASYOCR_READER_LOCK = threading.Lock()
+_EASYOCR_READER_RUN_LOCKS: dict[tuple[str, ...], threading.Lock] = {}
 _OCR_TRACE_LOCK = threading.Lock()
 
 
@@ -797,6 +852,19 @@ def _get_easyocr_reader(languages: list[str] | tuple[str, ...]):
     return _EASYOCR_READERS[cache_key]
 
 
+def _get_easyocr_reader_run_lock(languages: list[str] | tuple[str, ...]) -> threading.Lock:
+    cache_key = tuple(languages)
+    lock = _EASYOCR_READER_RUN_LOCKS.get(cache_key)
+    if lock is not None:
+        return lock
+    with _EASYOCR_READER_LOCK:
+        lock = _EASYOCR_READER_RUN_LOCKS.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _EASYOCR_READER_RUN_LOCKS[cache_key] = lock
+    return lock
+
+
 def _run_easyocr_single_roi(
     roi: np.ndarray,
     languages: list[str] | tuple[str, ...],
@@ -807,8 +875,10 @@ def _run_easyocr_single_roi(
     if reader is None or roi.size == 0:
         return "", 0
 
+    reader_run_lock = _get_easyocr_reader_run_lock(languages)
     start_time = time.perf_counter()
-    result = reader.readtext(roi, detail=1, paragraph=False)
+    with reader_run_lock:
+        result = reader.readtext(roi, detail=1, paragraph=False)
     OCR_PROFILER.record(profile_label, time.perf_counter() - start_time)
 
     parts = []
@@ -942,6 +1012,7 @@ def _run_easyocr_player_name_for_context(
     reader = _get_easyocr_reader(PLAYER_NAME_EASYOCR_LANGS)
     if reader is None:
         return "", 0
+    reader_run_lock = _get_easyocr_reader_run_lock(PLAYER_NAME_EASYOCR_LANGS)
 
     roi = image[y1:y2, x1:x2]
     if roi.size == 0:
@@ -951,7 +1022,8 @@ def _run_easyocr_player_name_for_context(
 
     def add_candidate(source_image: np.ndarray, label: str, method_name: str) -> None:
         start_time = time.perf_counter()
-        result = reader.readtext(source_image, detail=1, paragraph=False)
+        with reader_run_lock:
+            result = reader.readtext(source_image, detail=1, paragraph=False)
         duration_s = time.perf_counter() - start_time
         OCR_PROFILER.record(label, duration_s)
         if bundle_kind and field_name:
@@ -1038,16 +1110,18 @@ def _run_easyocr_player_names_batched_variant(
     if reader is None:
         return [""] * len(coord_list), [0] * len(coord_list)
 
+    reader_run_lock = _get_easyocr_reader_run_lock(PLAYER_NAME_EASYOCR_LANGS)
     canvas, horizontal_list = _build_player_name_canvas(image, coord_list, preprocess=preprocess)
     start_time = time.perf_counter()
-    result = reader.recognize(
-        canvas,
-        horizontal_list=horizontal_list,
-        free_list=[],
-        detail=1,
-        paragraph=False,
-        reformat=True,
-    )
+    with reader_run_lock:
+        result = reader.recognize(
+            canvas,
+            horizontal_list=horizontal_list,
+            free_list=[],
+            detail=1,
+            paragraph=False,
+            reformat=True,
+        )
     duration_s = time.perf_counter() - start_time
     profile_label = "player_name_easyocr_batch_raw" if preprocess == "raw" else "player_name_easyocr_batch_inv_otsu"
     OCR_PROFILER.record(profile_label, duration_s)
@@ -1793,6 +1867,7 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
         annotate_paths=annotate_paths,
         total_annotate_paths=total_annotate_paths,
         video_context=race_class,
+        race_id_number=race_id_number,
         is_low_res=is_low_res,
         score_layout_id=score_layout_id,
         preselected_race_point_anchor_frame=preselected_points_anchor_frame,

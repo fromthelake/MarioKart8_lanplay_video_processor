@@ -115,10 +115,11 @@ TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS = 95
 
 
 APP_CONFIG = load_app_config()
-# Experimental timing shortcuts stay opt-in until broad benchmark parity is proven.
-TOTAL_SCORE_TIMING_FAST_PATH_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TIMING_FAST_PATH", "0").strip().lower() not in {"0", "false", "no", "off"}
-TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TRANSITION_PRIMARY", "0").strip().lower() not in {"0", "false", "no", "off"}
-TOTAL_SCORE_STABLE_HINT_ENABLED = os.environ.get("MK8_TOTAL_SCORE_STABLE_HINT", "0").strip().lower() not in {"0", "false", "no", "off"}
+# The reviewed Total Score baseline now enables the learned transition and stable-total hints
+# by default. Env vars can still disable them for scoped comparisons.
+TOTAL_SCORE_TIMING_FAST_PATH_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TIMING_FAST_PATH", "1").strip().lower() not in {"0", "false", "no", "off"}
+TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TRANSITION_PRIMARY", "1").strip().lower() not in {"0", "false", "no", "off"}
+TOTAL_SCORE_STABLE_HINT_ENABLED = os.environ.get("MK8_TOTAL_SCORE_STABLE_HINT", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _build_score_analysis_trace(
@@ -479,8 +480,25 @@ def _find_points_transition_frame_in_range(
     return None, None
 
 
-def _find_points_transition_frame(local_cap, start_frame, end_frame, left, top, crop_width, crop_height, score_layout_id, stats, fps=30.0):
-    if not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED or not TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED:
+def _find_points_transition_frame(
+    local_cap,
+    start_frame,
+    end_frame,
+    left,
+    top,
+    crop_width,
+    crop_height,
+    score_layout_id,
+    stats,
+    fps=30.0,
+    source_height=None,
+):
+    low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+    if (
+        not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED
+        or not TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED
+        or (source_height and low_res_height > 0 and int(source_height) <= low_res_height)
+    ):
         return _find_points_transition_frame_in_range(
             local_cap,
             start_frame,
@@ -842,6 +860,7 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
     crop_height = task["crop_height"]
     scale_x = task["scale_x"]
     scale_y = task["scale_y"]
+    source_height = int(task.get("source_height", 0) or 0)
     score_layout = get_score_layout(task.get("score_layout_id"))
 
     start_frame = frame_number - int(3 * fps)
@@ -1049,6 +1068,7 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
                 score_layout.layout_id,
                 stats,
                 fps,
+                source_height,
             )
             if transition_frame is not None:
                 if selected_points_anchor_frame is None:
