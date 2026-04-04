@@ -2793,7 +2793,8 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         else select_consensus_window(score_core_observations, "late")
     )
     score_count_observations = (
-        late_override_observations if late_override_observations
+        select_consensus_window(late_override_observations, "late", size=TOTAL_SCORE_CONSENSUS_WINDOW_SIZE)
+        if late_override_observations
         else select_consensus_window(score_core_observations, "late")
     )
     total_consensus_observations = total_observations
