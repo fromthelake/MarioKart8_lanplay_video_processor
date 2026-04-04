@@ -19,6 +19,27 @@ Hardware waarop deze conclusies gebaseerd zijn:
 - `64 GB` DDR5-5600 RAM
 - Samsung 9100 Pro 4 TB PCIe 5.0 NVMe SSD
 
+## Status Daarna
+
+Deze notitie blijft bewust bewaard als historisch verslag van de remux- en worker-sweeps.
+
+Belangrijk om nu expliciet vast te leggen:
+
+- de uiteindelijke blijvende snelheidswinst kwam **niet** uit remux
+- de later geaccepteerde baselinewinst kwam uit de `Total Score` timing fast-path
+  - eerst `transition`
+  - daarna `transition + stable-hint`
+- die latere ronde is apart vastgelegd in:
+  - [TOTAL_SCORE_TRACE_FINDINGS_2026-04-03.md](/C:/Ai/MarioKart8_lanplay_video_processor/docs/TOTAL_SCORE_TRACE_FINDINGS_2026-04-03.md)
+
+Dus:
+
+- gebruik deze notitie nog steeds om te voorkomen dat remux- en worker-experimenten zonder nieuwe reden opnieuw worden gestart
+- maar behandel de huidige runtime-baseline niet meer als “alleen 2/4 tuning”
+- de actuele baseline combineert:
+  - de veilige worker-defaults uit deze notitie
+  - met de later geaccepteerde `Total Score` fast-path baseline uit de trace-notitie
+
 ## Test Sets
 
 Gebruikte benchmarksets:
