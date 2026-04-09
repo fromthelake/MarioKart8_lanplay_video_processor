@@ -268,7 +268,14 @@ def _build_match_candidates(identity_state, race_rows, visual_features, protecte
                 or (total_similarity >= 0.7 and name_similarity >= 0.45)
                 or (visual_similarity >= 0.68 and total_similarity >= 0.7)
             )
-            if name_similarity >= 0.72 or exact_name_match or fallback_match:
+            strong_continuity_match = (
+                total_similarity >= 0.95
+                and (
+                    visual_similarity >= 0.55
+                    or character_similarity >= 1.0
+                )
+            )
+            if name_similarity >= 0.72 or exact_name_match or fallback_match or strong_continuity_match:
                 candidates.append(
                     (
                         combined_score,
@@ -607,45 +614,86 @@ def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:
         after_players = set(str(value) for value in after_reset["FixPlayerName"].dropna().unique())
         disappeared_players = before_players - after_players
         appeared_players = after_players - before_players
-        if len(disappeared_players) != 1 or len(appeared_players) != 1:
+        if not disappeared_players or not appeared_players or len(disappeared_players) != len(appeared_players):
             continue
 
-        prior_identity = next(iter(disappeared_players))
-        new_identity = next(iter(appeared_players))
-
-        prior_last_race = int(
-            race_group.loc[race_group["FixPlayerName"] == prior_identity, "RaceIDNumber"].max()
-        )
-        new_first_race = int(
-            race_group.loc[race_group["FixPlayerName"] == new_identity, "RaceIDNumber"].min()
-        )
-        if prior_last_race != reset_start_race - 1 or new_first_race != reset_start_race:
-            continue
-
-        prior_rows = race_group.loc[race_group["FixPlayerName"] == prior_identity]
-        new_rows = race_group.loc[race_group["FixPlayerName"] == new_identity]
-        prior_raw_name = choose_canonical_name(prior_rows["PlayerName"].tolist()) or prior_identity
-        new_raw_name = choose_canonical_name(new_rows["PlayerName"].tolist()) or new_identity
-        note = (
-            f'Identity relinked after connection reset: matched post-reset player "{new_raw_name}" '
-            f'to earlier identity "{prior_identity}" (previous OCR name "{prior_raw_name}").'
-        )
-        summary = f'Connection reset name change: "{new_raw_name}" -> "{prior_identity}"'
-
-        merge_mask = (merged_df["RaceClass"] == race_class) & (merged_df["FixPlayerName"] == new_identity)
-        merged_df.loc[merge_mask, "FixPlayerName"] = prior_identity
-        merged_df.loc[merge_mask, "IdentityLabel"] = prior_identity
-        merged_df.loc[merge_mask, "IdentityRelinkDetected"] = True
-        merged_df.loc[merge_mask, "IdentityRelinkSummary"] = summary
-        merged_df.loc[merge_mask, "IdentityRelinkNote"] = note
-        merged_df.loc[merge_mask, "IdentityResolutionMethod"] = merged_df.loc[
-            merge_mask, "IdentityResolutionMethod"
-        ].map(
-            lambda value: (
-                f"{str(value).strip()}+connection_reset_relink"
-                if str(value).strip() else "connection_reset_relink"
+        identity_rows = {
+            label: race_group.loc[race_group["FixPlayerName"] == label].sort_values(
+                ["RaceIDNumber", "RacePosition"], kind="stable"
             )
-        )
+            for label in set(disappeared_players) | set(appeared_players)
+        }
+        identity_stats = {}
+        for label, identity_rows_df in identity_rows.items():
+            character_counts = Counter(
+                int(value) for value in identity_rows_df["CharacterIndex"].dropna().tolist() if pd.notna(value)
+            )
+            identity_stats[str(label)] = {
+                "dominant_character": character_counts.most_common(1)[0][0] if character_counts else None,
+                "canonical_raw_name": choose_canonical_name(identity_rows_df["PlayerName"].tolist()) or str(label),
+                "last_race": int(identity_rows_df["RaceIDNumber"].max()),
+                "first_race": int(identity_rows_df["RaceIDNumber"].min()),
+            }
+
+        candidate_pairs = []
+        for new_identity in appeared_players:
+            for prior_identity in disappeared_players:
+                prior_last_race = int(identity_stats[prior_identity]["last_race"])
+                new_first_race = int(identity_stats[new_identity]["first_race"])
+                if prior_last_race != reset_start_race - 1 or new_first_race != reset_start_race:
+                    continue
+                same_character = (
+                    identity_stats[prior_identity]["dominant_character"] is not None
+                    and identity_stats[prior_identity]["dominant_character"] == identity_stats[new_identity]["dominant_character"]
+                )
+                name_similarity = weighted_similarity(
+                    identity_stats[prior_identity]["canonical_raw_name"],
+                    identity_stats[new_identity]["canonical_raw_name"],
+                )
+                if not same_character and name_similarity < 0.85:
+                    continue
+                score = (1.0 if same_character else 0.0) + name_similarity
+                candidate_pairs.append((score, prior_identity, new_identity))
+
+        if len(candidate_pairs) < len(appeared_players):
+            continue
+
+        assigned_priors = set()
+        assigned_news = set()
+        rename_map: dict[str, str] = {}
+        for _score, prior_identity, new_identity in sorted(candidate_pairs, reverse=True):
+            if prior_identity in assigned_priors or new_identity in assigned_news:
+                continue
+            rename_map[new_identity] = prior_identity
+            assigned_priors.add(prior_identity)
+            assigned_news.add(new_identity)
+
+        if len(rename_map) != len(appeared_players):
+            continue
+
+        for new_identity, prior_identity in rename_map.items():
+            prior_raw_name = identity_stats[prior_identity]["canonical_raw_name"]
+            new_raw_name = identity_stats[new_identity]["canonical_raw_name"]
+            note = (
+                f'Identity relinked after connection reset: matched post-reset player "{new_raw_name}" '
+                f'to earlier identity "{prior_identity}" (previous OCR name "{prior_raw_name}").'
+            )
+            summary = f'Connection reset name change: "{new_raw_name}" -> "{prior_identity}"'
+
+            merge_mask = (merged_df["RaceClass"] == race_class) & (merged_df["FixPlayerName"] == new_identity)
+            merged_df.loc[merge_mask, "FixPlayerName"] = prior_identity
+            merged_df.loc[merge_mask, "IdentityLabel"] = prior_identity
+            merged_df.loc[merge_mask, "IdentityRelinkDetected"] = True
+            merged_df.loc[merge_mask, "IdentityRelinkSummary"] = summary
+            merged_df.loc[merge_mask, "IdentityRelinkNote"] = note
+            merged_df.loc[merge_mask, "IdentityResolutionMethod"] = merged_df.loc[
+                merge_mask, "IdentityResolutionMethod"
+            ].map(
+                lambda value: (
+                    f"{str(value).strip()}+connection_reset_relink"
+                    if str(value).strip() else "connection_reset_relink"
+                )
+            )
 
     return merged_df
 

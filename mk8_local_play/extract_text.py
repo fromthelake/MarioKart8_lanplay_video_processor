@@ -1390,13 +1390,15 @@ def get_cup_name(track_name: str, track_list: List[Tuple[int, str, str, int, str
 
 # Use the raw anchor-frame template score here, not the exported consensus vote ratio.
 # In practice Mii lookalikes can still cluster around ~79 with extremely small winner margins.
-MII_FALLBACK_MAX_CONFIDENCE = 80.0
-MII_FALLBACK_MAX_MARGIN = 1.0
-MII_FALLBACK_MIN_SUSPECT_RACES = 3
-MII_FALLBACK_MIN_DISTINCT_WINNERS = 2
+MII_ACCEPT_MIN_AVG_CONFIDENCE = 50.0
+MII_ACCEPT_MIN_AVG_MARGIN = 3.0
+MII_ACCEPT_MIN_AVG_TOP5_SPREAD = 8.0
+MII_ACCEPT_MAX_AVG_TOP5_FAMILY_COUNT = 3.5
+MII_ACCEPT_MIN_DOMINANT_RATIO = 0.75
+MII_ACCEPT_MIN_RACES = 3
 MII_CHARACTER_NAME = "Mii"
 MII_CHARACTER_INDEX = 80
-MII_CHARACTER_METHOD = "mii_fallback_unstable_non_mii_matches"
+MII_CHARACTER_METHOD = "mii_fallback_open_set_unstable_closed_set_identity"
 
 
 def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
@@ -1409,6 +1411,19 @@ def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | 
         df["CharacterMatchRawBest"] = np.nan
     if "CharacterMatchRawMargin" not in df.columns:
         df["CharacterMatchRawMargin"] = np.nan
+    if "CharacterMatchRawTop5Spread" not in df.columns:
+        df["CharacterMatchRawTop5Spread"] = np.nan
+    if "CharacterMatchRawTop5FamilyCount" not in df.columns:
+        df["CharacterMatchRawTop5FamilyCount"] = np.nan
+
+    required_columns = [
+        "CharacterMatchRawBest",
+        "CharacterMatchRawMargin",
+        "CharacterMatchRawTop5Spread",
+        "CharacterMatchRawTop5FamilyCount",
+    ]
+    if all(column_name in df.columns and not df[column_name].isna().all() for column_name in required_columns):
+        return df
 
     templates = load_character_templates()
     if not templates:
@@ -1437,13 +1452,23 @@ def annotate_raw_character_match_metrics(df: pd.DataFrame, frames_folder: str | 
         row_roi = frame_image[y1:y2, x1:x2]
         if row_roi.size == 0:
             continue
-        matches = best_character_matches(row_roi, templates, limit=2)
+        matches = best_character_matches(row_roi, templates, limit=5)
         if not matches:
             continue
         best_confidence = float(matches[0].get("CharacterMatchConfidence", 0.0))
         second_confidence = float(matches[1].get("CharacterMatchConfidence", 0.0)) if len(matches) > 1 else 0.0
+        fifth_confidence = float(matches[4].get("CharacterMatchConfidence", 0.0)) if len(matches) > 4 else best_confidence
+        top5_family_count = len(
+            {
+                int(match.get("CharacterRosterIndex"))
+                for match in matches[:5]
+                if match.get("CharacterRosterIndex") is not None
+            }
+        )
         df.at[row_index, "CharacterMatchRawBest"] = round(best_confidence, 1)
         df.at[row_index, "CharacterMatchRawMargin"] = round(best_confidence - second_confidence, 1)
+        df.at[row_index, "CharacterMatchRawTop5Spread"] = round(best_confidence - fifth_confidence, 1)
+        df.at[row_index, "CharacterMatchRawTop5FamilyCount"] = int(top5_family_count)
     return df
 
 
@@ -1709,7 +1734,7 @@ def rescue_placeholder_identity_names(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace persistently unstable low-confidence character matches with Mii."""
+    """Accept a closed-set character only when player-level aligned evidence is stable enough."""
     if df.empty or "FixPlayerName" not in df.columns:
         return df
 
@@ -1718,9 +1743,19 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
         if not player_name or str(player_name).startswith("PlayerNameMissing_"):
             continue
 
-        suspect_indices = []
-        distinct_winners = set()
+        if len(player_rows.index) < MII_ACCEPT_MIN_RACES:
+            continue
+
+        closed_set_indices = []
+        winner_counts: dict[str, int] = {}
+        confidence_values = []
+        margin_values = []
+        spread_values = []
+        family_count_values = []
         for row_index, row in player_rows.iterrows():
+            winner = str(row.get("Character", "") or "").strip()
+            if not winner or winner == MII_CHARACTER_NAME:
+                continue
             try:
                 confidence = float(row.get("CharacterMatchRawBest", row.get("CharacterMatchConfidence", 0.0)) or 0.0)
             except (TypeError, ValueError):
@@ -1729,17 +1764,51 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
                 margin = float(row.get("CharacterMatchRawMargin", np.nan))
             except (TypeError, ValueError):
                 margin = np.nan
-            suspect = confidence <= MII_FALLBACK_MAX_CONFIDENCE and not pd.isna(margin) and margin <= MII_FALLBACK_MAX_MARGIN
+            try:
+                top5_spread = float(row.get("CharacterMatchRawTop5Spread", np.nan))
+            except (TypeError, ValueError):
+                top5_spread = np.nan
+            try:
+                top5_family_count = int(row.get("CharacterMatchRawTop5FamilyCount", 0) or 0)
+            except (TypeError, ValueError):
+                top5_family_count = 0
 
-            if suspect:
-                suspect_indices.append(row_index)
-                winner = str(row.get("Character", "") or "").strip()
-                if winner and winner != MII_CHARACTER_NAME:
-                    distinct_winners.add(winner)
+            closed_set_indices.append(row_index)
+            winner_counts[winner] = winner_counts.get(winner, 0) + 1
+            confidence_values.append(float(confidence))
+            if not pd.isna(margin):
+                margin_values.append(float(margin))
+            if not pd.isna(top5_spread):
+                spread_values.append(float(top5_spread))
+            family_count_values.append(float(top5_family_count))
 
-        if len(suspect_indices) < MII_FALLBACK_MIN_SUSPECT_RACES:
+        if not winner_counts:
             continue
-        if len(distinct_winners) < MII_FALLBACK_MIN_DISTINCT_WINNERS:
+        if len(closed_set_indices) < MII_ACCEPT_MIN_RACES:
+            for row_index in player_rows.index:
+                existing_method = str(df.at[row_index, "CharacterMatchMethod"] or "").strip()
+                df.at[row_index, "Character"] = MII_CHARACTER_NAME
+                df.at[row_index, "CharacterIndex"] = MII_CHARACTER_INDEX
+                df.at[row_index, "CharacterMatchMethod"] = (
+                    f"{existing_method}+{MII_CHARACTER_METHOD}" if existing_method else MII_CHARACTER_METHOD
+                )
+            continue
+
+        dominant_name, dominant_count = max(winner_counts.items(), key=lambda item: (item[1], item[0]))
+        dominant_ratio = float(dominant_count) / max(1, len(closed_set_indices))
+        avg_confidence = float(sum(confidence_values) / max(1, len(confidence_values))) if confidence_values else 0.0
+        avg_margin = float(sum(margin_values) / max(1, len(margin_values))) if margin_values else 0.0
+        avg_top5_spread = float(sum(spread_values) / max(1, len(spread_values))) if spread_values else 0.0
+        avg_top5_family_count = float(sum(family_count_values) / max(1, len(family_count_values))) if family_count_values else 99.0
+
+        closed_set_is_stable = (
+            dominant_ratio >= MII_ACCEPT_MIN_DOMINANT_RATIO
+            and avg_confidence >= MII_ACCEPT_MIN_AVG_CONFIDENCE
+            and avg_margin >= MII_ACCEPT_MIN_AVG_MARGIN
+            and avg_top5_spread >= MII_ACCEPT_MIN_AVG_TOP5_SPREAD
+            and avg_top5_family_count <= MII_ACCEPT_MAX_AVG_TOP5_FAMILY_COUNT
+        )
+        if closed_set_is_stable:
             continue
 
         for row_index in player_rows.index:
@@ -1899,6 +1968,10 @@ def process_race_group(grouped_item, text_detected_folder, metadata_index, input
             row.get("CharacterIndex"),
             row.get("CharacterMatchConfidence", 0.0),
             row.get("CharacterMatchMethod", ""),
+            row.get("CharacterMatchRawBest"),
+            row.get("CharacterMatchRawMargin"),
+            row.get("CharacterMatchRawTop5Spread"),
+            row.get("CharacterMatchRawTop5FamilyCount"),
             race_points_fix,
             row["DetectedRacePoints"],
             row.get("DetectedRacePointsSource", ""),
@@ -2064,6 +2137,7 @@ def finalize_ocr_results(
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
+        "CharacterMatchRawBest", "CharacterMatchRawMargin", "CharacterMatchRawTop5Spread", "CharacterMatchRawTop5FamilyCount",
         "RacePoints", "DetectedRacePoints", "DetectedRacePointsSource", "DetectedOldTotalScore", "DetectedOldTotalScoreSource", "DetectedTotalScore", "DetectedTotalScoreSource", "DetectedNewTotalScore", "DetectedNewTotalScoreSource", "PositionAfterRace",
         *POSITION_TEMPLATE_COEFF_COLUMNS,
         "NameConfidence", "NameAllowedCharRatio", "NameUnknownChars", "NameValidationFlags",

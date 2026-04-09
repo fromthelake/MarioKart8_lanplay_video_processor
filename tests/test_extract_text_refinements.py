@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from mk8_local_play.extract_text import (
+    apply_mii_character_fallback,
     build_character_variant_family_diagnostic_mask,
     build_grouped_race_images,
     character_variant_family_templates,
@@ -18,6 +19,149 @@ from mk8_local_play.extract_text import (
 
 
 class TestExtractTextRefinements(TestCase):
+    def test_apply_mii_character_fallback_rejects_unstable_closed_set_identity(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Isabelle",
+                    "CharacterIndex": 67,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 42.0,
+                    "CharacterMatchRawMargin": 0.4,
+                    "CharacterMatchRawTop5Spread": 1.2,
+                    "CharacterMatchRawTop5FamilyCount": 5,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Champion Link",
+                    "CharacterIndex": 69,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 42.5,
+                    "CharacterMatchRawMargin": 0.2,
+                    "CharacterMatchRawTop5Spread": 1.0,
+                    "CharacterMatchRawTop5FamilyCount": 5,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Diddy Kong",
+                    "CharacterIndex": 65,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 43.0,
+                    "CharacterMatchRawMargin": 0.3,
+                    "CharacterMatchRawTop5Spread": 1.5,
+                    "CharacterMatchRawTop5FamilyCount": 4,
+                },
+            ]
+        )
+
+        refined = apply_mii_character_fallback(df)
+
+        self.assertEqual(set(refined["Character"]), {"Mii"})
+        self.assertTrue(
+            all("mii_fallback_open_set_unstable_closed_set_identity" in str(value) for value in refined["CharacterMatchMethod"])
+        )
+
+    def test_apply_mii_character_fallback_keeps_stable_closed_set_identity(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoB",
+                    "FixPlayerName": "BAwSer",
+                    "Character": "Inkling Boy",
+                    "CharacterIndex": 68,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 61.8,
+                    "CharacterMatchRawMargin": 5.4,
+                    "CharacterMatchRawTop5Spread": 18.3,
+                    "CharacterMatchRawTop5FamilyCount": 3,
+                },
+                {
+                    "RaceClass": "VideoB",
+                    "FixPlayerName": "BAwSer",
+                    "Character": "Inkling Boy",
+                    "CharacterIndex": 68,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 60.9,
+                    "CharacterMatchRawMargin": 7.0,
+                    "CharacterMatchRawTop5Spread": 18.4,
+                    "CharacterMatchRawTop5FamilyCount": 3,
+                },
+                {
+                    "RaceClass": "VideoB",
+                    "FixPlayerName": "BAwSer",
+                    "Character": "Inkling Boy",
+                    "CharacterIndex": 68,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 62.1,
+                    "CharacterMatchRawMargin": 6.1,
+                    "CharacterMatchRawTop5Spread": 19.5,
+                    "CharacterMatchRawTop5FamilyCount": 3,
+                },
+            ]
+        )
+
+        refined = apply_mii_character_fallback(df)
+
+        self.assertEqual(list(refined["Character"]), ["Inkling Boy", "Inkling Boy", "Inkling Boy"])
+
+    def test_apply_mii_character_fallback_rejects_too_few_closed_set_wins(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Mii",
+                    "CharacterIndex": 80,
+                    "CharacterMatchMethod": "open_set_mii_reject",
+                    "CharacterMatchRawBest": np.nan,
+                    "CharacterMatchRawMargin": np.nan,
+                    "CharacterMatchRawTop5Spread": np.nan,
+                    "CharacterMatchRawTop5FamilyCount": np.nan,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Metal Mario",
+                    "CharacterIndex": 45,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 51.5,
+                    "CharacterMatchRawMargin": 4.0,
+                    "CharacterMatchRawTop5Spread": 9.0,
+                    "CharacterMatchRawTop5FamilyCount": 3,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Metal Mario",
+                    "CharacterIndex": 45,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchRawBest": 50.7,
+                    "CharacterMatchRawMargin": 3.5,
+                    "CharacterMatchRawTop5Spread": 8.5,
+                    "CharacterMatchRawTop5FamilyCount": 3,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Wilco",
+                    "Character": "Mii",
+                    "CharacterIndex": 80,
+                    "CharacterMatchMethod": "open_set_mii_reject",
+                    "CharacterMatchRawBest": np.nan,
+                    "CharacterMatchRawMargin": np.nan,
+                    "CharacterMatchRawTop5Spread": np.nan,
+                    "CharacterMatchRawTop5FamilyCount": np.nan,
+                },
+            ]
+        )
+
+        refined = apply_mii_character_fallback(df)
+
+        self.assertEqual(set(refined["Character"]), {"Mii"})
+
     def test_resolve_character_variant_family_name_includes_default_roster_members(self):
         self.assertEqual(resolve_character_variant_family_name("Shy Guy"), "Shy Guy")
         self.assertEqual(resolve_character_variant_family_name("Pink Shy Guy"), "Shy Guy")

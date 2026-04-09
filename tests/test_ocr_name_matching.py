@@ -5,6 +5,7 @@ from unittest import mock
 
 from mk8_local_play.ocr_name_matching import (
     append_identity_ambiguity_review_notes,
+    reconcile_connection_reset_identities,
     resolve_duplicate_name_identity_chains,
     standardize_player_names,
 )
@@ -88,6 +89,23 @@ class OcrNameMatchingTests(unittest.TestCase):
 
         self.assertEqual(list(race1["FixPlayerName"]), ["Floris", "floris"])
         self.assertEqual(list(race2["FixPlayerName"]), ["Floris", "floris"])
+
+    def test_reconcile_connection_reset_identities_can_merge_two_identity_swaps(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "demo", "RaceIDNumber": 12, "RacePosition": 10, "FixPlayerName": "Caitlin", "IdentityLabel": "Caitlin", "PlayerName": "Caitlin", "CharacterIndex": 29, "SessionResetDetected": False, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 12, "RacePosition": 4, "FixPlayerName": "ñiæłß", "IdentityLabel": "ñiæłß", "PlayerName": "ñiæłß", "CharacterIndex": 80, "SessionResetDetected": False, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 13, "RacePosition": 12, "FixPlayerName": "queen opa", "IdentityLabel": "queen opa", "PlayerName": "queen opa", "CharacterIndex": 29, "SessionResetDetected": True, "IdentityResolutionMethod": "new_identity"},
+                {"RaceClass": "demo", "RaceIDNumber": 13, "RacePosition": 5, "FixPlayerName": "ñíæłß", "IdentityLabel": "ñíæłß", "PlayerName": "ñíæłß", "CharacterIndex": 80, "SessionResetDetected": True, "IdentityResolutionMethod": "new_identity"},
+            ]
+        )
+
+        updated = reconcile_connection_reset_identities(df)
+
+        race13 = updated.loc[updated["RaceIDNumber"] == 13].sort_values("RacePosition")
+        self.assertEqual(list(race13["FixPlayerName"]), ["ñiæłß", "Caitlin"])
+        self.assertTrue(all(bool(value) for value in race13["IdentityRelinkDetected"]))
+        self.assertTrue(all("connection_reset_relink" in str(value) for value in race13["IdentityResolutionMethod"]))
 
 
 if __name__ == "__main__":

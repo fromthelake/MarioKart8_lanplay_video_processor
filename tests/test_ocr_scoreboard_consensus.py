@@ -9,6 +9,188 @@ from mk8_local_play.ocr_scoreboard_consensus import map_total_rows_to_race_rows
 
 
 class OcrScoreboardConsensusTests(unittest.TestCase):
+    def test_aligned_character_match_score_recovers_small_translation(self):
+        template = np.zeros((48, 48, 3), dtype=np.uint8)
+        template[12:36, 18:30] = (0, 0, 255)
+        template[18:30, 22:26] = (255, 255, 255)
+        alpha = np.zeros((48, 48), dtype=np.uint8)
+        alpha[12:36, 18:30] = 255
+
+        source = np.zeros((48, 48, 3), dtype=np.uint8)
+        source[15:39, 21:33] = (0, 0, 255)
+        source[21:33, 25:29] = (255, 255, 255)
+
+        match = ocr_scoreboard_consensus.aligned_character_match_score(source, template, alpha)
+
+        self.assertGreater(match["score"], 0.55)
+        self.assertEqual(match["offset_x"], 3)
+        self.assertEqual(match["offset_y"], 3)
+
+    def test_masked_character_match_score_prefers_best_offset(self):
+        template = np.zeros((48, 48, 3), dtype=np.uint8)
+        template[:, :] = (0, 0, 255)
+        alpha = np.full((48, 48), 255, dtype=np.uint8)
+
+        source = np.zeros((52, 52, 3), dtype=np.uint8)
+        source[2:50, 2:50] = (0, 0, 255)
+
+        match = ocr_scoreboard_consensus.masked_character_match_score(source, template, alpha)
+
+        self.assertGreater(match["score"], 0.99)
+        self.assertEqual(match["offset_x"], 2)
+        self.assertEqual(match["offset_y"], 2)
+
+    def test_should_reject_character_match_as_mii_for_weak_ambiguous_match(self):
+        self.assertTrue(
+            ocr_scoreboard_consensus._should_reject_character_match_as_mii(
+                [
+                    {"CharacterMatchConfidence": 40.8, "CharacterRosterIndex": 5},
+                    {"CharacterMatchConfidence": 40.4, "CharacterRosterIndex": 7},
+                    {"CharacterMatchConfidence": 39.9, "CharacterRosterIndex": 12},
+                    {"CharacterMatchConfidence": 39.1, "CharacterRosterIndex": 18},
+                    {"CharacterMatchConfidence": 37.8, "CharacterRosterIndex": 24},
+                ],
+            )
+        )
+        self.assertFalse(
+            ocr_scoreboard_consensus._should_reject_character_match_as_mii(
+                [
+                    {"CharacterMatchConfidence": 88.2, "CharacterRosterIndex": 5},
+                    {"CharacterMatchConfidence": 82.5, "CharacterRosterIndex": 5},
+                    {"CharacterMatchConfidence": 81.1, "CharacterRosterIndex": 5},
+                    {"CharacterMatchConfidence": 78.9, "CharacterRosterIndex": 12},
+                    {"CharacterMatchConfidence": 77.7, "CharacterRosterIndex": 14},
+                ],
+            )
+        )
+
+    def test_build_character_match_metrics_rejects_weak_open_set_match_to_mii(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        template_image = np.zeros((48, 48, 3), dtype=np.uint8)
+        template_alpha = np.full((48, 48), 255, dtype=np.uint8)
+        with (
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "load_character_templates",
+                return_value=[
+                    {
+                        "character_index": 42,
+                        "character_name": "Baby Peach",
+                        "template_image": template_image,
+                        "template_alpha": template_alpha,
+                    },
+                    {
+                        "character_index": 43,
+                        "character_name": "Baby Daisy",
+                        "template_image": template_image,
+                        "template_alpha": template_alpha,
+                    },
+                ],
+            ),
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "best_character_matches",
+                return_value=[
+                    {
+                        "Character": "Baby Peach",
+                        "CharacterIndex": 42,
+                        "CharacterRosterIndex": 5,
+                        "CharacterMatchConfidence": 40.8,
+                        "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                        "CharacterMatchOffsetX": 0,
+                        "CharacterMatchOffsetY": 0,
+                    },
+                    {
+                        "Character": "Baby Daisy",
+                        "CharacterIndex": 43,
+                        "CharacterRosterIndex": 7,
+                        "CharacterMatchConfidence": 40.4,
+                        "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                        "CharacterMatchOffsetX": 0,
+                        "CharacterMatchOffsetY": 0,
+                    },
+                    {
+                        "Character": "Baby Rosalina",
+                        "CharacterIndex": 44,
+                        "CharacterRosterIndex": 9,
+                        "CharacterMatchConfidence": 39.9,
+                        "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                        "CharacterMatchOffsetX": 0,
+                        "CharacterMatchOffsetY": 0,
+                    },
+                    {
+                        "Character": "Link",
+                        "CharacterIndex": 45,
+                        "CharacterRosterIndex": 15,
+                        "CharacterMatchConfidence": 39.1,
+                        "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                        "CharacterMatchOffsetX": 0,
+                        "CharacterMatchOffsetY": 0,
+                    },
+                    {
+                        "Character": "Pink Gold Peach",
+                        "CharacterIndex": 46,
+                        "CharacterRosterIndex": 19,
+                        "CharacterMatchConfidence": 37.8,
+                        "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                        "CharacterMatchOffsetX": 0,
+                        "CharacterMatchOffsetY": 0,
+                    },
+                ],
+            ),
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "_character_template_edge_agreement",
+                return_value=0.20,
+            ),
+        ):
+            metrics = ocr_scoreboard_consensus.build_character_match_metrics(frame)
+
+        self.assertEqual(metrics[0]["Character"], "Mii")
+        self.assertEqual(metrics[0]["CharacterIndex"], 80)
+        self.assertEqual(metrics[0]["CharacterMatchMethod"], "open_set_mii_reject")
+
+    def test_map_total_rows_to_race_rows_keeps_race_character_when_present(self):
+        score_rows = [
+            {
+                "PlayerName": "Wilco",
+                "NameConfidence": 100.0,
+                "CharacterIndex": 80,
+                "Character": "Mii",
+                "CharacterMatchConfidence": 40.0,
+                "CharacterMatchMethod": "open_set_mii_reject",
+                "DetectedValue": 6,
+                "DetectedSecondaryValue": 44,
+                "DigitConfidence": 100.0,
+            }
+        ]
+        total_rows = [
+            {
+                "RowIndex": 0,
+                "PlayerName": "Wilco",
+                "NameConfidence": 100.0,
+                "CharacterIndex": 73,
+                "Character": "Isabelle",
+                "CharacterMatchConfidence": 76.0,
+                "CharacterMatchMethod": "alpha_aware_color_edge_template_local_search",
+                "DetectedValue": 50,
+                "DetectedValueSource": "ocr",
+                "DigitConfidence": 100.0,
+            }
+        ]
+
+        mapped = map_total_rows_to_race_rows(
+            score_rows,
+            total_rows,
+            preprocess_name=lambda value: str(value or "").lower(),
+            weighted_similarity=lambda left, right: 1.0 if left == right else 0.0,
+            total_row_metrics=[{}],
+        )
+
+        self.assertEqual(mapped[0]["Character"], "Mii")
+        self.assertEqual(mapped[0]["CharacterIndex"], 80)
+        self.assertEqual(mapped[0]["CharacterMatchMethod"], "open_set_mii_reject")
+
     def test_eligible_character_shortlist_indices_ignore_future_races(self):
         shortlist_state = {42: 11, 43: 9, 44: 12}
         self.assertEqual(

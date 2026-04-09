@@ -3,6 +3,7 @@ import os
 import re
 import time
 import threading
+import heapq
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Dict, List, Tuple, Union
 
 import cv2
 import numpy as np
+import pandas as pd
 from PIL import Image, ImageDraw
 
 try:
@@ -63,18 +65,35 @@ CHARACTER_ROW_STEP = 52
 CHARACTER_ROW_PADDING_TOP = 2
 CHARACTER_ROW_PADDING_BOTTOM = 2
 EXCLUDED_CHARACTER_TEMPLATE_INDICES = {79, 80, 81}
+MII_CHARACTER_NAME = "Mii"
+MII_CHARACTER_INDEX = 80
+MII_OPEN_SET_MAX_TOP2_MARGIN = 1.0
+MII_OPEN_SET_MAX_TOP5_SPREAD = 3.5
+MII_OPEN_SET_MIN_TOP5_FAMILY_COUNT = 4
+CHARACTER_ALIGNMENT_CANDIDATE_OFFSETS = (
+    (2, 1),
+    (1, 1),
+    (3, 1),
+    (3, 2),
+    (2, 2),
+    (2, 0),
+    (2, 3),
+    (3, 3),
+    (1, 0),
+)
+CHARACTER_FULL_SEARCH_PREFILTER_LIMIT = 8
 OBSERVATION_STAGE_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CALL_MATRIX_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(dict)
 CHARACTER_SHORTLIST_LOCK = threading.Lock()
 CHARACTER_SHORTLIST_STATS = defaultdict(int)
 PLAYER_CHARACTER_PRIORS = defaultdict(dict)
-CHARACTER_SHORTLIST_MIN_CONFIDENCE = 78.0
+CHARACTER_SHORTLIST_MIN_CONFIDENCE = 50.0
 CHARACTER_SHORTLIST_MIN_MARGIN = 5.0
-CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 76.0
+CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE = 50.0
 CHARACTER_PRIOR_STABLE_MIN_SEEN = 2
 CHARACTER_PRIOR_MAX_FAST_ACCEPTS = 6
-CHARACTER_SHORTLIST_ACCELERATION_ENABLED = os.environ.get("MK8_CHARACTER_SHORTLIST_ACCELERATION", "0").strip().lower() not in {"0", "false", "no", "off"}
+CHARACTER_SHORTLIST_ACCELERATION_ENABLED = os.environ.get("MK8_CHARACTER_SHORTLIST_ACCELERATION", "1").strip().lower() not in {"0", "false", "no", "off"}
 LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_CONFIDENCE = APP_CONFIG.low_res_row12_character_fallback_min_confidence
 LOW_RES_ROW12_CHARACTER_FALLBACK_MIN_POSITION_SCORE = APP_CONFIG.low_res_row12_character_fallback_min_position_score
 ULTRA_LOW_RES_ROW_LEFT = CHARACTER_ROI_LEFT
@@ -239,7 +258,7 @@ def call_matrix_summary_lines(colorize=None) -> List[str]:
 def character_shortlist_summary_lines() -> List[str]:
     if not CHARACTER_SHORTLIST_STATS:
         return []
-    return [
+    lines = [
         "Character shortlist activity",
         f"- prior rows accepted: {CHARACTER_SHORTLIST_STATS['prior_accepts']}",
         f"- shortlist rows accepted: {CHARACTER_SHORTLIST_STATS['shortlist_accepts']}",
@@ -248,6 +267,13 @@ def character_shortlist_summary_lines() -> List[str]:
         f"- full-search rows: {CHARACTER_SHORTLIST_STATS['full_search_rows']}",
         f"- shortlist expansions: {CHARACTER_SHORTLIST_STATS['shortlist_expansions']}",
     ]
+    reason_keys = sorted(
+        key for key in CHARACTER_SHORTLIST_STATS.keys()
+        if str(key).startswith("reason_") and int(CHARACTER_SHORTLIST_STATS[key]) > 0
+    )
+    for key in reason_keys:
+        lines.append(f"- {str(key).replace('reason_', '').replace('_', ' ')}: {CHARACTER_SHORTLIST_STATS[key]}")
+    return lines
 
 
 def reset_character_shortlist_state() -> None:
@@ -480,9 +506,11 @@ def load_character_templates() -> List[Dict[str, object]]:
         templates.append(
             {
                 "character_index": int(character.character_index),
+                "roster_index": int(character.roster_index),
                 "character_name": str(character.name_uk),
                 "template_image": template_rgb,
                 "template_alpha": template_alpha,
+                "aligned_variants": _build_aligned_template_variants(template_rgb, template_alpha),
             }
         )
     return templates
@@ -495,24 +523,393 @@ def shortlist_character_templates(templates: List[Dict[str, object]], allowed_in
     return shortlisted or templates
 
 
+def _core_visible_mask(alpha: np.ndarray, *, iterations: int = 1) -> np.ndarray:
+    mask = np.asarray(alpha > 16, dtype=np.uint8)
+    if int(np.count_nonzero(mask)) <= 0:
+        return np.zeros_like(mask, dtype=bool)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    eroded = cv2.erode(mask, kernel, iterations=max(0, int(iterations)))
+    if int(np.count_nonzero(eroded)) <= 0:
+        eroded = mask
+    return np.asarray(eroded > 0, dtype=bool)
+
+
+def _translate_template_for_alignment(
+    image: np.ndarray,
+    alpha: np.ndarray,
+    *,
+    dx: int = 0,
+    dy: int = 0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    height, width = alpha.shape[:2]
+    matrix = np.float32([[1.0, 0.0, float(dx)], [0.0, 1.0, float(dy)]])
+    shifted_image = cv2.warpAffine(
+        image,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    shifted_alpha = cv2.warpAffine(
+        alpha,
+        matrix,
+        (width, height),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    return shifted_image, shifted_alpha
+
+
+def _build_aligned_template_variants(
+    template_image: np.ndarray,
+    template_alpha: np.ndarray,
+) -> List[Dict[str, object]]:
+    variants = []
+    for offset_x, offset_y in CHARACTER_ALIGNMENT_CANDIDATE_OFFSETS:
+        shifted_image, shifted_alpha = _translate_template_for_alignment(
+            template_image,
+            template_alpha,
+            dx=offset_x,
+            dy=offset_y,
+        )
+        core_mask = _core_visible_mask(shifted_alpha)
+        if int(np.count_nonzero(core_mask)) > 0:
+            template_edges = cv2.Canny(cv2.cvtColor(shifted_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+            template_edges &= core_mask
+        else:
+            template_edges = np.zeros_like(core_mask, dtype=bool)
+        variants.append(
+            {
+                "offset_x": int(offset_x),
+                "offset_y": int(offset_y),
+                "image": shifted_image,
+                "image_float": shifted_image.astype(np.float32),
+                "alpha": shifted_alpha,
+                "core_mask": core_mask,
+                "edges": template_edges,
+            }
+        )
+    return variants
+
+
+def _masked_cutout_color_score(
+    source_image: np.ndarray,
+    target_image: np.ndarray,
+    target_alpha: np.ndarray,
+    *,
+    source_rgb: np.ndarray | None = None,
+    target_rgb: np.ndarray | None = None,
+    target_mask: np.ndarray | None = None,
+) -> float:
+    target_mask = _core_visible_mask(target_alpha) if target_mask is None else np.asarray(target_mask, dtype=bool)
+    if int(np.count_nonzero(target_mask)) <= 0:
+        return 0.0
+    source_rgb = source_image.astype(np.float32) if source_rgb is None else np.asarray(source_rgb, dtype=np.float32)
+    target_rgb = target_image.astype(np.float32) if target_rgb is None else np.asarray(target_rgb, dtype=np.float32)
+    mean_abs_diff = float(np.mean(np.abs(source_rgb[target_mask] - target_rgb[target_mask])))
+    return max(0.0, 1.0 - (mean_abs_diff / 255.0))
+
+
+def _cutout_edge_agreement_score(
+    source_image: np.ndarray,
+    target_image: np.ndarray,
+    target_alpha: np.ndarray,
+    *,
+    source_edges: np.ndarray | None = None,
+    target_mask: np.ndarray | None = None,
+    target_edges: np.ndarray | None = None,
+) -> float:
+    target_mask = _core_visible_mask(target_alpha) if target_mask is None else np.asarray(target_mask, dtype=bool)
+    if int(np.count_nonzero(target_mask)) <= 0:
+        return 0.0
+    if source_edges is None:
+        source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    else:
+        source_edges = np.asarray(source_edges, dtype=bool)
+    if target_edges is None:
+        target_edges = cv2.Canny(cv2.cvtColor(target_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    else:
+        target_edges = np.asarray(target_edges, dtype=bool)
+    masked_source_edges = source_edges & target_mask
+    masked_target_edges = target_edges & target_mask
+    overlap = int(np.count_nonzero(masked_source_edges & masked_target_edges))
+    total = int(np.count_nonzero(masked_source_edges)) + int(np.count_nonzero(masked_target_edges))
+    if total <= 0:
+        return 0.0
+    return float((2.0 * overlap) / total)
+
+
+def aligned_character_match_score(
+    source_image: np.ndarray,
+    template_image: np.ndarray,
+    template_alpha: np.ndarray,
+    *,
+    aligned_variants: List[Dict[str, object]] | None = None,
+    source_edges: np.ndarray | None = None,
+    source_rgb: np.ndarray | None = None,
+) -> Dict[str, float]:
+    """Match a roster template using alpha-cutout comparison at calibrated offsets."""
+    source_height, source_width = source_image.shape[:2]
+    template_height, template_width = template_image.shape[:2]
+    if source_height < template_height or source_width < template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        source_height, source_width = source_image.shape[:2]
+
+    if source_height != template_height or source_width != template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        source_edges = None
+        source_rgb = None
+    elif source_edges is not None and np.asarray(source_edges).shape[:2] != source_image.shape[:2]:
+        source_edges = None
+    if source_rgb is not None and np.asarray(source_rgb).shape[:2] != source_image.shape[:2]:
+        source_rgb = None
+    best_blend = -1.0
+    best_color = 0.0
+    best_edge = 0.0
+    best_offset_x = 0
+    best_offset_y = 0
+    variants = aligned_variants or _build_aligned_template_variants(template_image, template_alpha)
+    for variant in variants:
+        shifted_template = variant["image"]
+        shifted_alpha = variant["alpha"]
+        target_mask = variant["core_mask"]
+        target_edges = variant["edges"]
+        color_score = _masked_cutout_color_score(
+            source_image,
+            shifted_template,
+            shifted_alpha,
+            source_rgb=source_rgb,
+            target_rgb=variant.get("image_float"),
+            target_mask=target_mask,
+        )
+        edge_score = _cutout_edge_agreement_score(
+            source_image,
+            shifted_template,
+            shifted_alpha,
+            source_edges=source_edges,
+            target_mask=target_mask,
+            target_edges=target_edges,
+        )
+        blend_score = (0.20 * color_score) + (0.80 * edge_score)
+        if blend_score > best_blend:
+            best_blend = float(blend_score)
+            best_color = float(color_score)
+            best_edge = float(edge_score)
+            best_offset_x = int(variant["offset_x"])
+            best_offset_y = int(variant["offset_y"])
+    return {
+        "score": max(0.0, float(best_blend)),
+        "color_score": max(0.0, float(best_color)),
+        "edge_score": max(0.0, float(best_edge)),
+        "offset_x": int(best_offset_x),
+        "offset_y": int(best_offset_y),
+    }
+
+
 def best_character_matches(row_roi: np.ndarray, templates: List[Dict[str, object]], limit: int = 2) -> List[Dict[str, object]]:
-    ranked_matches = []
+    if limit <= 0:
+        return []
+    top_matches: List[Tuple[float, int, Tuple[object, ...]]] = []
+    sequence = 0
+    source_image = row_roi
+    source_edges = None
+    source_rgb = None
+    if templates:
+        template_height, template_width = templates[0]["template_image"].shape[:2]
+        if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
+            source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        elif row_roi.shape[0] != template_height or row_roi.shape[1] != template_width:
+            source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+        source_rgb = source_image.astype(np.float32)
     for template in templates:
-        match_result = masked_character_match_score(
-            row_roi,
+        match_result = aligned_character_match_score(
+            source_image,
+            template["template_image"],
+            template["template_alpha"],
+            aligned_variants=template.get("aligned_variants")
+            or _build_aligned_template_variants(template["template_image"], template["template_alpha"]),
+            source_edges=source_edges,
+            source_rgb=source_rgb,
+        )
+        confidence = round(float(match_result["score"]) * 100.0, 1)
+        entry_payload = (
+            template["character_name"],
+            template["character_index"],
+            template["roster_index"],
+            confidence,
+            round(float(match_result.get("color_score", 0.0)) * 100.0, 1),
+            round(float(match_result.get("edge_score", 0.0)) * 100.0, 1),
+            int(match_result.get("offset_x", 0)),
+            int(match_result.get("offset_y", 0)),
+        )
+        entry = (float(confidence), -sequence, entry_payload)
+        sequence += 1
+        if len(top_matches) < limit:
+            heapq.heappush(top_matches, entry)
+        elif entry > top_matches[0]:
+            heapq.heapreplace(top_matches, entry)
+    top_matches.sort(reverse=True)
+    return [
+        {
+            "Character": payload[0],
+            "CharacterIndex": payload[1],
+            "CharacterRosterIndex": payload[2],
+            "CharacterMatchConfidence": payload[3],
+            "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+            "CharacterMatchColorConfidence": payload[4],
+            "CharacterMatchEdgeConfidence": payload[5],
+            "CharacterMatchOffsetX": payload[6],
+            "CharacterMatchOffsetY": payload[7],
+        }
+        for _score, _neg_sequence, payload in top_matches
+    ]
+
+
+def prefilter_character_templates(
+    row_roi: np.ndarray,
+    templates: List[Dict[str, object]],
+    limit: int,
+) -> List[Dict[str, object]]:
+    if limit <= 0 or len(templates) <= limit:
+        return templates
+    source_image = row_roi
+    source_edges = None
+    source_rgb = None
+    template_height, template_width = templates[0]["template_image"].shape[:2]
+    if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
+        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    elif row_roi.shape[0] != template_height or row_roi.shape[1] != template_width:
+        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    source_rgb = source_image.astype(np.float32)
+
+    top_templates: List[Tuple[float, int, Dict[str, object]]] = []
+    sequence = 0
+    for template in templates:
+        variants = template.get("aligned_variants") or _build_aligned_template_variants(
             template["template_image"],
             template["template_alpha"],
         )
-        ranked_matches.append(
-            {
-                "Character": template["character_name"],
-                "CharacterIndex": template["character_index"],
-                "CharacterMatchConfidence": round(float(match_result["score"]) * 100.0, 1),
-                "CharacterMatchMethod": "alpha_aware_color_template_local_search",
-            }
+        variant = variants[0] if variants else None
+        if variant is None:
+            continue
+        color_score = _masked_cutout_color_score(
+            source_image,
+            variant["image"],
+            variant["alpha"],
+            source_rgb=source_rgb,
+            target_rgb=variant.get("image_float"),
+            target_mask=variant["core_mask"],
         )
-    ranked_matches.sort(key=lambda item: item["CharacterMatchConfidence"], reverse=True)
-    return ranked_matches[:limit]
+        edge_score = _cutout_edge_agreement_score(
+            source_image,
+            variant["image"],
+            variant["alpha"],
+            source_edges=source_edges,
+            target_mask=variant["core_mask"],
+            target_edges=variant["edges"],
+        )
+        blended_score = (0.20 * color_score) + (0.80 * edge_score)
+        entry = (float(blended_score), -sequence, template)
+        sequence += 1
+        if len(top_templates) < limit:
+            heapq.heappush(top_templates, entry)
+        elif entry > top_templates[0]:
+            heapq.heapreplace(top_templates, entry)
+    top_templates.sort(reverse=True)
+    return [template for _score, _neg_sequence, template in top_templates] or templates
+
+
+def _character_template_edge_agreement(
+    row_roi: np.ndarray,
+    template_image: np.ndarray,
+    template_alpha: np.ndarray,
+    *,
+    offset_x: int = 0,
+    offset_y: int = 0,
+) -> float:
+    template_height, template_width = template_image.shape[:2]
+    if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
+        row_roi = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+        offset_x = 0
+        offset_y = 0
+
+    offset_x = max(0, min(int(offset_x), max(0, row_roi.shape[1] - template_width)))
+    offset_y = max(0, min(int(offset_y), max(0, row_roi.shape[0] - template_height)))
+    window = row_roi[offset_y:offset_y + template_height, offset_x:offset_x + template_width]
+    if window.shape[:2] != (template_height, template_width):
+        return 0.0
+
+    visible_mask = template_alpha > 16
+    if int(np.count_nonzero(visible_mask)) <= 0:
+        return 0.0
+
+    source_gray = cv2.cvtColor(window, cv2.COLOR_BGR2GRAY)
+    template_gray = cv2.cvtColor(template_image, cv2.COLOR_BGR2GRAY)
+    source_edges = cv2.Canny(source_gray, 80, 160) > 0
+    template_edges = cv2.Canny(template_gray, 80, 160) > 0
+    source_edges &= visible_mask
+    template_edges &= visible_mask
+
+    overlap = int(np.count_nonzero(source_edges & template_edges))
+    edge_total = int(np.count_nonzero(source_edges)) + int(np.count_nonzero(template_edges))
+    if edge_total <= 0:
+        return 0.0
+    return float((2.0 * overlap) / edge_total)
+
+
+def _should_reject_character_match_as_mii(
+    ranked_matches: List[Dict[str, object]] | None,
+) -> bool:
+    if not ranked_matches:
+        return False
+    best_match = ranked_matches[0]
+    best_confidence = float(best_match.get("CharacterMatchConfidence", 0.0) or 0.0)
+    second_confidence = float(ranked_matches[1].get("CharacterMatchConfidence", 0.0) or 0.0) if len(ranked_matches) > 1 else 0.0
+    fifth_confidence = float(ranked_matches[4].get("CharacterMatchConfidence", 0.0) or 0.0) if len(ranked_matches) > 4 else best_confidence
+    top2_margin = best_confidence - second_confidence
+    top5_spread = best_confidence - fifth_confidence
+    family_count = len(
+        {
+            int(match.get("CharacterRosterIndex"))
+            for match in ranked_matches[:5]
+            if match.get("CharacterRosterIndex") is not None
+        }
+    )
+    return (
+        top2_margin <= MII_OPEN_SET_MAX_TOP2_MARGIN
+        and top5_spread <= MII_OPEN_SET_MAX_TOP5_SPREAD
+        and family_count >= MII_OPEN_SET_MIN_TOP5_FAMILY_COUNT
+    )
+
+
+def _character_match_raw_stats(ranked_matches: List[Dict[str, object]] | None) -> Dict[str, object]:
+    if not ranked_matches:
+        return {
+            "CharacterMatchRawBest": np.nan,
+            "CharacterMatchRawMargin": np.nan,
+            "CharacterMatchRawTop5Spread": np.nan,
+            "CharacterMatchRawTop5FamilyCount": np.nan,
+        }
+    best_confidence = float(ranked_matches[0].get("CharacterMatchConfidence", 0.0) or 0.0)
+    second_confidence = float(ranked_matches[1].get("CharacterMatchConfidence", 0.0) or 0.0) if len(ranked_matches) > 1 else best_confidence
+    fifth_confidence = float(ranked_matches[4].get("CharacterMatchConfidence", 0.0) or 0.0) if len(ranked_matches) > 4 else best_confidence
+    family_count = len(
+        {
+            int(match.get("CharacterRosterIndex"))
+            for match in ranked_matches[:5]
+            if match.get("CharacterRosterIndex") is not None
+        }
+    )
+    return {
+        "CharacterMatchRawBest": round(best_confidence, 1),
+        "CharacterMatchRawMargin": round(best_confidence - second_confidence, 1),
+        "CharacterMatchRawTop5Spread": round(best_confidence - fifth_confidence, 1),
+        "CharacterMatchRawTop5FamilyCount": int(family_count),
+    }
 
 
 def update_player_character_prior(
@@ -970,6 +1367,7 @@ def build_character_match_metrics(
         shortlist_indices = set()
         prior_state_by_player = {}
     templates_by_index = {int(template["character_index"]): template for template in templates}
+    base_shortlist_templates = shortlist_character_templates(templates, shortlist_indices)
     for row_index in range(12):
         (x1, y1), (x2, y2) = character_row_roi(row_index, score_layout_id=score_layout_id)
         crop_x1 = max(0, min(image_width, x1))
@@ -992,13 +1390,13 @@ def build_character_match_metrics(
         player_name_confidence = float(name_confidences[row_index]) if name_confidences and row_index < len(name_confidences) else 0.0
         player_key = player_identity_key(player_name)
         prior_state = prior_state_by_player.get(player_key)
-        shortlist_templates = shortlist_character_templates(templates, shortlist_indices)
+        shortlist_templates = base_shortlist_templates
         if prior_state is not None:
             prior_index = int(prior_state["CharacterIndex"])
             if all(int(template["character_index"]) != prior_index for template in shortlist_templates):
                 prior_template = templates_by_index.get(prior_index)
                 if prior_template is not None:
-                    shortlist_templates = shortlist_templates + [prior_template]
+                    shortlist_templates = list(shortlist_templates) + [prior_template]
         shortlist_matches = best_character_matches(row_roi, shortlist_templates, limit=2)
         shortlist_best = shortlist_matches[0] if shortlist_matches else None
         shortlist_second = shortlist_matches[1] if len(shortlist_matches) > 1 else {"CharacterMatchConfidence": 0.0}
@@ -1026,11 +1424,33 @@ def build_character_match_metrics(
                 CHARACTER_SHORTLIST_STATS["prior_accepts"] += 1
                 best_match = dict(shortlist_best)
                 best_match["CharacterMatchMethod"] = "character_prior_confirm"
+                best_match.update(_character_match_raw_stats(shortlist_matches))
                 update_player_character_prior(video_context, player_name, best_match, race_id_number=race_id_number)
                 metrics.append(best_match)
                 continue
             CHARACTER_SHORTLIST_STATS["prior_fallbacks"] += 1
-
+            if not prior_is_best:
+                CHARACTER_SHORTLIST_STATS["reason_prior_not_best"] += 1
+            elif float(shortlist_best["CharacterMatchConfidence"]) < character_confidence_threshold(prior_character_name):
+                CHARACTER_SHORTLIST_STATS["reason_prior_low_confidence"] += 1
+                if is_risky_character_family(prior_character_name):
+                    CHARACTER_SHORTLIST_STATS["reason_prior_low_confidence_risky_family"] += 1
+                else:
+                    CHARACTER_SHORTLIST_STATS["reason_prior_low_confidence_non_risky"] += 1
+            elif shortlist_margin < character_margin_threshold(prior_character_name):
+                CHARACTER_SHORTLIST_STATS["reason_prior_low_margin"] += 1
+            else:
+                CHARACTER_SHORTLIST_STATS["reason_prior_other"] += 1
+        elif prior_state:
+            CHARACTER_SHORTLIST_STATS["prior_fallbacks"] += 1
+            if player_name_confidence < 80.0:
+                CHARACTER_SHORTLIST_STATS["reason_prior_low_name_confidence"] += 1
+            elif int(prior_state.get("seen_count", 0)) < CHARACTER_PRIOR_STABLE_MIN_SEEN:
+                CHARACTER_SHORTLIST_STATS["reason_prior_not_stable"] += 1
+            elif int(prior_state.get("fast_accepts_since_revalidation", 0)) >= CHARACTER_PRIOR_MAX_FAST_ACCEPTS:
+                CHARACTER_SHORTLIST_STATS["reason_prior_revalidation_cap"] += 1
+            else:
+                CHARACTER_SHORTLIST_STATS["reason_prior_ineligible_other"] += 1
         use_shortlist = (
             shortlist_best is not None
             and len(shortlist_templates) < len(templates)
@@ -1042,12 +1462,33 @@ def build_character_match_metrics(
             CHARACTER_SHORTLIST_STATS["shortlist_accepts"] += 1
             best_match = dict(shortlist_best)
             best_match["CharacterMatchMethod"] = "character_shortlist_alpha_search"
+            best_match.update(_character_match_raw_stats(shortlist_matches))
         else:
             if len(shortlist_templates) < len(templates):
                 CHARACTER_SHORTLIST_STATS["shortlist_fallbacks"] += 1
+                if shortlist_best is None:
+                    CHARACTER_SHORTLIST_STATS["reason_shortlist_no_match"] += 1
+                elif float(shortlist_best["CharacterMatchConfidence"]) < character_confidence_threshold(str(shortlist_best.get("Character", ""))):
+                    CHARACTER_SHORTLIST_STATS["reason_shortlist_low_confidence"] += 1
+                    if is_risky_character_family(str(shortlist_best.get("Character", ""))):
+                        CHARACTER_SHORTLIST_STATS["reason_shortlist_low_confidence_risky_family"] += 1
+                    else:
+                        CHARACTER_SHORTLIST_STATS["reason_shortlist_low_confidence_non_risky"] += 1
+                elif shortlist_margin < character_margin_threshold(str(shortlist_best.get("Character", ""))):
+                    CHARACTER_SHORTLIST_STATS["reason_shortlist_low_margin"] += 1
+                else:
+                    CHARACTER_SHORTLIST_STATS["reason_shortlist_other"] += 1
+            else:
+                CHARACTER_SHORTLIST_STATS["reason_no_effective_shortlist"] += 1
             CHARACTER_SHORTLIST_STATS["full_search_rows"] += 1
-            full_matches = best_character_matches(row_roi, templates, limit=2)
+            full_search_templates = prefilter_character_templates(
+                row_roi,
+                templates,
+                limit=CHARACTER_FULL_SEARCH_PREFILTER_LIMIT,
+            )
+            full_matches = best_character_matches(row_roi, full_search_templates, limit=5)
             best_match = full_matches[0] if full_matches else None
+            second_match = full_matches[1] if len(full_matches) > 1 else None
             if best_match is not None and video_context:
                 best_index = int(best_match["CharacterIndex"])
                 with CHARACTER_SHORTLIST_LOCK:
@@ -1058,12 +1499,26 @@ def build_character_match_metrics(
                     ):
                         shortlist[best_index] = int(race_id_number or 0)
                         CHARACTER_SHORTLIST_STATS["shortlist_expansions"] += 1
+            if best_match is not None:
+                best_match.update(_character_match_raw_stats(full_matches))
+                edge_agreement = float(best_match.get("CharacterMatchEdgeConfidence", 0.0) or 0.0) / 100.0
+                best_match["CharacterMatchEdgeAgreement"] = round(edge_agreement * 100.0, 1)
+                if _should_reject_character_match_as_mii(full_matches):
+                    best_match = {
+                        "Character": MII_CHARACTER_NAME,
+                        "CharacterIndex": MII_CHARACTER_INDEX,
+                        "CharacterMatchConfidence": round(float(best_match.get("CharacterMatchConfidence", 0.0) or 0.0), 1),
+                        "CharacterMatchMethod": "open_set_mii_reject",
+                        "CharacterMatchEdgeAgreement": round(edge_agreement * 100.0, 1),
+                        **_character_match_raw_stats(full_matches),
+                    }
 
         metrics.append(best_match or {
             "Character": "",
             "CharacterIndex": None,
             "CharacterMatchConfidence": 0.0,
             "CharacterMatchMethod": "no_match",
+            **_character_match_raw_stats(None),
         })
 
         if CHARACTER_SHORTLIST_ACCELERATION_ENABLED and metrics[-1].get("CharacterIndex") is not None:
@@ -2274,6 +2729,10 @@ def build_consensus_rows(
         secondary_point_votes = []
         character_votes = []
         character_method_votes = defaultdict(float)
+        character_raw_best_votes = []
+        character_raw_margin_votes = []
+        character_raw_top5_spread_votes = []
+        character_raw_top5_family_votes = []
         for observation in name_observations:
             name = normalize_name_for_vote(observation["names"][row_index]) if row_index < len(observation["names"]) else ""
             name_conf = observation["name_confidences"][row_index] if row_index < len(observation["name_confidences"]) else 0
@@ -2304,6 +2763,18 @@ def build_consensus_rows(
                         )
                     )
                     character_method_votes[(character_key, str(character_match.get("CharacterMatchMethod", "")))] += character_weight
+                    raw_best = character_match.get("CharacterMatchRawBest")
+                    raw_margin = character_match.get("CharacterMatchRawMargin")
+                    raw_top5_spread = character_match.get("CharacterMatchRawTop5Spread")
+                    raw_top5_family_count = character_match.get("CharacterMatchRawTop5FamilyCount")
+                    if raw_best is not None and not pd.isna(raw_best):
+                        character_raw_best_votes.append((float(raw_best), character_weight))
+                    if raw_margin is not None and not pd.isna(raw_margin):
+                        character_raw_margin_votes.append((float(raw_margin), character_weight))
+                    if raw_top5_spread is not None and not pd.isna(raw_top5_spread):
+                        character_raw_top5_spread_votes.append((float(raw_top5_spread), character_weight))
+                    if raw_top5_family_count is not None and not pd.isna(raw_top5_family_count):
+                        character_raw_top5_family_votes.append((float(raw_top5_family_count), character_weight))
 
         player_name, name_confidence, name_vote_details = weighted_name_vote_details(name_votes)
         detected_value, point_confidence, detected_value_source = weighted_vote_with_source(point_votes)
@@ -2330,6 +2801,20 @@ def build_consensus_rows(
             if matching_methods:
                 character_method = max(matching_methods.items(), key=lambda item: item[1])[0]
 
+        def _weighted_numeric_average(values: List[Tuple[float, float]]) -> float | None:
+            if not values:
+                return None
+            total_weight = sum(max(0.0, float(weight)) for _value, weight in values)
+            if total_weight <= 0:
+                return None
+            weighted_sum = sum(float(value) * max(0.0, float(weight)) for value, weight in values)
+            return float(weighted_sum / total_weight)
+
+        raw_best_average = _weighted_numeric_average(character_raw_best_votes)
+        raw_margin_average = _weighted_numeric_average(character_raw_margin_votes)
+        raw_top5_spread_average = _weighted_numeric_average(character_raw_top5_spread_votes)
+        raw_top5_family_average = _weighted_numeric_average(character_raw_top5_family_votes)
+
         rows.append(
             {
                 "RowIndex": row_index,
@@ -2347,6 +2832,10 @@ def build_consensus_rows(
                 "CharacterIndex": character_index,
                 "CharacterMatchConfidence": round(character_vote_confidence * 100, 1),
                 "CharacterMatchMethod": character_method or "",
+                "CharacterMatchRawBest": round(raw_best_average, 1) if raw_best_average is not None else np.nan,
+                "CharacterMatchRawMargin": round(raw_margin_average, 1) if raw_margin_average is not None else np.nan,
+                "CharacterMatchRawTop5Spread": round(raw_top5_spread_average, 1) if raw_top5_spread_average is not None else np.nan,
+                "CharacterMatchRawTop5FamilyCount": int(round(raw_top5_family_average)) if raw_top5_family_average is not None else np.nan,
             }
         )
     return rows
@@ -2508,7 +2997,7 @@ def map_total_rows_to_race_rows(
             total_row = total_rows[matched_total_index]
             total_score = total_row["DetectedValue"]
             total_digit_confidence = float(total_row["DigitConfidence"])
-            if total_row.get("CharacterIndex") is not None:
+            if mapped_character_index is None and total_row.get("CharacterIndex") is not None:
                 mapped_character = total_row.get("Character", mapped_character)
                 mapped_character_index = total_row.get("CharacterIndex")
                 mapped_character_confidence = total_row.get("CharacterMatchConfidence", mapped_character_confidence)
