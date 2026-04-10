@@ -73,6 +73,7 @@ def configure_headless_debug_outputs(enabled: bool | None) -> None:
     if enabled is None:
         return
     value = "1" if enabled else "0"
+    os.environ["MK8_HEADLESS_DEBUG"] = value
     os.environ["MK8_WRITE_DEBUG_CSV"] = value
     os.environ["MK8_WRITE_DEBUG_SCORE_IMAGES"] = value
     os.environ["MK8_WRITE_DEBUG_LINKING_EXCEL"] = value

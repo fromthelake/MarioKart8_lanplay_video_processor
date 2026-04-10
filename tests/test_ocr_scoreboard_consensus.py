@@ -150,6 +150,107 @@ class OcrScoreboardConsensusTests(unittest.TestCase):
         self.assertEqual(metrics[0]["CharacterIndex"], 80)
         self.assertEqual(metrics[0]["CharacterMatchMethod"], "open_set_mii_reject")
 
+    def test_build_character_match_metrics_ignores_prior_for_duplicate_names_in_frame(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        template_image = np.zeros((48, 48, 3), dtype=np.uint8)
+        template_alpha = np.full((48, 48), 255, dtype=np.uint8)
+        strong_yoshi_matches = [
+            {
+                "Character": "Yellow Yoshi",
+                "CharacterIndex": 20,
+                "CharacterRosterIndex": 8,
+                "CharacterMatchConfidence": 57.9,
+                "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                "CharacterMatchColorConfidence": 90.3,
+                "CharacterMatchEdgeConfidence": 49.8,
+                "CharacterMatchOffsetX": 3,
+                "CharacterMatchOffsetY": 1,
+            },
+            {
+                "Character": "Orange Yoshi",
+                "CharacterIndex": 24,
+                "CharacterRosterIndex": 8,
+                "CharacterMatchConfidence": 53.7,
+                "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                "CharacterMatchColorConfidence": 87.1,
+                "CharacterMatchEdgeConfidence": 45.3,
+                "CharacterMatchOffsetX": 3,
+                "CharacterMatchOffsetY": 1,
+            },
+            {
+                "Character": "Yoshi",
+                "CharacterIndex": 16,
+                "CharacterRosterIndex": 8,
+                "CharacterMatchConfidence": 53.1,
+                "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                "CharacterMatchColorConfidence": 80.6,
+                "CharacterMatchEdgeConfidence": 46.2,
+                "CharacterMatchOffsetX": 3,
+                "CharacterMatchOffsetY": 1,
+            },
+        ]
+        with (
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "load_character_templates",
+                return_value=[
+                    {
+                        "character_index": 20,
+                        "character_name": "Yellow Yoshi",
+                        "template_image": template_image,
+                        "template_alpha": template_alpha,
+                    },
+                    {
+                        "character_index": 24,
+                        "character_name": "Orange Yoshi",
+                        "template_image": template_image,
+                        "template_alpha": template_alpha,
+                    },
+                ],
+            ),
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "_eligible_character_shortlist_indices",
+                return_value={20},
+            ),
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "_eligible_player_character_priors",
+                return_value={
+                    "arend": {
+                        "CharacterIndex": 80,
+                        "Character": "Mii",
+                        "CharacterMatchConfidence": 75.0,
+                        "seen_count": 5,
+                        "fast_accepts_since_revalidation": 0,
+                        "winner_counts": {"Mii": 5},
+                        "closed_set_samples": 5,
+                        "confidence_sum": 0.0,
+                        "margin_sum": 0.0,
+                        "spread_sum": 0.0,
+                        "family_count_sum": 0.0,
+                        "mii_likely": True,
+                        "candidate_indices": [20, 24],
+                    }
+                },
+            ),
+            mock.patch.object(
+                ocr_scoreboard_consensus,
+                "best_character_matches",
+                return_value=strong_yoshi_matches,
+            ),
+        ):
+            metrics = ocr_scoreboard_consensus.build_character_match_metrics(
+                frame,
+                names=["Arend", "Arend"],
+                name_confidences=[100, 100],
+                video_context="VideoA",
+                race_id_number=6,
+            )
+
+        self.assertEqual(metrics[0]["Character"], "Yellow Yoshi")
+        self.assertNotEqual(metrics[0]["CharacterMatchMethod"], "character_prior_mii_likely")
+
     def test_map_total_rows_to_race_rows_keeps_race_character_when_present(self):
         score_rows = [
             {
@@ -317,6 +418,66 @@ class OcrScoreboardConsensusTests(unittest.TestCase):
         self.assertEqual(metrics, expected_metrics)
         self.assertEqual(stats["test_position_metrics_black_white_calls"], 1)
         self.assertEqual(stats["test_position_metrics_rows_processed"], 2)
+
+    def test_prior_state_is_mii_likely_for_unstable_closed_set_history(self):
+        prior_state = {
+            "winner_counts": {"Pink Yoshi": 2, "Red Yoshi": 1},
+            "closed_set_samples": 3,
+            "confidence_sum": 240.0,
+            "margin_sum": 3.0,
+            "spread_sum": 6.0,
+            "family_count_sum": 12.0,
+            "mii_likely": False,
+        }
+
+        self.assertTrue(ocr_scoreboard_consensus._prior_state_is_mii_likely(prior_state))
+
+    def test_prior_state_is_not_mii_likely_for_stable_closed_set_history(self):
+        prior_state = {
+            "winner_counts": {"Inkling Boy": 3},
+            "closed_set_samples": 3,
+            "confidence_sum": 285.0,
+            "margin_sum": 42.0,
+            "spread_sum": 54.0,
+            "family_count_sum": 3.0,
+            "mii_likely": False,
+        }
+
+        self.assertFalse(ocr_scoreboard_consensus._prior_state_is_mii_likely(prior_state))
+
+    def test_prior_state_is_mii_likely_for_unstable_two_sample_history(self):
+        prior_state = {
+            "winner_counts": {"Pink Yoshi": 1, "Red Yoshi": 1},
+            "closed_set_samples": 2,
+            "confidence_sum": 150.0,
+            "margin_sum": 1.0,
+            "spread_sum": 4.0,
+            "family_count_sum": 8.0,
+            "mii_likely": False,
+        }
+
+        self.assertTrue(ocr_scoreboard_consensus._prior_state_is_mii_likely(prior_state))
+
+    def test_prior_state_is_not_mii_likely_for_stable_two_sample_history(self):
+        prior_state = {
+            "winner_counts": {"Inkling Boy": 2},
+            "closed_set_samples": 2,
+            "confidence_sum": 100.0,
+            "margin_sum": 1.0,
+            "spread_sum": 4.0,
+            "family_count_sum": 8.0,
+            "mii_likely": False,
+        }
+
+        self.assertFalse(ocr_scoreboard_consensus._prior_state_is_mii_likely(prior_state))
+
+    def test_merge_prior_candidate_indices_preserves_order_and_filters_invalid(self):
+        merged = ocr_scoreboard_consensus._merge_prior_candidate_indices(
+            [16, 19, 80],
+            [19, "22", 79, None, 56],
+        )
+
+        self.assertEqual(merged, [16, 19, 22, 56])
 
 
 if __name__ == "__main__":

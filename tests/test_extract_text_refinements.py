@@ -38,7 +38,7 @@ class TestExtractTextRefinements(TestCase):
                     "FixPlayerName": "Wilco",
                     "Character": "Champion Link",
                     "CharacterIndex": 69,
-                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchMethod": "open_set_mii_reject",
                     "CharacterMatchRawBest": 42.5,
                     "CharacterMatchRawMargin": 0.2,
                     "CharacterMatchRawTop5Spread": 1.0,
@@ -49,7 +49,7 @@ class TestExtractTextRefinements(TestCase):
                     "FixPlayerName": "Wilco",
                     "Character": "Diddy Kong",
                     "CharacterIndex": 65,
-                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search",
+                    "CharacterMatchMethod": "character_prior_mii_likely",
                     "CharacterMatchRawBest": 43.0,
                     "CharacterMatchRawMargin": 0.3,
                     "CharacterMatchRawTop5Spread": 1.5,
@@ -63,6 +63,52 @@ class TestExtractTextRefinements(TestCase):
         self.assertEqual(set(refined["Character"]), {"Mii"})
         self.assertTrue(
             all("mii_fallback_open_set_unstable_closed_set_identity" in str(value) for value in refined["CharacterMatchMethod"])
+        )
+
+    def test_apply_mii_character_fallback_keeps_unstable_closed_set_without_mii_signals(self):
+        df = pd.DataFrame(
+            [
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Gianni",
+                    "Character": "Pink Yoshi",
+                    "CharacterIndex": 23,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchRawBest": 86.8,
+                    "CharacterMatchRawMargin": 2.1,
+                    "CharacterMatchRawTop5Spread": 5.1,
+                    "CharacterMatchRawTop5FamilyCount": 4,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Gianni",
+                    "Character": "Red Yoshi",
+                    "CharacterIndex": 19,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchRawBest": 85.9,
+                    "CharacterMatchRawMargin": 1.9,
+                    "CharacterMatchRawTop5Spread": 5.0,
+                    "CharacterMatchRawTop5FamilyCount": 4,
+                },
+                {
+                    "RaceClass": "VideoA",
+                    "FixPlayerName": "Gianni",
+                    "Character": "Yellow Yoshi",
+                    "CharacterIndex": 20,
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchRawBest": 86.2,
+                    "CharacterMatchRawMargin": 2.0,
+                    "CharacterMatchRawTop5Spread": 5.3,
+                    "CharacterMatchRawTop5FamilyCount": 4,
+                },
+            ]
+        )
+
+        refined = apply_mii_character_fallback(df)
+
+        self.assertEqual(set(refined["Character"]), {"Pink Yoshi", "Red Yoshi", "Yellow Yoshi"})
+        self.assertTrue(
+            all("mii_fallback_open_set_unstable_closed_set_identity" not in str(value) for value in refined["CharacterMatchMethod"])
         )
 
     def test_apply_mii_character_fallback_keeps_stable_closed_set_identity(self):

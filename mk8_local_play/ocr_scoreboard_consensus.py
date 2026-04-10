@@ -70,6 +70,13 @@ MII_CHARACTER_INDEX = 80
 MII_OPEN_SET_MAX_TOP2_MARGIN = 1.0
 MII_OPEN_SET_MAX_TOP5_SPREAD = 3.5
 MII_OPEN_SET_MIN_TOP5_FAMILY_COUNT = 4
+MII_PRIOR_MIN_SAMPLES = 3
+MII_PRIOR_EARLY_MIN_SAMPLES = 2
+MII_PRIOR_MAX_CANDIDATES = 8
+MII_PRIOR_OVERRIDE_MIN_CONFIDENCE = 92.0
+MII_PRIOR_OVERRIDE_MIN_MARGIN = 10.0
+MII_PRIOR_OVERRIDE_RISKY_MIN_CONFIDENCE = 96.0
+MII_PRIOR_OVERRIDE_RISKY_MIN_MARGIN = 12.0
 CHARACTER_ALIGNMENT_CANDIDATE_OFFSETS = (
     (2, 1),
     (1, 1),
@@ -82,6 +89,7 @@ CHARACTER_ALIGNMENT_CANDIDATE_OFFSETS = (
     (1, 0),
 )
 CHARACTER_FULL_SEARCH_PREFILTER_LIMIT = 8
+CHARACTER_FULL_SEARCH_PREFILTER_LIMIT_RISKY_FAMILY = 6
 OBSERVATION_STAGE_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CALL_MATRIX_STATS = defaultdict(lambda: {"calls": 0, "seconds": 0.0})
 CHARACTER_SHORTLIST_BY_VIDEO = defaultdict(dict)
@@ -261,6 +269,7 @@ def character_shortlist_summary_lines() -> List[str]:
     lines = [
         "Character shortlist activity",
         f"- prior rows accepted: {CHARACTER_SHORTLIST_STATS['prior_accepts']}",
+        f"- prior Mii-likely accepts: {CHARACTER_SHORTLIST_STATS['prior_mii_likely_accepts']}",
         f"- shortlist rows accepted: {CHARACTER_SHORTLIST_STATS['shortlist_accepts']}",
         f"- prior rows escalated to shortlist/full search: {CHARACTER_SHORTLIST_STATS['prior_fallbacks']}",
         f"- shortlist rows escalated to full search: {CHARACTER_SHORTLIST_STATS['shortlist_fallbacks']}",
@@ -336,6 +345,8 @@ def character_margin_threshold(character_name: str) -> float:
 
 def character_confidence_threshold(character_name: str) -> float:
     return 74.5 if is_risky_character_family(character_name) else CHARACTER_PRIOR_CONFIRM_MIN_CONFIDENCE
+
+
 
 
 def position_strip_roi(score_layout_id: str | None = None) -> Tuple[Tuple[int, int], Tuple[int, int]]:
@@ -708,22 +719,42 @@ def aligned_character_match_score(
     }
 
 
-def best_character_matches(row_roi: np.ndarray, templates: List[Dict[str, object]], limit: int = 2) -> List[Dict[str, object]]:
+def _prepare_character_source_features(
+    row_roi: np.ndarray,
+    template_shape: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    template_height, template_width = template_shape
+    source_image = row_roi
+    if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
+        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    elif row_roi.shape[0] != template_height or row_roi.shape[1] != template_width:
+        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
+    source_rgb = source_image.astype(np.float32)
+    return source_image, source_edges, source_rgb
+
+
+def best_character_matches(
+    row_roi: np.ndarray,
+    templates: List[Dict[str, object]],
+    limit: int = 2,
+    *,
+    prepared_source_image: np.ndarray | None = None,
+    prepared_source_edges: np.ndarray | None = None,
+    prepared_source_rgb: np.ndarray | None = None,
+) -> List[Dict[str, object]]:
     if limit <= 0:
         return []
     top_matches: List[Tuple[float, int, Tuple[object, ...]]] = []
     sequence = 0
-    source_image = row_roi
-    source_edges = None
-    source_rgb = None
-    if templates:
-        template_height, template_width = templates[0]["template_image"].shape[:2]
-        if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
-            source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
-        elif row_roi.shape[0] != template_height or row_roi.shape[1] != template_width:
-            source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
-        source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
-        source_rgb = source_image.astype(np.float32)
+    source_image = row_roi if prepared_source_image is None else prepared_source_image
+    source_edges = prepared_source_edges
+    source_rgb = prepared_source_rgb
+    if templates and (prepared_source_image is None or prepared_source_edges is None or prepared_source_rgb is None):
+        source_image, source_edges, source_rgb = _prepare_character_source_features(
+            row_roi,
+            templates[0]["template_image"].shape[:2],
+        )
     for template in templates:
         match_result = aligned_character_match_score(
             source_image,
@@ -772,19 +803,27 @@ def prefilter_character_templates(
     row_roi: np.ndarray,
     templates: List[Dict[str, object]],
     limit: int,
-) -> List[Dict[str, object]]:
+    *,
+    prepared_source_image: np.ndarray | None = None,
+    prepared_source_edges: np.ndarray | None = None,
+    prepared_source_rgb: np.ndarray | None = None,
+) -> Tuple[List[Dict[str, object]], np.ndarray, np.ndarray, np.ndarray]:
     if limit <= 0 or len(templates) <= limit:
-        return templates
-    source_image = row_roi
-    source_edges = None
-    source_rgb = None
-    template_height, template_width = templates[0]["template_image"].shape[:2]
-    if row_roi.shape[0] < template_height or row_roi.shape[1] < template_width:
-        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
-    elif row_roi.shape[0] != template_height or row_roi.shape[1] != template_width:
-        source_image = cv2.resize(row_roi, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
-    source_edges = cv2.Canny(cv2.cvtColor(source_image, cv2.COLOR_BGR2GRAY), 80, 160) > 0
-    source_rgb = source_image.astype(np.float32)
+        if prepared_source_image is None or prepared_source_edges is None or prepared_source_rgb is None:
+            source_image, source_edges, source_rgb = _prepare_character_source_features(
+                row_roi,
+                templates[0]["template_image"].shape[:2],
+            )
+        else:
+            source_image, source_edges, source_rgb = prepared_source_image, prepared_source_edges, prepared_source_rgb
+        return templates, source_image, source_edges, source_rgb
+    if prepared_source_image is None or prepared_source_edges is None or prepared_source_rgb is None:
+        source_image, source_edges, source_rgb = _prepare_character_source_features(
+            row_roi,
+            templates[0]["template_image"].shape[:2],
+        )
+    else:
+        source_image, source_edges, source_rgb = prepared_source_image, prepared_source_edges, prepared_source_rgb
 
     top_templates: List[Tuple[float, int, Dict[str, object]]] = []
     sequence = 0
@@ -804,23 +843,14 @@ def prefilter_character_templates(
             target_rgb=variant.get("image_float"),
             target_mask=variant["core_mask"],
         )
-        edge_score = _cutout_edge_agreement_score(
-            source_image,
-            variant["image"],
-            variant["alpha"],
-            source_edges=source_edges,
-            target_mask=variant["core_mask"],
-            target_edges=variant["edges"],
-        )
-        blended_score = (0.20 * color_score) + (0.80 * edge_score)
-        entry = (float(blended_score), -sequence, template)
+        entry = (float(color_score), -sequence, template)
         sequence += 1
         if len(top_templates) < limit:
             heapq.heappush(top_templates, entry)
         elif entry > top_templates[0]:
             heapq.heapreplace(top_templates, entry)
     top_templates.sort(reverse=True)
-    return [template for _score, _neg_sequence, template in top_templates] or templates
+    return ([template for _score, _neg_sequence, template in top_templates] or templates), source_image, source_edges, source_rgb
 
 
 def _character_template_edge_agreement(
@@ -886,6 +916,91 @@ def _should_reject_character_match_as_mii(
     )
 
 
+def _is_strong_closed_set_override(candidate: Dict[str, object] | None, margin: float) -> bool:
+    if candidate is None:
+        return False
+    character_name = str(candidate.get("Character", "") or "")
+    confidence = float(candidate.get("CharacterMatchConfidence", 0.0) or 0.0)
+    if is_risky_character_family(character_name):
+        return (
+            confidence >= MII_PRIOR_OVERRIDE_RISKY_MIN_CONFIDENCE
+            and margin >= MII_PRIOR_OVERRIDE_RISKY_MIN_MARGIN
+        )
+    return (
+        confidence >= MII_PRIOR_OVERRIDE_MIN_CONFIDENCE
+        and margin >= MII_PRIOR_OVERRIDE_MIN_MARGIN
+    )
+
+
+def _prior_state_is_mii_likely(prior_state: Dict[str, object] | None) -> bool:
+    if not prior_state:
+        return False
+    if bool(prior_state.get("mii_likely", False)):
+        return True
+    try:
+        closed_set_samples = int(prior_state.get("closed_set_samples", 0) or 0)
+    except (TypeError, ValueError):
+        closed_set_samples = 0
+    if closed_set_samples < MII_PRIOR_EARLY_MIN_SAMPLES:
+        return False
+    winner_counts = prior_state.get("winner_counts") or {}
+    if not isinstance(winner_counts, dict) or not winner_counts:
+        return False
+    dominant_count = max(int(value or 0) for value in winner_counts.values())
+    dominant_ratio = float(dominant_count) / max(1, closed_set_samples)
+    avg_confidence = float(prior_state.get("confidence_sum", 0.0) or 0.0) / max(1, closed_set_samples)
+    avg_margin = float(prior_state.get("margin_sum", 0.0) or 0.0) / max(1, closed_set_samples)
+    avg_spread = float(prior_state.get("spread_sum", 0.0) or 0.0) / max(1, closed_set_samples)
+    avg_family_count = float(prior_state.get("family_count_sum", 0.0) or 0.0) / max(1, closed_set_samples)
+    closed_set_is_stable = (
+        dominant_ratio >= 0.75
+        and avg_confidence >= 50.0
+        and avg_margin >= 3.0
+        and avg_spread >= 8.0
+        and avg_family_count <= 3.5
+    )
+    if closed_set_samples < MII_PRIOR_MIN_SAMPLES:
+        # Only allow early Mii-likely activation when the short history is already
+        # visibly unstable. This prevents stable hard cases like Inkling Boy from
+        # entering the open-set path just because their confidence is modest.
+        return (
+            dominant_ratio < 1.0
+            and (
+                avg_margin < 3.0
+                or avg_spread < 8.0
+                or avg_family_count > 3.5
+            )
+        )
+    return not closed_set_is_stable
+
+
+def _merge_prior_candidate_indices(
+    existing_candidates: object,
+    new_candidates: object,
+) -> List[int]:
+    merged: List[int] = []
+    seen: set[int] = set()
+    for source in (existing_candidates or [], new_candidates or []):
+        try:
+            iterator = list(source)
+        except TypeError:
+            continue
+        for value in iterator:
+            try:
+                index = int(value)
+            except (TypeError, ValueError):
+                continue
+            if index in EXCLUDED_CHARACTER_TEMPLATE_INDICES or index == MII_CHARACTER_INDEX:
+                continue
+            if index in seen:
+                continue
+            seen.add(index)
+            merged.append(index)
+            if len(merged) >= MII_PRIOR_MAX_CANDIDATES:
+                return merged
+    return merged
+
+
 def _character_match_raw_stats(ranked_matches: List[Dict[str, object]] | None) -> Dict[str, object]:
     if not ranked_matches:
         return {
@@ -943,6 +1058,7 @@ def update_player_character_prior(
             existing["CharacterMatchConfidence"] = float(match.get("CharacterMatchConfidence", existing.get("CharacterMatchConfidence", 0.0)))
             existing["Character"] = str(match.get("Character", existing.get("Character", "")))
             existing["last_race_id"] = max(int(existing.get("last_race_id", 0) or 0), current_race_id)
+            state = existing
         else:
             player_priors[player_key] = {
                 "CharacterIndex": int(character_index),
@@ -951,7 +1067,50 @@ def update_player_character_prior(
                 "seen_count": 1,
                 "fast_accepts_since_revalidation": 0,
                 "last_race_id": current_race_id,
+                "winner_counts": {},
+                "closed_set_samples": 0,
+                "confidence_sum": 0.0,
+                "margin_sum": 0.0,
+                "spread_sum": 0.0,
+                "family_count_sum": 0.0,
+                "mii_likely": False,
+                "candidate_indices": [],
             }
+            state = player_priors[player_key]
+        state["candidate_indices"] = _merge_prior_candidate_indices(
+            state.get("candidate_indices"),
+            match.get("CharacterMatchTopCandidateIndices"),
+        )
+        if int(character_index) == MII_CHARACTER_INDEX:
+            state["mii_likely"] = True
+            return
+        winner_counts = state.get("winner_counts")
+        if not isinstance(winner_counts, dict):
+            winner_counts = {}
+            state["winner_counts"] = winner_counts
+        winner_key = str(match.get("Character") or character_index)
+        winner_counts[winner_key] = int(winner_counts.get(winner_key, 0) or 0) + 1
+        state["closed_set_samples"] = int(state.get("closed_set_samples", 0) or 0) + 1
+        state["confidence_sum"] = float(state.get("confidence_sum", 0.0) or 0.0) + float(match.get("CharacterMatchConfidence", 0.0) or 0.0)
+        raw_margin = match.get("CharacterMatchRawMargin")
+        raw_spread = match.get("CharacterMatchRawTop5Spread")
+        raw_family_count = match.get("CharacterMatchRawTop5FamilyCount")
+        try:
+            if raw_margin is not None and not pd.isna(raw_margin):
+                state["margin_sum"] = float(state.get("margin_sum", 0.0) or 0.0) + float(raw_margin)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_spread is not None and not pd.isna(raw_spread):
+                state["spread_sum"] = float(state.get("spread_sum", 0.0) or 0.0) + float(raw_spread)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if raw_family_count is not None and not pd.isna(raw_family_count):
+                state["family_count_sum"] = float(state.get("family_count_sum", 0.0) or 0.0) + float(raw_family_count)
+        except (TypeError, ValueError):
+            pass
+        state["mii_likely"] = _prior_state_is_mii_likely(state)
 
 
 def _template_match_score(source_image: np.ndarray, template_image: np.ndarray) -> float:
@@ -1368,6 +1527,15 @@ def build_character_match_metrics(
         prior_state_by_player = {}
     templates_by_index = {int(template["character_index"]): template for template in templates}
     base_shortlist_templates = shortlist_character_templates(templates, shortlist_indices)
+    duplicate_player_keys: set[str] = set()
+    if names:
+        player_key_counts: Dict[str, int] = {}
+        for raw_name in names:
+            player_key = player_identity_key(str(raw_name or ""))
+            if len(player_key) < 3:
+                continue
+            player_key_counts[player_key] = player_key_counts.get(player_key, 0) + 1
+        duplicate_player_keys = {player_key for player_key, count in player_key_counts.items() if count > 1}
     for row_index in range(12):
         (x1, y1), (x2, y2) = character_row_roi(row_index, score_layout_id=score_layout_id)
         crop_x1 = max(0, min(image_width, x1))
@@ -1389,21 +1557,64 @@ def build_character_match_metrics(
         player_name = names[row_index] if names and row_index < len(names) else ""
         player_name_confidence = float(name_confidences[row_index]) if name_confidences and row_index < len(name_confidences) else 0.0
         player_key = player_identity_key(player_name)
-        prior_state = prior_state_by_player.get(player_key)
+        duplicate_name_in_frame = player_key in duplicate_player_keys
+        prior_state = None if duplicate_name_in_frame else prior_state_by_player.get(player_key)
+        prepared_source_image, prepared_source_edges, prepared_source_rgb = _prepare_character_source_features(
+            row_roi,
+            templates[0]["template_image"].shape[:2],
+        )
         shortlist_templates = base_shortlist_templates
-        if prior_state is not None:
+        prior_is_mii_likely = _prior_state_is_mii_likely(prior_state)
+        if prior_is_mii_likely:
+            mii_candidate_indices = set()
+            for candidate_index in prior_state.get("candidate_indices", []) or []:
+                try:
+                    mii_candidate_indices.add(int(candidate_index))
+                except (TypeError, ValueError):
+                    continue
+            if mii_candidate_indices:
+                shortlist_templates = shortlist_character_templates(templates, mii_candidate_indices)
+        if prior_state is not None and prior_state.get("CharacterIndex") is not None and int(prior_state["CharacterIndex"]) != MII_CHARACTER_INDEX:
             prior_index = int(prior_state["CharacterIndex"])
             if all(int(template["character_index"]) != prior_index for template in shortlist_templates):
                 prior_template = templates_by_index.get(prior_index)
                 if prior_template is not None:
                     shortlist_templates = list(shortlist_templates) + [prior_template]
-        shortlist_matches = best_character_matches(row_roi, shortlist_templates, limit=2)
+        shortlist_matches = best_character_matches(
+            row_roi,
+            shortlist_templates,
+            limit=2,
+            prepared_source_image=prepared_source_image,
+            prepared_source_edges=prepared_source_edges,
+            prepared_source_rgb=prepared_source_rgb,
+        )
         shortlist_best = shortlist_matches[0] if shortlist_matches else None
         shortlist_second = shortlist_matches[1] if len(shortlist_matches) > 1 else {"CharacterMatchConfidence": 0.0}
         shortlist_margin = (
             float(shortlist_best["CharacterMatchConfidence"]) - float(shortlist_second["CharacterMatchConfidence"])
             if shortlist_best is not None else 0.0
         )
+        if (
+            prior_state
+            and prior_is_mii_likely
+            and player_name_confidence >= 80.0
+            and int(prior_state.get("seen_count", 0)) >= MII_PRIOR_MIN_SAMPLES
+            and int(prior_state.get("fast_accepts_since_revalidation", 0)) < CHARACTER_PRIOR_MAX_FAST_ACCEPTS
+            and not _is_strong_closed_set_override(shortlist_best, shortlist_margin)
+        ):
+            CHARACTER_SHORTLIST_STATS["prior_accepts"] += 1
+            CHARACTER_SHORTLIST_STATS["prior_mii_likely_accepts"] += 1
+            best_match = {
+                "Character": MII_CHARACTER_NAME,
+                "CharacterIndex": MII_CHARACTER_INDEX,
+                "CharacterMatchConfidence": round(float(shortlist_best.get("CharacterMatchConfidence", 0.0) or 0.0), 1) if shortlist_best else 0.0,
+                "CharacterMatchMethod": "character_prior_mii_likely",
+                **_character_match_raw_stats(shortlist_matches),
+            }
+            if not duplicate_name_in_frame:
+                update_player_character_prior(video_context, player_name, best_match, race_id_number=race_id_number)
+            metrics.append(best_match)
+            continue
         if (
             prior_state
             and player_name_confidence >= 80.0
@@ -1425,12 +1636,17 @@ def build_character_match_metrics(
                 best_match = dict(shortlist_best)
                 best_match["CharacterMatchMethod"] = "character_prior_confirm"
                 best_match.update(_character_match_raw_stats(shortlist_matches))
-                update_player_character_prior(video_context, player_name, best_match, race_id_number=race_id_number)
+                if not duplicate_name_in_frame:
+                    update_player_character_prior(video_context, player_name, best_match, race_id_number=race_id_number)
                 metrics.append(best_match)
                 continue
             CHARACTER_SHORTLIST_STATS["prior_fallbacks"] += 1
             if not prior_is_best:
                 CHARACTER_SHORTLIST_STATS["reason_prior_not_best"] += 1
+                if is_risky_character_family(prior_character_name):
+                    CHARACTER_SHORTLIST_STATS["reason_prior_not_best_risky_family"] += 1
+                else:
+                    CHARACTER_SHORTLIST_STATS["reason_prior_not_best_non_risky"] += 1
             elif float(shortlist_best["CharacterMatchConfidence"]) < character_confidence_threshold(prior_character_name):
                 CHARACTER_SHORTLIST_STATS["reason_prior_low_confidence"] += 1
                 if is_risky_character_family(prior_character_name):
@@ -1481,12 +1697,25 @@ def build_character_match_metrics(
             else:
                 CHARACTER_SHORTLIST_STATS["reason_no_effective_shortlist"] += 1
             CHARACTER_SHORTLIST_STATS["full_search_rows"] += 1
-            full_search_templates = prefilter_character_templates(
+            full_search_prefilter_limit = CHARACTER_FULL_SEARCH_PREFILTER_LIMIT
+            if shortlist_best is not None and is_risky_character_family(str(shortlist_best.get("Character", ""))):
+                full_search_prefilter_limit = CHARACTER_FULL_SEARCH_PREFILTER_LIMIT_RISKY_FAMILY
+            full_search_templates, full_source_image, full_source_edges, full_source_rgb = prefilter_character_templates(
                 row_roi,
                 templates,
-                limit=CHARACTER_FULL_SEARCH_PREFILTER_LIMIT,
+                limit=full_search_prefilter_limit,
+                prepared_source_image=prepared_source_image,
+                prepared_source_edges=prepared_source_edges,
+                prepared_source_rgb=prepared_source_rgb,
             )
-            full_matches = best_character_matches(row_roi, full_search_templates, limit=5)
+            full_matches = best_character_matches(
+                row_roi,
+                full_search_templates,
+                limit=5,
+                prepared_source_image=full_source_image,
+                prepared_source_edges=full_source_edges,
+                prepared_source_rgb=full_source_rgb,
+            )
             best_match = full_matches[0] if full_matches else None
             second_match = full_matches[1] if len(full_matches) > 1 else None
             if best_match is not None and video_context:
@@ -1501,6 +1730,11 @@ def build_character_match_metrics(
                         CHARACTER_SHORTLIST_STATS["shortlist_expansions"] += 1
             if best_match is not None:
                 best_match.update(_character_match_raw_stats(full_matches))
+                best_match["CharacterMatchTopCandidateIndices"] = tuple(
+                    int(match.get("CharacterIndex"))
+                    for match in full_matches[:5]
+                    if match.get("CharacterIndex") is not None
+                )
                 edge_agreement = float(best_match.get("CharacterMatchEdgeConfidence", 0.0) or 0.0) / 100.0
                 best_match["CharacterMatchEdgeAgreement"] = round(edge_agreement * 100.0, 1)
                 if _should_reject_character_match_as_mii(full_matches):
@@ -1510,8 +1744,20 @@ def build_character_match_metrics(
                         "CharacterMatchConfidence": round(float(best_match.get("CharacterMatchConfidence", 0.0) or 0.0), 1),
                         "CharacterMatchMethod": "open_set_mii_reject",
                         "CharacterMatchEdgeAgreement": round(edge_agreement * 100.0, 1),
+                        "CharacterMatchTopCandidateIndices": tuple(
+                            int(match.get("CharacterIndex"))
+                            for match in full_matches[:5]
+                            if match.get("CharacterIndex") is not None
+                        ),
                         **_character_match_raw_stats(full_matches),
                     }
+            if best_match is not None:
+                if int(best_match.get("CharacterIndex") or -1) == MII_CHARACTER_INDEX:
+                    CHARACTER_SHORTLIST_STATS["reason_full_search_result_mii"] += 1
+                elif is_risky_character_family(str(best_match.get("Character", ""))):
+                    CHARACTER_SHORTLIST_STATS["reason_full_search_result_risky_family"] += 1
+                else:
+                    CHARACTER_SHORTLIST_STATS["reason_full_search_result_non_risky"] += 1
 
         metrics.append(best_match or {
             "Character": "",
@@ -1521,7 +1767,11 @@ def build_character_match_metrics(
             **_character_match_raw_stats(None),
         })
 
-        if CHARACTER_SHORTLIST_ACCELERATION_ENABLED and metrics[-1].get("CharacterIndex") is not None:
+        if (
+            CHARACTER_SHORTLIST_ACCELERATION_ENABLED
+            and metrics[-1].get("CharacterIndex") is not None
+            and not duplicate_name_in_frame
+        ):
             update_player_character_prior(video_context, player_name, metrics[-1], race_id_number=race_id_number)
     return metrics
 

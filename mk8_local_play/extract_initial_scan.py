@@ -582,7 +582,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
 
 
 def process_segment_frame(frame, frame_number, video_path, video_source_path, templates, fps, scale_x, scale_y, left, top,
-                          crop_width, crop_height, stats, state, debug_rows, emit_results, progress_queue=None,
+                          crop_width, crop_height, stats, state, debug_rows, emit_detection, emit_debug_rows, progress_queue=None,
                           segment_index=None, video_label=None):
     """Run the worker-safe initial scan without writing files or mutating shared state."""
     process_frame_start = time.perf_counter()
@@ -591,7 +591,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
     stats["initial_frame_prepare_s"] += time.perf_counter() - process_frame_start
 
     ignore_match = _match_ignore_frame_target(gray_image, templates, stats)
-    if emit_results and not ignore_match["rejected_as_blank"]:
+    if emit_debug_rows and not ignore_match["rejected_as_blank"]:
         timecode = frame_to_timecode(frame_number, fps)
         debug_rows.append([video_source_path or os.path.basename(video_path), ignore_match["label"], frame_number, ignore_match["max_val"], timecode])
     if not ignore_match["rejected_as_blank"] and ignore_match["max_val"] > ignore_match["match_threshold"] and not np.isinf(ignore_match["max_val"]):
@@ -599,10 +599,10 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
         return int(fps * ignore_match["skip_seconds"])
 
     for target in INITIAL_SCAN_TARGETS:
-        timecode = frame_to_timecode(frame_number, fps) if emit_results else ""
+        timecode = frame_to_timecode(frame_number, fps) if emit_debug_rows else ""
         if target["kind"] == "score":
             gate_result = _initial_scan_score_gate(upscaled_image, stats)
-            if emit_results:
+            if emit_debug_rows:
                 debug_rows.append([
                     video_source_path or os.path.basename(video_path),
                     "ScoreGate56Pass" if gate_result["passed"] else "ScoreGate56Fail",
@@ -626,7 +626,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
         else:
             max_val, rejected_as_blank, _processed_roi = _match_initial_scan_target(gray_image, target, templates, stats)
             score_layout_id = ""
-        if emit_results:
+        if emit_debug_rows:
             debug_rows.append([video_source_path or os.path.basename(video_path), target["label"], frame_number, 0 if rejected_as_blank else max_val, timecode])
         if rejected_as_blank:
             if target["kind"] == "race":
@@ -638,7 +638,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
             continue
 
         if target["kind"] == "score":
-            if emit_results:
+            if emit_detection:
                 state["score_detections"].append(
                     {
                         "frame_number": frame_number,
@@ -653,7 +653,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
         if target["kind"] == "track":
             if state["last_track_frame"] < max(1, frame_number - int(fps * 20)):
                 state["last_track_frame"] = frame_number
-                if emit_results:
+                if emit_detection:
                     save_frame_number = frame_number + int(fps * 1)
                     saved_image = None
                     if state["capture"] is not None:
@@ -680,7 +680,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
         if target["kind"] == "race":
             if state["last_race_frame"] < max(1, frame_number - int(fps * 20)):
                 state["last_race_frame"] = frame_number
-                if emit_results:
+                if emit_detection:
                     state["race_detections"].append(
                         {
                             "frame_number": frame_number,
@@ -762,6 +762,7 @@ def scan_detection_segment(task):
                 stats,
                 state,
                 debug_rows,
+                emit_results,
                 emit_results and include_debug_rows,
                 progress_queue=progress_queue,
                 segment_index=task["segment_index"],

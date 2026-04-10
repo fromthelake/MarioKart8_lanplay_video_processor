@@ -540,6 +540,10 @@ def ocr_trace_enabled() -> bool:
     return os.environ.get("MK8_TRACE_OCR_LINKING", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def headless_debug_enabled() -> bool:
+    return os.environ.get("MK8_HEADLESS_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def ocr_trace_label() -> str:
     return os.environ.get("MK8_OCR_TRACE_LABEL", "").strip() or "adhoc"
 
@@ -1396,6 +1400,7 @@ MII_ACCEPT_MIN_AVG_TOP5_SPREAD = 8.0
 MII_ACCEPT_MAX_AVG_TOP5_FAMILY_COUNT = 3.5
 MII_ACCEPT_MIN_DOMINANT_RATIO = 0.75
 MII_ACCEPT_MIN_RACES = 3
+MII_GROUP_FALLBACK_MIN_SIGNALS = 2
 MII_CHARACTER_NAME = "Mii"
 MII_CHARACTER_INDEX = 80
 MII_CHARACTER_METHOD = "mii_fallback_open_set_unstable_closed_set_identity"
@@ -1746,6 +1751,13 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
         if len(player_rows.index) < MII_ACCEPT_MIN_RACES:
             continue
 
+        mii_signal_count = 0
+        for _row_index, row in player_rows.iterrows():
+            winner = str(row.get("Character", "") or "").strip()
+            method = str(row.get("CharacterMatchMethod", "") or "").strip()
+            if winner == MII_CHARACTER_NAME or "open_set_mii_reject" in method or "character_prior_mii_likely" in method:
+                mii_signal_count += 1
+
         closed_set_indices = []
         winner_counts: dict[str, int] = {}
         confidence_values = []
@@ -1785,6 +1797,8 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
         if not winner_counts:
             continue
         if len(closed_set_indices) < MII_ACCEPT_MIN_RACES:
+            if mii_signal_count < MII_GROUP_FALLBACK_MIN_SIGNALS:
+                continue
             for row_index in player_rows.index:
                 existing_method = str(df.at[row_index, "CharacterMatchMethod"] or "").strip()
                 df.at[row_index, "Character"] = MII_CHARACTER_NAME
@@ -1809,6 +1823,8 @@ def apply_mii_character_fallback(df: pd.DataFrame) -> pd.DataFrame:
             and avg_top5_family_count <= MII_ACCEPT_MAX_AVG_TOP5_FAMILY_COUNT
         )
         if closed_set_is_stable:
+            continue
+        if mii_signal_count < MII_GROUP_FALLBACK_MIN_SIGNALS:
             continue
 
         for row_index in player_rows.index:
@@ -2397,13 +2413,15 @@ def process_images_in_folder(
                                 color_name="yellow",
                             )
 
-    ocr_profiler_lines = (
-        call_matrix_summary_lines(colorize=LOGGER.color)
-        + OCR_PROFILER.summary_lines()
-        + observation_stage_summary_lines()
-        + character_shortlist_summary_lines()
-        + player_name_fallback_summary_lines()
-    )
+    ocr_profiler_lines = []
+    if headless_debug_enabled():
+        ocr_profiler_lines = (
+            call_matrix_summary_lines(colorize=LOGGER.color)
+            + OCR_PROFILER.summary_lines()
+            + observation_stage_summary_lines()
+            + character_shortlist_summary_lines()
+            + player_name_fallback_summary_lines()
+        )
     return finalize_ocr_results(
         results,
         folder_path=folder_path,

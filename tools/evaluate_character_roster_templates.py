@@ -12,6 +12,7 @@ from typing import Iterable, Sequence
 import cv2
 import numpy as np
 
+from mk8_local_play.extract_text import resolve_character_variant_family_name
 from mk8_local_play.extract_text import find_score_bundle_anchor_path, score_layout_id_from_filename
 from mk8_local_play.game_catalog import load_game_catalog
 from mk8_local_play.ocr_scoreboard_consensus import CHARACTER_TEMPLATE_SIZE
@@ -29,6 +30,18 @@ class TemplateRecord:
 
 @dataclass(frozen=True)
 class StageEvaluation:
+    stage_name: str
+    feature_names: tuple[str, ...]
+    weights: tuple[float, ...]
+    correct_count: int
+    total_count: int
+    min_margin: float
+    median_margin: float
+    mean_margin: float
+
+
+@dataclass(frozen=True)
+class FamilyStageEvaluation:
     stage_name: str
     feature_names: tuple[str, ...]
     weights: tuple[float, ...]
@@ -454,6 +467,196 @@ def build_stage_sequence(feature_matrices: dict[str, np.ndarray], *, weight_step
     return stages
 
 
+def template_family_name(template: TemplateRecord) -> str:
+    family_name = resolve_character_variant_family_name(template.character_name)
+    if family_name:
+        return str(family_name)
+    return str(template.character_name)
+
+
+def build_template_family_labels(templates: Sequence[TemplateRecord]) -> list[str]:
+    return [template_family_name(template) for template in templates]
+
+
+def family_stage_metrics(score_matrix: np.ndarray, family_labels: Sequence[str]) -> tuple[int, np.ndarray]:
+    matrix = np.asarray(score_matrix, dtype=np.float32)
+    unique_families = list(dict.fromkeys(str(label) for label in family_labels))
+    family_scores = np.full((matrix.shape[0], len(unique_families)), -np.inf, dtype=np.float32)
+    family_to_indices: dict[str, list[int]] = defaultdict(list)
+    for template_index, family_label in enumerate(family_labels):
+        family_to_indices[str(family_label)].append(int(template_index))
+    for family_index, family_label in enumerate(unique_families):
+        indices = family_to_indices[str(family_label)]
+        family_scores[:, family_index] = np.max(matrix[:, indices], axis=1)
+    correct_scores = np.array(
+        [family_scores[row_index, unique_families.index(str(family_labels[row_index]))] for row_index in range(matrix.shape[0])],
+        dtype=np.float32,
+    )
+    other_scores = family_scores.copy()
+    for row_index, family_label in enumerate(family_labels):
+        other_scores[row_index, unique_families.index(str(family_label))] = -np.inf
+    max_other = np.max(other_scores, axis=1)
+    margins = correct_scores - max_other
+    correct_count = int(np.sum(correct_scores > max_other))
+    return correct_count, margins
+
+
+def optimize_family_stage_weights(
+    feature_matrices: dict[str, np.ndarray],
+    family_labels: Sequence[str],
+    feature_names: Sequence[str],
+    *,
+    weight_step: float = 0.05,
+) -> FamilyStageEvaluation:
+    if not feature_names:
+        raise ValueError("At least one feature name is required.")
+    best_result: FamilyStageEvaluation | None = None
+    best_objective: tuple[float, ...] | None = None
+    for weights in generate_weight_grid(len(feature_names), step=weight_step):
+        score_matrix = aggregate_feature_matrices(feature_matrices, feature_names, weights)
+        correct_count, margins = family_stage_metrics(score_matrix, family_labels)
+        objective = (
+            float(correct_count),
+            float(np.min(margins)),
+            float(np.median(margins)),
+            float(np.mean(margins)),
+        )
+        if best_objective is None or objective > best_objective:
+            best_objective = objective
+            best_result = FamilyStageEvaluation(
+                stage_name="+".join(feature_names),
+                feature_names=tuple(feature_names),
+                weights=tuple(float(weight) for weight in weights),
+                correct_count=correct_count,
+                total_count=int(score_matrix.shape[0]),
+                min_margin=float(np.min(margins)),
+                median_margin=float(np.median(margins)),
+                mean_margin=float(np.mean(margins)),
+            )
+    if best_result is None:
+        raise RuntimeError("No weight combination produced a family-stage evaluation.")
+    return best_result
+
+
+def build_family_stage_sequence(
+    feature_matrices: dict[str, np.ndarray],
+    family_labels: Sequence[str],
+    *,
+    weight_step: float,
+) -> list[FamilyStageEvaluation]:
+    ordered_features = ("edge", "cutout_edge", "silhouette", "contour")
+    stages: list[FamilyStageEvaluation] = []
+    for stage_index in range(len(ordered_features)):
+        stage_features = ordered_features[: stage_index + 1]
+        stages.append(
+            optimize_family_stage_weights(
+                feature_matrices,
+                family_labels,
+                stage_features,
+                weight_step=weight_step,
+            )
+        )
+    return stages
+
+
+def build_family_members(templates: Sequence[TemplateRecord]) -> dict[str, list[int]]:
+    members: dict[str, list[int]] = defaultdict(list)
+    for template_index, template in enumerate(templates):
+        members[template_family_name(template)].append(int(template_index))
+    return members
+
+
+def build_family_detection_rows(
+    templates: Sequence[TemplateRecord],
+    feature_matrices: dict[str, np.ndarray],
+    final_stage: FamilyStageEvaluation,
+) -> list[dict[str, object]]:
+    score_matrix = aggregate_feature_matrices(feature_matrices, final_stage.feature_names, final_stage.weights)
+    family_labels = build_template_family_labels(templates)
+    family_members = build_family_members(templates)
+    unique_families = list(dict.fromkeys(family_labels))
+    rows: list[dict[str, object]] = []
+    for source_index, source in enumerate(templates):
+        family_scores = []
+        for family_name in unique_families:
+            member_indices = family_members[family_name]
+            family_score = float(np.max(score_matrix[source_index, member_indices]))
+            family_scores.append((family_name, family_score))
+        family_scores.sort(key=lambda item: item[1], reverse=True)
+        best_family, best_score = family_scores[0]
+        second_score = family_scores[1][1] if len(family_scores) > 1 else best_score
+        rows.append(
+            {
+                "SourceIndex": int(source.character_index),
+                "SourceName": str(source.character_name),
+                "SourceFamily": str(family_labels[source_index]),
+                "DetectedFamily": str(best_family),
+                "CorrectFamily": int(best_family == family_labels[source_index]),
+                "DetectedFamilyScore": round(best_score * 100.0, 3),
+                "SecondFamilyScore": round(second_score * 100.0, 3),
+                "FamilyMargin": round((best_score - second_score) * 100.0, 3),
+            }
+        )
+    rows.sort(key=lambda item: (int(item["CorrectFamily"]), float(item["FamilyMargin"])))
+    return rows
+
+
+def build_color_refinement_rows(
+    templates: Sequence[TemplateRecord],
+    feature_matrices: dict[str, np.ndarray],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    family_members = build_family_members(templates)
+    rows: list[dict[str, object]] = []
+    summary_rows: list[dict[str, object]] = []
+    color_feature_names = ("color", "cutout_color", "gray", "cutout_gray")
+    color_weights = (0.35, 0.35, 0.15, 0.15)
+    color_score_matrix = aggregate_feature_matrices(feature_matrices, color_feature_names, color_weights)
+    for family_name, member_indices in sorted(family_members.items()):
+        if len(member_indices) <= 1:
+            continue
+        correct_count = 0
+        family_margins: list[float] = []
+        for source_index in member_indices:
+            member_scores = [(target_index, float(color_score_matrix[source_index, target_index])) for target_index in member_indices]
+            member_scores.sort(key=lambda item: item[1], reverse=True)
+            best_index, best_score = member_scores[0]
+            second_score = member_scores[1][1] if len(member_scores) > 1 else best_score
+            correct = int(best_index == source_index)
+            if correct:
+                correct_count += 1
+            margin = best_score - second_score
+            family_margins.append(margin)
+            rows.append(
+                {
+                    "Family": str(family_name),
+                    "SourceIndex": int(templates[source_index].character_index),
+                    "SourceName": str(templates[source_index].character_name),
+                    "DetectedIndex": int(templates[best_index].character_index),
+                    "DetectedName": str(templates[best_index].character_name),
+                    "CorrectVariant": int(correct),
+                    "BestScore": round(best_score * 100.0, 3),
+                    "SecondScore": round(second_score * 100.0, 3),
+                    "VariantMargin": round(margin * 100.0, 3),
+                }
+            )
+        summary_rows.append(
+            {
+                "Family": str(family_name),
+                "MemberCount": int(len(member_indices)),
+                "CorrectVariantMatches": int(correct_count),
+                "VariantAccuracy": round((100.0 * correct_count) / max(1, len(member_indices)), 3),
+                "MinVariantMargin": round(min(family_margins) * 100.0, 3),
+                "MedianVariantMargin": round(float(np.median(np.asarray(family_margins, dtype=np.float32))) * 100.0, 3),
+                "MeanVariantMargin": round(float(np.mean(np.asarray(family_margins, dtype=np.float32))) * 100.0, 3),
+                "Features": ",".join(color_feature_names),
+                "Weights": ",".join(f"{weight:.2f}" for weight in color_weights),
+            }
+        )
+    rows.sort(key=lambda item: (int(item["CorrectVariant"]), float(item["VariantMargin"])))
+    summary_rows.sort(key=lambda item: (float(item["VariantAccuracy"]), float(item["MinVariantMargin"])))
+    return rows, summary_rows
+
+
 def write_csv(path: Path, fieldnames: Sequence[str], rows: Iterable[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -629,6 +832,46 @@ def write_markdown_summary(path: Path, stages: Sequence[StageEvaluation], neares
     for row in hardest_pairs:
         lines.append(f"| {row['LeftName']} ({row['LeftIndex']}) | {row['RightName']} ({row['RightIndex']}) | {row['SymmetricFinalScore']:.3f} |")
 
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_family_markdown_summary(
+    path: Path,
+    family_stages: Sequence[FamilyStageEvaluation],
+    family_detection_rows: Sequence[dict[str, object]],
+    color_summary_rows: Sequence[dict[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    final_stage = family_stages[-1]
+    hardest_family_rows = list(family_detection_rows[:10])
+    hardest_color_rows = list(color_summary_rows[:10])
+    lines = [
+        "# Character Family Evaluation",
+        "",
+        "## Shape-Only Family Detection",
+        f"- Features: `{','.join(final_stage.feature_names)}`",
+        f"- Weights: `{','.join(f'{weight:.2f}' for weight in final_stage.weights)}`",
+        f"- Correct family matches: `{final_stage.correct_count}/{final_stage.total_count}`",
+        f"- Min family margin: `{final_stage.min_margin * 100.0:.3f}`",
+        f"- Median family margin: `{final_stage.median_margin * 100.0:.3f}`",
+        f"- Mean family margin: `{final_stage.mean_margin * 100.0:.3f}`",
+        "",
+        "## Shape Stage Progression",
+    ]
+    for stage in family_stages:
+        lines.append(
+            f"- `{stage.stage_name}` | weights `{','.join(f'{weight:.2f}' for weight in stage.weights)}` | correct `{stage.correct_count}/{stage.total_count}` | min margin `{stage.min_margin * 100.0:.3f}`"
+        )
+    lines.extend(["", "## Hardest Family Detections", "| Source | Family | Detected | Margin |", "| --- | --- | --- | ---: |"])
+    for row in hardest_family_rows:
+        lines.append(
+            f"| {row['SourceName']} ({row['SourceIndex']}) | {row['SourceFamily']} | {row['DetectedFamily']} | {row['FamilyMargin']:.3f} |"
+        )
+    lines.extend(["", "## Variant Color Refinement", "| Family | Accuracy | Min Margin |", "| --- | ---: | ---: |"])
+    for row in hardest_color_rows:
+        lines.append(
+            f"| {row['Family']} | {row['VariantAccuracy']:.3f}% | {row['MinVariantMargin']:.3f} |"
+        )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -991,10 +1234,15 @@ def run_evaluation(
     feature_matrices = compute_feature_matrices(templates)
     stages = build_stage_sequence(feature_matrices, weight_step=weight_step)
     final_stage = stages[-1]
+    family_labels = build_template_family_labels(templates)
+    family_stages = build_family_stage_sequence(feature_matrices, family_labels, weight_step=weight_step)
+    final_family_stage = family_stages[-1]
     pairwise_rows = build_pairwise_rows(templates, feature_matrices, final_stage)
     stage_summary_rows = build_stage_summary_rows(stages)
     nearest_rows = build_nearest_neighbor_rows(templates, feature_matrices, final_stage)
     hard_pair_rows = build_hard_pair_rows(templates, feature_matrices, final_stage, limit=hard_pair_limit)
+    family_detection_rows = build_family_detection_rows(templates, feature_matrices, final_family_stage)
+    color_refinement_rows, color_refinement_summary_rows = build_color_refinement_rows(templates, feature_matrices)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     write_csv(
@@ -1018,12 +1266,68 @@ def run_evaluation(
         pairwise_rows,
     )
     write_markdown_summary(output_dir / "summary.md", stages, nearest_rows, hard_pair_rows)
+    if family_detection_rows:
+        write_csv(
+            output_dir / "family_detection.csv",
+            family_detection_rows[0].keys(),
+            family_detection_rows,
+        )
+    if color_refinement_rows:
+        write_csv(
+            output_dir / "family_color_refinement.csv",
+            color_refinement_rows[0].keys(),
+            color_refinement_rows,
+        )
+    if color_refinement_summary_rows:
+        write_csv(
+            output_dir / "family_color_refinement_summary.csv",
+            color_refinement_summary_rows[0].keys(),
+            color_refinement_summary_rows,
+        )
+    write_csv(
+        output_dir / "family_stage_summary.csv",
+        (
+            "StageName",
+            "Features",
+            "Weights",
+            "CorrectFamilyMatches",
+            "TemplateCount",
+            "FamilyAccuracy",
+            "MinFamilyMargin",
+            "MedianFamilyMargin",
+            "MeanFamilyMargin",
+        ),
+        [
+            {
+                "StageName": str(stage.stage_name),
+                "Features": ",".join(stage.feature_names),
+                "Weights": ",".join(f"{weight:.2f}" for weight in stage.weights),
+                "CorrectFamilyMatches": int(stage.correct_count),
+                "TemplateCount": int(stage.total_count),
+                "FamilyAccuracy": round(100.0 * stage.correct_count / max(1, stage.total_count), 3),
+                "MinFamilyMargin": round(float(stage.min_margin) * 100.0, 3),
+                "MedianFamilyMargin": round(float(stage.median_margin) * 100.0, 3),
+                "MeanFamilyMargin": round(float(stage.mean_margin) * 100.0, 3),
+            }
+            for stage in family_stages
+        ],
+    )
+    write_family_markdown_summary(
+        output_dir / "family_summary.md",
+        family_stages,
+        family_detection_rows,
+        color_refinement_summary_rows,
+    )
 
     return {
         "templates": templates,
         "feature_matrices": feature_matrices,
         "stages": stages,
         "final_stage": final_stage,
+        "family_stages": family_stages,
+        "final_family_stage": final_family_stage,
+        "family_detection_rows": family_detection_rows,
+        "color_refinement_summary_rows": color_refinement_summary_rows,
         "nearest_rows": nearest_rows,
         "hard_pair_rows": hard_pair_rows,
         "output_dir": output_dir,
@@ -1061,6 +1365,7 @@ def main() -> None:
         hard_pair_limit=int(args.hard_pair_limit),
     )
     final_stage: StageEvaluation = results["final_stage"]
+    final_family_stage: FamilyStageEvaluation = results["final_family_stage"]
     output_dir: Path = results["output_dir"]
     if args.probe_debug_csv:
         probe_output = run_crop_probe(
@@ -1086,6 +1391,11 @@ def main() -> None:
         f"{output_dir} | final stage {final_stage.stage_name} | "
         f"correct {final_stage.correct_count}/{final_stage.total_count} | "
         f"min margin {final_stage.min_margin * 100.0:.3f}"
+    )
+    print(
+        f"{output_dir} | family stage {final_family_stage.stage_name} | "
+        f"correct {final_family_stage.correct_count}/{final_family_stage.total_count} | "
+        f"min margin {final_family_stage.min_margin * 100.0:.3f}"
     )
 
 

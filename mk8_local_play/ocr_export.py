@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+from .app_runtime import load_app_config
 from .game_catalog import load_game_catalog
 
 USER_REVIEW_REASON_MAX_LENGTH = 160
@@ -374,33 +375,38 @@ def autosize_worksheet_columns(worksheet, dataframe, padding: int = 2, max_width
 
 
 def write_results_workbooks(df, folder_path):
-    """Write clean workbook and CSV exports for both user and debug output."""
+    """Write user exports and, when enabled, debug workbook/CSV artifacts."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(folder_path).resolve().parent
     debug_output_dir = output_dir / "Debug"
-    debug_output_dir.mkdir(parents=True, exist_ok=True)
+    runtime_config = load_app_config()
 
     user_df = build_user_export_df(df)
     final_standings_df = build_final_standings_df(df)
-    debug_df = build_debug_export_df(df)
+    write_debug_artifacts = bool(runtime_config.write_debug_csv)
+    debug_df = build_debug_export_df(df) if write_debug_artifacts else None
 
     output_excel_path = output_dir / f"{timestamp}_Tournament_Results.xlsx"
-    debug_output_excel_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
     output_csv_path = output_dir / f"{timestamp}_Tournament_Results.csv"
     final_standings_csv_path = output_dir / f"{timestamp}_Final_Standings.csv"
-    debug_output_csv_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.csv"
+    debug_output_excel_path = None
+    debug_output_csv_path = None
 
     with pd.ExcelWriter(output_excel_path) as writer:
         user_df.to_excel(writer, index=False, sheet_name="Results")
         autosize_worksheet_columns(writer.sheets["Results"], user_df)
         final_standings_df.to_excel(writer, index=False, sheet_name="Final Standings")
         autosize_worksheet_columns(writer.sheets["Final Standings"], final_standings_df)
-    with pd.ExcelWriter(debug_output_excel_path) as writer:
-        debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
-        autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
     user_df.to_csv(output_csv_path, index=False, encoding="utf-8-sig")
     final_standings_df.to_csv(final_standings_csv_path, index=False, encoding="utf-8-sig")
-    debug_df.to_csv(debug_output_csv_path, index=False, encoding="utf-8-sig")
+    if write_debug_artifacts and debug_df is not None:
+        debug_output_dir.mkdir(parents=True, exist_ok=True)
+        debug_output_excel_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.xlsx"
+        debug_output_csv_path = debug_output_dir / f"{timestamp}_Tournament_Results_Debug.csv"
+        with pd.ExcelWriter(debug_output_excel_path) as writer:
+            debug_df.to_excel(writer, index=False, sheet_name="Debug Results")
+            autosize_worksheet_columns(writer.sheets["Debug Results"], debug_df)
+        debug_df.to_csv(debug_output_csv_path, index=False, encoding="utf-8-sig")
     return {
         "user_df": user_df,
         "debug_df": debug_df,
@@ -471,11 +477,13 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
 def _build_saved_file_lines(workbook_payload):
     entries = [
         ("Results workbook", workbook_payload["output_excel_path"]),
-        ("Debug workbook", workbook_payload["debug_output_excel_path"]),
         ("Results CSV", workbook_payload["output_csv_path"]),
         ("Final standings CSV", workbook_payload["final_standings_csv_path"]),
-        ("Debug CSV", workbook_payload["debug_output_csv_path"]),
     ]
+    if workbook_payload.get("debug_output_excel_path"):
+        entries.append(("Debug workbook", workbook_payload["debug_output_excel_path"]))
+    if workbook_payload.get("debug_output_csv_path"):
+        entries.append(("Debug CSV", workbook_payload["debug_output_csv_path"]))
     lines = ["", "Saved files"]
     for label, path in entries:
         lines.append(f"- {label}")
