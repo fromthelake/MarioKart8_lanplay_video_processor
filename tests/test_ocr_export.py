@@ -61,10 +61,10 @@ class OcrExportTests(unittest.TestCase):
     def test_build_player_count_summary_lines_uses_compact_consistent_message(self):
         df = pd.DataFrame(
             [
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
-                {"RaceClass": "Demo", "RaceIDNumber": 1, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
-                {"RaceClass": "Demo", "RaceIDNumber": 2, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
-                {"RaceClass": "Demo", "RaceIDNumber": 2, "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "Alpha", "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 1, "FixPlayerName": "Beta", "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Mario Kart Stadium", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 2, "FixPlayerName": "Alpha", "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
+                {"RaceClass": "Demo", "RaceIDNumber": 2, "FixPlayerName": "Beta", "RaceScorePlayerCount": 12, "TotalScorePlayerCount": 12, "TrackName": "Water Park", "ReviewNeeded": False, "RowCountConfidence": 1.0},
             ]
         )
 
@@ -77,8 +77,63 @@ class OcrExportTests(unittest.TestCase):
         self.assertIn("Player count check", lines)
         self.assertIn("- Demo: 2 races | consistent at 2 players", lines)
         self.assertEqual(summary["Demo"]["player_count_summary"], "consistent (2 players)")
+        self.assertEqual(summary["Demo"]["final_standing_player_count"], 2)
 
-    def test_build_saved_file_lines_puts_paths_on_separate_lines(self):
+    def test_build_player_count_summary_lines_flags_final_standing_above_expected_players(self):
+        rows = []
+        for player_index in range(8):
+            rows.append(
+                {
+                    "RaceClass": "Demo",
+                    "RaceIDNumber": 1,
+                    "FixPlayerName": f"Player {player_index + 1}",
+                    "RaceScorePlayerCount": 8,
+                    "TotalScorePlayerCount": 8,
+                    "TrackName": "Mario Kart Stadium",
+                    "ReviewNeeded": False,
+                    "RowCountConfidence": 1.0,
+                }
+            )
+        rows.append(
+            {
+                "RaceClass": "Demo",
+                "RaceIDNumber": 2,
+                "FixPlayerName": "Player 9",
+                "RaceScorePlayerCount": 8,
+                "TotalScorePlayerCount": 8,
+                "TrackName": "Water Park",
+                "ReviewNeeded": False,
+                "RowCountConfidence": 1.0,
+            }
+        )
+        for player_index in range(7):
+            rows.append(
+                {
+                    "RaceClass": "Demo",
+                    "RaceIDNumber": 2,
+                    "FixPlayerName": f"Player {player_index + 1}",
+                    "RaceScorePlayerCount": 8,
+                    "TotalScorePlayerCount": 8,
+                    "TrackName": "Water Park",
+                    "ReviewNeeded": False,
+                    "RowCountConfidence": 1.0,
+                }
+            )
+        df = pd.DataFrame(rows)
+
+        lines, summary = build_player_count_summary_lines(
+            df,
+            lambda *_args, **_kwargs: [],
+            lambda count, singular, plural=None: singular if count == 1 else (plural or f"{singular}s"),
+        )
+
+        self.assertIn("  Check: Final standings has 9 identities, expected 8 players; check for identity split", lines)
+        self.assertEqual(
+            summary["Demo"]["investigation_reasons"],
+            ["Final standings has 9 identities, expected 8 players; check for identity split"],
+        )
+
+    def test_build_saved_file_lines_renders_artifact_table(self):
         lines = _build_saved_file_lines(
             {
                 "output_excel_path": "C:/Results.xlsx",
@@ -90,5 +145,6 @@ class OcrExportTests(unittest.TestCase):
         )
 
         self.assertEqual(lines[:2], ["", "Saved files"])
-        self.assertIn("- Results workbook", lines)
-        self.assertIn("  C:/Results.xlsx", lines)
+        self.assertIn("  Artifact", lines[2])
+        self.assertIn("Results workbook", "\n".join(lines))
+        self.assertIn("C:/Results.xlsx", "\n".join(lines))

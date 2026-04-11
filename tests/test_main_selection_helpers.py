@@ -73,7 +73,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
             "Wild_2026-03-27_21-50-56",
         )
 
-    def test_format_overlap_race_event_uses_single_video_label_and_compact_queue_status(self):
+    def test_format_overlap_race_event_uses_single_video_label_and_aligned_queue_status(self):
         with mock.patch.object(main.LOGGER, "video_value", side_effect=lambda value, _identity: str(value)):
             formatted = main._format_overlap_race_event(
                 "2026-03-28__Wild_2026-03-27_21-50-56",
@@ -85,11 +85,11 @@ class MainSelectionHelpersTests(unittest.TestCase):
 
         self.assertIn("Wild_2026-03-27_21-50-56", formatted)
         self.assertIn("OCR queued", formatted)
-        self.assertIn("R007", formatted)
-        self.assertIn("Q  1 | GQ  2", formatted)
+        self.assertIn("Race 007", formatted)
+        self.assertIn("Que  1 | AllQue  2", formatted)
         self.assertEqual(formatted.count("Wild_2026-03-27_21-50-56"), 1)
 
-    def test_format_overlap_ocr_detail_uses_compact_progress_layout(self):
+    def test_format_overlap_ocr_detail_uses_aligned_progress_layout(self):
         detail = main._format_overlap_ocr_detail(
             {
                 "event": "progress",
@@ -106,7 +106,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
 
         self.assertEqual(
             detail,
-            "OCR 05/07 ( 71%) | R006 | Wii Mushroom Gorge           | P 11/11 | 00:00:18",
+            "Done 05/07 | Perc  71% | Race 006 | Track Wii Mushroom Gorge           | Ply 11/11 | Wall 00:00:18",
         )
 
     def test_parse_args_accepts_multiple_video_paths(self):

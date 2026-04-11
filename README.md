@@ -57,9 +57,10 @@ Character OCR also now includes a conservative session-level Mii fallback:
 - the row receives a short review note: `mii_fallback_unstable_character_match`
 
 Character OCR now also includes a roster-family variant refinement pass before that fallback:
-- color-variant families such as `Shy Guy`, `Yoshi`, and `Birdo` are rescored only against members of the same family
+- catalog-backed color-variant families such as `Birdo`, `Yoshi`, `Shy Guy`, and `Inkling` are rescored only against members of the same family
+- explicit close-cutout families such as `Peach` / `Pink Gold Peach` and `Mario` / `Metal Mario` / `Gold Mario` are also compared inside their own family groups
 - the default/base roster member stays in the family comparison instead of being treated separately
-- the refinement uses family-specific diagnostic color pixels from the saved RaceScore anchor frame
+- the refinement uses the same aligned alpha-cutout color scoring as character matching, across the calibrated local alignment offsets, from the saved RaceScore anchor frame
 - this is intended to stabilize true family members before the conservative `Mii` fallback is allowed to relabel them
 
 Family-variant debug probe on saved character crops:
@@ -259,10 +260,11 @@ Console output during a run now uses a clearer live format:
 - labels stay neutral while video-owned values are colorized
 - workflow ordering is consistent across the input summary, frame-count preflight, scan, and per-video summaries
 - scan progress now shows `HH:MM:SS / HH:MM:SS` instead of raw frame counters
-- shared scan status shows CPU and RAM once instead of repeating them on every video row
-- total-score progress uses a shorter per-video format and overlap OCR now logs an explicit `Finalizing OCR ...` step for long post-processing videos
-- the final performance summary uses aligned tables for run totals, phase timings, and per-video status
-- `Pipeline time avoided` shows the wall-clock time saved through overlap and parallelism
+- live progress uses aligned `Comp` / `Done` fields and includes CPU/RAM where useful for stall detection
+- confirmed scan detections list `Race`, `Track`, and `Score` anchors in frame order with source time and frame number
+- OCR progress uses `Active` for in-flight race bundles and overlap queue labels use `Que` / `AllQue`
+- the final performance summary uses aligned tables for run totals, split phase timings, per-video status, resource peaks, and video-seconds-per-wall-second rate
+- `Time saved by overlap` shows the wall-clock time saved through overlap and parallelism
 
 Placeholder identity handling is now tiered:
 - normal placeholder rescue still requires repeated multi-race support

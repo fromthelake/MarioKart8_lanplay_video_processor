@@ -7,6 +7,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 from .app_runtime import load_app_config
+from .console_logging import LOGGER
 from .game_catalog import load_game_catalog
 
 USER_REVIEW_REASON_MAX_LENGTH = 160
@@ -429,6 +430,12 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
         distribution_text = ", ".join(f"{player_count} players x {count}" for player_count, count in player_count_distribution.items())
         review_row_count = int(race_group["ReviewNeeded"].sum())
         review_race_count = int(race_group.loc[race_group["ReviewNeeded"], "RaceIDNumber"].nunique())
+        final_standing_player_count = int(race_group["FixPlayerName"].dropna().nunique())
+        investigation_reasons = []
+        if final_standing_player_count > dominant_players:
+            investigation_reasons.append(
+                f"Final standings has {final_standing_player_count} identities, expected {dominant_players} players; check for identity split"
+            )
         inconsistent_races = []
         for race_id, race_rows in race_group.groupby("RaceIDNumber", sort=True):
             race_score_players = int(race_rows["RaceScorePlayerCount"].iloc[0])
@@ -448,6 +455,8 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
             "dominant_players": dominant_players,
             "review_row_count": review_row_count,
             "review_race_count": review_race_count,
+            "final_standing_player_count": final_standing_player_count,
+            "investigation_reasons": investigation_reasons,
             "player_count_distribution": {int(player_count): int(count) for player_count, count in player_count_distribution.items()},
             "player_count_summary": (
                 f"consistent ({dominant_players} players)"
@@ -458,18 +467,39 @@ def build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
 
         if not inconsistent_races:
             lines.append(
-                f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | "
-                f"consistent at {dominant_players} players"
+                "- "
+                + LOGGER.video_value(race_class, race_class)
+                + ": "
+                + LOGGER.video_value(f"{race_count_for_class} {pluralize(race_count_for_class, 'race')}", race_class)
+                + " | consistent at "
+                + LOGGER.video_value(f"{dominant_players} players", race_class)
             )
+            for reason in investigation_reasons:
+                lines.append("  Check: " + LOGGER.video_value(reason, race_class))
             continue
 
-        lines.append(f"- {race_class}: {race_count_for_class} {pluralize(race_count_for_class, 'race')} | mixed player counts")
-        lines.append(f"  Most common: {dominant_players} players")
-        lines.append(f"  Breakdown: {distribution_text}")
+        lines.append(
+            "- "
+            + LOGGER.video_value(race_class, race_class)
+            + ": "
+            + LOGGER.video_value(f"{race_count_for_class} {pluralize(race_count_for_class, 'race')}", race_class)
+            + " | mixed player counts"
+        )
+        lines.append("  Most common: " + LOGGER.video_value(f"{dominant_players} players", race_class))
+        lines.append("  Breakdown: " + LOGGER.video_value(distribution_text, race_class))
+        for reason in investigation_reasons:
+            lines.append("  Check: " + LOGGER.video_value(reason, race_class))
         lines.append("  Review these races:")
         for race_id, track_name, messages in inconsistent_races:
             for message in messages:
-                lines.append(f"  - Race {race_id:03} | Track: {track_name} | {message}")
+                lines.append(
+                    "  - Race "
+                    + LOGGER.video_value(f"{race_id:03}", race_class)
+                    + " | Track: "
+                    + LOGGER.video_value(track_name, race_class)
+                    + " | "
+                    + LOGGER.video_value(message, race_class)
+                )
 
     return lines, per_video_summary
 
@@ -485,22 +515,29 @@ def _build_saved_file_lines(workbook_payload):
     if workbook_payload.get("debug_output_csv_path"):
         entries.append(("Debug CSV", workbook_payload["debug_output_csv_path"]))
     lines = ["", "Saved files"]
-    for label, path in entries:
-        lines.append(f"- {label}")
-        lines.append(f"  {path}")
+    lines.extend(
+        LOGGER.render_table(
+            ["Artifact", "Path"],
+            [[label, str(path)] for label, path in entries],
+            alignments=["left", "left"],
+        )
+    )
     return lines
 
 
 def build_completion_payload(df, folder_path, phase_start_time, progress_peak_lines, ocr_profiler_lines,
                              per_video_durations, build_race_warning_messages, pluralize, format_duration):
     """Prepare workbook output and the final OCR summary payload in one place."""
+    export_start_time = time.time()
     workbook_payload = write_results_workbooks(df, folder_path)
+    export_duration_s = max(0.0, time.time() - export_start_time)
     race_count = int(df[["RaceClass", "RaceIDNumber"]].drop_duplicates().shape[0])
 
     lines = [f"Duration: {format_duration(time.time() - phase_start_time)}", f"Races processed: {race_count}"]
     lines.extend(progress_peak_lines)
-    lines.extend(["", "OCR mode"])
-    lines.extend(ocr_profiler_lines)
+    if ocr_profiler_lines:
+        lines.extend(["", "OCR mode"])
+        lines.extend(ocr_profiler_lines)
     summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
     lines.extend(summary_lines)
     lines.extend(_build_saved_file_lines(workbook_payload))
@@ -517,5 +554,6 @@ def build_completion_payload(df, folder_path, phase_start_time, progress_peak_li
         "race_count": race_count,
         "per_video_summary": per_video_summary,
         "per_video_durations": dict(per_video_durations),
+        "export_duration_s": export_duration_s,
         "duration_s": time.time() - phase_start_time,
     }

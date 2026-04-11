@@ -33,9 +33,9 @@ Runtime baseline:
 ### Extraction phase
 
 - `mk8_local_play/extract_frames.py`
-  Extraction orchestrator. Loads videos, determines crop/upscale geometry, runs initial scan, runs score-screen selection, exports frames, and builds extraction summaries.
+  Extraction orchestrator. Loads videos, determines crop/upscale geometry, runs initial scan, runs score-screen selection, exports frames, emits ordered scan confirmations, and builds extraction summaries.
 - `mk8_local_play/extract_initial_scan.py`
-  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, a row `2..6` confirmation prefix for score candidates, and multiple race-number template/ROI variants.
+  Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, a row `2..6` confirmation prefix with optional local offset confirmation for borderline score candidates, and multiple race-number template/ROI variants.
 - `mk8_local_play/extract_score_screen_selection.py`
   Second pass over score candidates to choose RaceScore and TotalScore frames. Contains coarse-to-fine search, transition-centered RaceScore bundle export, FPS-scaled timing logic, 12th-place/template recovery, and tie-aware sustained-drop logic for TotalScore timing.
 - `mk8_local_play/extract_video_io.py`
@@ -46,9 +46,9 @@ Runtime baseline:
 ### OCR and identity phase
 
 - `mk8_local_play/extract_text.py`
-  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, low-res handling, validation, export, and overlap-mode consumption of finalized per-video or per-race OCR jobs.
+  OCR orchestrator. Groups exported frames, runs EasyOCR-based text extraction, coordinates consensus building, character-family aligned color refinement, low-res handling, validation, export, and overlap-mode consumption of finalized per-video or per-race OCR jobs.
 - `mk8_local_play/ocr_scoreboard_consensus.py`
-  Core score-screen OCR logic: ROIs, row presence detection, position-template matching, score digit reading, character matching, and multi-frame consensus.
+  Core score-screen OCR logic: ROIs, row presence detection, position-template matching, score digit reading, aligned alpha-cutout character matching, and multi-frame consensus.
 - `mk8_local_play/low_res_identity.py`
   Dedicated low-resolution identity path. Rebuilds identities from fixed ROIs, character matching, and blob fallback when OCR is too weak.
 - `mk8_local_play/ocr_name_matching.py`
@@ -61,7 +61,7 @@ Runtime baseline:
 - `mk8_local_play/ocr_session_validation.py`
   Validates totals, identifies session rebases/resets, attaches review reasons, and recomputes final post-race ordering from validated totals.
 - `mk8_local_play/ocr_export.py`
-  Builds user/debug export dataframes and writes timestamped workbook files.
+  Builds user/debug export dataframes, writes timestamped workbook files, and reports player-count plus identity-split investigation summaries.
 
 ### Metadata and runtime support
 
@@ -115,6 +115,12 @@ Runtime baseline:
   Diagnostics for left-side position template behavior.
 - `tools/generate_name_ocr_debug_html.py`, `tools/evaluate_batch_name_consensus.py`
   OCR diagnostics and consensus analysis helpers.
+- `tools/evaluate_mii_memory_probe.py`, `tools/evaluate_character_variant_families.py`
+  Character matching probes for saved RaceScore crops and family/refinement diagnostics.
+- `tools/probe_corrupt_remux_viability.py`
+  Compares sampled corrupt-video preflight behavior before and after a light FFmpeg remux.
+- `tools/move_practical_duplicate_candidates_to_exclude.ps1`
+  Applies a reviewed duplicate-video move plan into `Input_Videos/exclude`, with a `-WhatIf` mode for dry runs.
 
 ## Run, Build, And Verification
 

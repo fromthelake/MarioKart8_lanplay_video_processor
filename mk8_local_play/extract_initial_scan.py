@@ -44,6 +44,11 @@ INITIAL_SCAN_GATE_MIN_COEFF = float(os.environ.get("MK8_INITIAL_SCAN_GATE_MIN_CO
 INITIAL_SCAN_GATE_TEMPLATE_GRID_X = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_X", "313"))
 INITIAL_SCAN_GATE_TEMPLATE_GRID_Y = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_Y", "46"))
 INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE = int(os.environ.get("MK8_INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE", "52"))
+SCORE_SCAN_LOCAL_CONFIRM_MODE = os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM", "fallback").strip().lower()
+SCORE_SCAN_LOCAL_CONFIRM_RADIUS = max(0, int(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_RADIUS", "1")))
+SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN", "0.50"))
+SCORE_SCAN_LOCAL_CONFIRM_AVG = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_AVG", "0.85"))
+SCORE_SCAN_LOCAL_CONFIRM_MIN_ROW = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_MIN_ROW", "0.80"))
 
 
 INITIAL_SCAN_TARGETS = (
@@ -177,11 +182,28 @@ def _match_score_target_layouts(
         prefix_average = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
         required_prefix_rows = max(1, POSITION_SCAN_MIN_PLAYERS - int(INITIAL_SCAN_SCORE_PREFIX_ROW_START) + 1)
         exact_prefix_pass = len(prefix_scores) >= required_prefix_rows and prefix_average >= POSITION_SCAN_MIN_AVG_COEFF
+        local_confirm = None
+        if SCORE_SCAN_LOCAL_CONFIRM_MODE == "always":
+            local_confirm = _local_offset_scan_confirm_score(bgr_image, layout.layout_id, stats)
+            exact_prefix_pass = bool(local_confirm["passed"])
+            prefix_average = float(local_confirm["average"])
+        elif (
+            SCORE_SCAN_LOCAL_CONFIRM_MODE == "fallback"
+            and len(prefix_scores) >= required_prefix_rows
+            and SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN <= prefix_average < POSITION_SCAN_MIN_AVG_COEFF
+        ):
+            video_io.increment_counter(stats, "scan_score_local_confirm_fallback_calls")
+            local_confirm = _local_offset_scan_confirm_score(bgr_image, layout.layout_id, stats)
+            if local_confirm["passed"]:
+                video_io.increment_counter(stats, "scan_score_local_confirm_fallback_passes")
+                exact_prefix_pass = True
+                prefix_average = float(local_confirm["average"])
         layout_metrics[str(layout.layout_id)] = {
             "position_metrics": position_metrics,
             "exact_prefix_scores": prefix_scores,
             "exact_prefix_average": prefix_average,
             "exact_prefix_pass": bool(exact_prefix_pass),
+            "local_confirm": local_confirm,
         }
         if not exact_prefix_pass:
             continue
@@ -315,6 +337,76 @@ def _best_initial_scan_gate_score(tile_gray, row_number: int):
         if score >= threshold:
             return float(score), str(template_variant)
     return float(best_score), str(best_variant)
+
+
+def _local_offset_scan_confirm_score(
+    image_source,
+    score_layout_id: str | None,
+    stats,
+    *,
+    radius: int | None = None,
+):
+    """Confirm score rows with a tiny local offset search around the fixed row tiles."""
+    search_radius = SCORE_SCAN_LOCAL_CONFIRM_RADIUS if radius is None else max(0, int(radius))
+    if len(image_source.shape) == 2:
+        bgr_image = cv2.cvtColor(image_source, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr_image = image_source
+    row_scores = []
+    row_offsets = {}
+    tile_size = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_SIZE)
+    base_x = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_X)
+    if str(score_layout_id or "").strip() == LAN1_SCORE_LAYOUT_ID:
+        base_x += int(SCORE_LAYOUT_SHIFT_X)
+    base_y0 = int(INITIAL_SCAN_GATE_TEMPLATE_GRID_Y)
+
+    stage_start = time.perf_counter()
+    for row_number in range(int(INITIAL_SCAN_SCORE_PREFIX_ROW_START), POSITION_SCAN_MIN_PLAYERS + 1):
+        base_y = base_y0 + ((int(row_number) - 1) * tile_size)
+        best_score = float("-inf")
+        best_offset = (0, 0)
+        best_variant = ""
+        for dy in range(-search_radius, search_radius + 1):
+            for dx in range(-search_radius, search_radius + 1):
+                x1 = base_x + dx
+                y1 = base_y + dy
+                tile_roi = bgr_image[y1:y1 + tile_size, x1:x1 + tile_size]
+                if tile_roi.shape[:2] != (tile_size, tile_size):
+                    continue
+                tile_gray = cv2.cvtColor(tile_roi, cv2.COLOR_BGR2GRAY)
+                for template_variant in ("white", "black"):
+                    template_gray, alpha_mask = _load_initial_scan_gate_tile(template_variant, int(row_number))
+                    score = _masked_template_match_score(tile_gray, template_gray, alpha_mask)
+                    video_io.increment_counter(stats, "scan_score_local_confirm_template_checks")
+                    if score > best_score:
+                        best_score = float(score)
+                        best_offset = (int(dx), int(dy))
+                        best_variant = str(template_variant)
+        if best_score == float("-inf"):
+            best_score = 0.0
+        row_scores.append(float(best_score))
+        row_offsets[int(row_number)] = {
+            "score": float(best_score),
+            "offset": best_offset,
+            "variant": best_variant,
+        }
+    video_io.add_timing(stats, "scan_score_local_confirm_s", stage_start)
+    video_io.increment_counter(stats, "scan_score_local_confirm_calls")
+    average_score = float(sum(row_scores) / len(row_scores)) if row_scores else 0.0
+    min_score = float(min(row_scores)) if row_scores else 0.0
+    passed = (
+        average_score >= float(SCORE_SCAN_LOCAL_CONFIRM_AVG)
+        and min_score >= float(SCORE_SCAN_LOCAL_CONFIRM_MIN_ROW)
+    )
+    if passed:
+        video_io.increment_counter(stats, "scan_score_local_confirm_passes")
+    return {
+        "passed": bool(passed),
+        "average": average_score,
+        "minimum": min_score,
+        "row_scores": row_scores,
+        "row_offsets": row_offsets,
+    }
 
 
 def update_segment_progress(progress_queue, segment_index, frame_number, emit_start, emit_end, force=False, video_label=None):
@@ -534,7 +626,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                 saved_image = crop_and_upscale_image(save_frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT)
                 runtime_state["last_track_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", _color_detection_message(video_label, race_number, " | track screen found at source ", timecode))
+                LOGGER.log("", _color_detection_message(video_label, race_number, "Track | Source ", timecode, frame_number))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "0TrackName")
                 write_export_image(frame_filename, saved_image)
                 video_io.log_exported_frame(
@@ -560,7 +652,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
             if runtime_state["last_race_frame"] < max(1, frame_number - int(fps * 20)):
                 runtime_state["last_race_frame"] = frame_number
                 race_number = runtime_state["next_race_number"]
-                LOGGER.log("", _color_detection_message(video_label, race_number, " | race number found at source ", timecode))
+                LOGGER.log("", _color_detection_message(video_label, race_number, "Race  | Source ", timecode, frame_number))
                 frame_filename = race_anchor_frame_path(video_label, race_number, "1RaceNumber")
                 write_export_image(frame_filename, upscaled_image)
                 video_io.log_exported_frame(
@@ -880,7 +972,7 @@ def assign_race_number(frame_number, score_frame_numbers):
 
 
 def save_auxiliary_detection_frames(capture, video_path, video_label, video_source_path, detections, score_frame_numbers, left, top,
-                                    crop_width, crop_height, fps, stats, metadata_writer):
+                                    crop_width, crop_height, fps, stats, metadata_writer, *, emit_logs=True):
     """Persist merged track-name and race-number frames after worker results are combined."""
     if not detections:
         return
@@ -901,12 +993,14 @@ def save_auxiliary_detection_frames(capture, video_path, video_label, video_sour
 
         if detection["kind"] == "track":
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", _color_detection_message(video_label, race_number, " | track screen found at source ", timecode))
+            if emit_logs:
+                LOGGER.log("", _color_detection_message(video_label, race_number, "Track | Source ", timecode, detection["frame_number"]))
             suffix = "0TrackName"
             kind = "TrackName"
         else:
             timecode = frame_to_timecode(detection["frame_number"], fps)
-            LOGGER.log("", _color_detection_message(video_label, race_number, " | race number found at source ", timecode))
+            if emit_logs:
+                LOGGER.log("", _color_detection_message(video_label, race_number, "Race  | Source ", timecode, detection["frame_number"]))
             suffix = "1RaceNumber"
             kind = "RaceNumber"
 
@@ -1160,21 +1254,31 @@ def run_parallel_detection_segments_shared(segment_tasks, progress_by_video, dia
             for diagnostics in diagnostics_by_video.values():
                 diagnostics["fallback"] = "thread"
         return _run_with_executor(ThreadPoolExecutor, progress_queue, "thread")
-def _color_detection_message(video_label, race_number: int, description: str, timecode: str) -> str:
+def _color_detection_message(video_label, race_number: int, description: str, timecode: str, frame_number: int | None = None) -> str:
     return (
         "Race "
         + LOGGER.video_value(f"{race_number:03}", video_label)
+        + " | "
         + description
         + LOGGER.video_value(timecode, video_label)
+        + (
+            " | Frame " + LOGGER.video_value(f"{int(frame_number):07}", video_label)
+            if frame_number is not None
+            else ""
+        )
     )
 
 
 def _color_live_detection_detail(video_label, score_count: int, track_count: int, race_count: int) -> str:
     return (
-        "Found score "
-        + LOGGER.video_value(f"{int(score_count):2d}", video_label)
-        + " | track "
-        + LOGGER.video_value(f"{int(track_count):2d}", video_label)
-        + " | race "
-        + LOGGER.video_value(f"{int(race_count):2d}", video_label)
+        "Track "
+        + LOGGER.video_value(f"{int(track_count):02d}", video_label)
+        + " | Race "
+        + LOGGER.video_value(f"{int(race_count):02d}", video_label)
+        + " | Score "
+        + LOGGER.video_value(f"{int(score_count):02d}", video_label)
     )
+
+
+def color_detection_message(video_label, race_number: int, description: str, timecode: str, frame_number: int | None = None) -> str:
+    return _color_detection_message(video_label, race_number, description, timecode, frame_number)

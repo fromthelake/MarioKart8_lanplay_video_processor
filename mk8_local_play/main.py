@@ -261,52 +261,26 @@ def show_error(title: str, message: str) -> None:
 
 
 def _pad_table_cell(value: object, width: int, alignment: str = "left") -> str:
-    text = str(value)
-    if alignment == "right":
-        return text.rjust(width)
-    return text.ljust(width)
+    return LOGGER.fit_cell(value, width, alignment)
 
 
 def _format_simple_table(headers: list[str], rows: list[list[str]], alignments: list[str] | None = None) -> list[str]:
     if not rows:
         return []
-    alignments = list(alignments or ["left"] * len(headers))
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
-    table_lines = [
-        "  " + "  ".join(_pad_table_cell(headers[index], widths[index], alignments[index]) for index in range(len(headers))),
-        "  " + "  ".join(("-" * widths[index]).ljust(widths[index]) for index in range(len(headers))),
-    ]
-    for row in rows:
-        table_lines.append(
-            "  " + "  ".join(_pad_table_cell(row[index], widths[index], alignments[index]) for index in range(len(headers)))
-        )
-    return table_lines
+    return LOGGER.render_table(headers, rows, alignments=list(alignments or ["left"] * len(headers)))
 
 
 def _format_metric_table(rows: list[tuple[str, str]]) -> list[str]:
     if not rows:
         return []
-    metric_width = max(len("Metric"), max(len(metric) for metric, _ in rows))
-    value_width = max(len("Value"), max(len(value) for _, value in rows))
-    lines = [
-        "  " + "  ".join(["Metric".ljust(metric_width), "Value".ljust(value_width)]),
-        "  " + "  ".join([("-" * metric_width).ljust(metric_width), ("-" * value_width).ljust(value_width)]),
-    ]
-    for metric, value in rows:
-        lines.append(
-            "  " + metric.ljust(metric_width) + "  " + LOGGER.bold(value.ljust(value_width))
-        )
-    return lines
+    return LOGGER.render_kv_table([(metric, LOGGER.bold(value)) for metric, value in rows])
 
 
 def _format_simple_table_widths(headers: list[str], rows: list[list[str]]) -> list[int]:
-    widths = [len(header) for header in headers]
+    widths = [LOGGER.visible_width(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(str(value)))
+            widths[index] = max(widths[index], LOGGER.visible_width(str(value)))
     return widths
 
 
@@ -326,8 +300,8 @@ def _format_input_summary_lines(source_summaries: list[tuple[str, str]], total_s
     ]
     if source_summaries:
         lines.extend(["", "Selection"])
-        for index, (_video_identity, summary) in enumerate(source_summaries, start=1):
-            lines.append(f"{index:02}. {summary}")
+        for index, (video_identity, summary) in enumerate(source_summaries, start=1):
+            lines.append(f"{index:02}. {LOGGER.video_value(summary, video_identity)}")
     return lines
 
 
@@ -367,11 +341,26 @@ def _summarize_pipeline_bottleneck(
 def _review_summary_text(video_ocr_summary: dict) -> str:
     if not video_ocr_summary:
         return "n/a"
+    investigation_reasons = [
+        str(reason)
+        for reason in video_ocr_summary.get("investigation_reasons", [])
+        if str(reason).strip()
+    ]
     review_race_count = int(video_ocr_summary.get("review_race_count", 0))
     review_row_count = int(video_ocr_summary.get("review_row_count", 0))
-    if review_race_count <= 0 and review_row_count <= 0:
+    review_parts = []
+    if review_race_count > 0 or review_row_count > 0:
+        review_parts.append(f"{review_race_count} races / {review_row_count} rows")
+    review_parts.extend(investigation_reasons)
+    if not review_parts:
         return "none"
-    return f"{review_race_count} races / {review_row_count} rows"
+    return "; ".join(review_parts)
+
+
+def _format_video_rate(source_seconds: float, wall_seconds: float) -> str:
+    if wall_seconds <= 0:
+        return "-"
+    return f"{(float(source_seconds) / float(wall_seconds)):.1f} s/s"
 
 
 def _video_labeled_value(prefix: str, value: object, video_identity: object, suffix: str = "") -> str:
@@ -394,7 +383,7 @@ def _format_overlap_subject(video_label: str, *, width: int = 28) -> str:
 
 
 def _format_overlap_queue_status(*, queued_for_video: int, queued_total: int) -> str:
-    return f"Q {int(queued_for_video):>2} | GQ {int(queued_total):>2}"
+    return f"Que {int(queued_for_video):>2} | AllQue {int(queued_total):>2}"
 
 
 def _format_overlap_race_event(
@@ -414,13 +403,13 @@ def _format_overlap_race_event(
     return (
         _format_overlap_subject(video_label)
         + f" | OCR {str(action).ljust(8)}"
-        + f" | R{int(race_number):03}"
+        + f" | Race {int(race_number):03}"
         + status_text
     )
 
 
 def _format_overlap_extraction_complete(video_label: str, race_count: int) -> str:
-    return _format_overlap_subject(video_label) + " | Extract ready | races " + LOGGER.video_value(race_count, video_label)
+    return _format_overlap_subject(video_label) + " | Extract ready | Races " + LOGGER.video_value(race_count, video_label)
 
 
 def _format_overlap_queue_video(video_label: str) -> str:
@@ -435,9 +424,9 @@ def _format_overlap_complete(video_label: str, race_count: int, duration_text: s
     return (
         _format_overlap_subject(video_label)
         + " | OCR done"
-        + " | races "
+        + " | Races "
         + LOGGER.video_value(race_count, video_label)
-        + " | "
+        + " | Wall "
         + LOGGER.video_value(duration_text, video_label)
     )
 
@@ -446,7 +435,7 @@ def _format_overlap_finalize_start(video_label: str, race_count: int) -> str:
     return (
         _format_overlap_subject(video_label)
         + " | OCR finalize"
-        + " | races "
+        + " | Races "
         + LOGGER.video_value(race_count, video_label)
     )
 
@@ -454,7 +443,7 @@ def _format_overlap_finalize_start(video_label: str, race_count: int) -> str:
 def _format_overlap_complete_with_finalize(video_label: str, race_count: int, duration_text: str, finalize_duration_text: str) -> str:
     return (
         _format_overlap_complete(video_label, race_count, duration_text)
-        + " | finalize "
+        + " | Final "
         + LOGGER.video_value(finalize_duration_text, video_label)
     )
 
@@ -728,18 +717,22 @@ def _format_overlap_ocr_detail(event: dict, format_duration) -> str:
             track_name = track_name[:25] + "..."
         race_players = event.get("race_score_players")
         total_players = event.get("total_score_players")
-        players_text = ""
+        players_text = " | Ply  -/-"
         if race_players is not None or total_players is not None:
-            players_text = f" | P {int(race_players or 0):>2}/{int(total_players or 0):>2}"
-        race_text = f" | R{int(race_id):03}" if race_id is not None else ""
-        return f"OCR {completed:02}/{total:02} ({percent:>3}%)" + race_text + f" | {track_name:<28}{players_text} | {elapsed_text}"
+            players_text = f" | Ply {int(race_players or 0):>2}/{int(total_players or 0):>2}"
+        race_text = f" | Race {int(race_id):03}" if race_id is not None else " | Race ---"
+        return (
+            f"Done {completed:02}/{total:02} | Perc {percent:>3}%"
+            + race_text
+            + f" | Track {track_name:<28}{players_text} | Wall {elapsed_text}"
+        )
     detail = str(event.get("detail") or "").strip()
     pending = event.get("pending")
     global_pending = event.get("global_pending")
-    pending_text = f" | Q {int(pending):>2}" if pending is not None else ""
-    global_pending_text = f" | GQ {int(global_pending):>2}" if global_pending is not None else ""
-    detail_text = f" | {detail}" if detail else ""
-    return f"OCR {completed:02}/{total:02} ({percent:>3}%) | {elapsed_text}{pending_text}{global_pending_text}{detail_text}"
+    pending_text = f" | Que {int(pending):>2}" if pending is not None else " | Que  -"
+    global_pending_text = f" | AllQue {int(global_pending):>2}" if global_pending is not None else " | AllQue  -"
+    detail_text = f" | State {detail}" if detail else ""
+    return f"Done {completed:02}/{total:02} | Perc {percent:>3}% | Wall {elapsed_text}{pending_text}{global_pending_text}{detail_text}"
 
 
 def _make_overlap_ocr_progress_callback(video_label: str, format_duration, display_video_label):
@@ -1540,6 +1533,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
 
     per_video_durations = {}
     per_video_summary = {}
+    per_video_finalize_durations = {}
     progress_peak_lines = []
     ocr_profiler_lines = [
         f"OCR mode: overlap by {overlap_ocr_mode}",
@@ -1549,6 +1543,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
     for result in ocr_results:
         per_video_durations.update(result.get("per_video_durations", {}))
         per_video_summary.update(result.get("per_video_summary", {}))
+        video_label = str(result.get("video_label") or "")
+        if video_label:
+            per_video_finalize_durations[video_label] = float(result.get("finalize_duration_s", 0.0) or 0.0)
         for line in result.get("progress_peak_lines", []):
             if line not in progress_peak_lines:
                 progress_peak_lines.append(line)
@@ -1586,6 +1583,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         source_summaries.append(f"{display_name} ({extract_frames.format_duration(source_length)})")
     ratio = total_source_seconds / total_processing_seconds if total_processing_seconds > 0 else 0.0
     total_ocr_work_s = sum(float(value) for value in per_video_durations.values())
+    total_ocr_logic_s = float(ocr_result.get("logic_duration_s", 0.0) or 0.0)
+    total_ocr_export_s = float(ocr_result.get("export_duration_s", 0.0) or 0.0)
+    total_ocr_finalize_s = float(ocr_result.get("finalize_duration_s", 0.0) or 0.0)
     total_corrupt_check_s = float(extract_summary.get('corrupt_check_duration_s', 0.0))
     total_repair_s = float(extract_summary.get('repair_duration_s', 0.0))
     total_repairs = int(extract_summary.get('repair_count', 0))
@@ -1600,7 +1600,7 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
         "Run totals",
         *_format_metric_table([
             ("Source length", extract_frames.format_duration(total_source_seconds)),
-            ("Processing time", extract_frames.format_duration(total_processing_seconds)),
+            ("Wall clock time", extract_frames.format_duration(total_processing_seconds)),
             ("Speed vs playback", f"{ratio:.1f}x real-time"),
             ("Time saved by overlap", extract_frames.format_duration(overlap_time_saved_s)),
             ("Main slowdown", likely_bottleneck),
@@ -1611,7 +1611,10 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             ["Phase", "Duration", "Notes"],
             [
                 ["Extract race and score screens", extract_frames.format_duration(extract_summary.get('duration_s', 0.0)), ""],
-                ["OCR and workbook export", extract_frames.format_duration(total_ocr_duration_s), ""],
+                ["OCR race reading", extract_frames.format_duration(total_ocr_work_s), ""],
+                ["Validation and export", extract_frames.format_duration(total_ocr_finalize_s), ""],
+                ["Validation / logic", extract_frames.format_duration(total_ocr_logic_s), ""],
+                ["Workbook / CSV export", extract_frames.format_duration(total_ocr_export_s), ""],
                 ["Corrupt preflight checks", extract_frames.format_duration(total_corrupt_check_s), ""],
                 ["Repair file creation", extract_frames.format_duration(total_repair_s), f"{total_repairs} {('video' if total_repairs == 1 else 'videos')}"],
                 ["Mode", "", f"overlapped by {overlap_ocr_mode} ({overlap_ocr_consumers} GPU OCR consumer{'s' if overlap_ocr_consumers != 1 else ''})"],
@@ -1665,23 +1668,29 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             performance_lines.append(f"- Avg RAM during extract while OCR active: {avg_ram_extract:.1f} GB")
     if extract_summary.get("per_video_summaries"):
         performance_lines.extend(["", "Per-video summary"])
-        table_headers = ["Video", "Source", "Total", "Scan", "Score", "OCR", "Races", "Players", "Review"]
-        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "left", "left"]
+        table_headers = ["Video", "Source", "Wall", "StageSum", "Scan", "Score", "OCR", "Final", "Rate", "Races", "Players", "Review"]
+        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "right", "right", "right", "left", "left"]
         per_video_rows = []
         for summary in extract_summary["per_video_summaries"]:
             video_identity = str(summary.get("video_label") or build_video_identity(Path(summary["video_name"]), include_subfolders=include_subfolders))
             video_ocr_summary = per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
+            ocr_duration_s = (
+                total_ocr_duration_s * (float(per_video_durations.get(video_identity, 0.0)) / total_ocr_work_s)
+                if total_ocr_work_s > 0 else 0.0
+            )
+            finalize_duration_s = float(per_video_finalize_durations.get(video_identity, 0.0))
+            process_duration_s = float(summary["scan_duration_s"]) + float(summary["total_score_duration_s"]) + ocr_duration_s + finalize_duration_s
             per_video_rows.append([
                 _display_video_name_for_table(summary["video_name"]),
                 extract_frames.format_duration(summary["source_length_s"]),
                 extract_frames.format_duration(summary["processing_duration_s"]),
+                extract_frames.format_duration(process_duration_s),
                 extract_frames.format_duration(summary["scan_duration_s"]),
                 extract_frames.format_duration(summary["total_score_duration_s"]),
-                extract_frames.format_duration(
-                    total_ocr_duration_s * (float(per_video_durations.get(video_identity, 0.0)) / total_ocr_work_s)
-                    if total_ocr_work_s > 0 else 0.0
-                ),
+                extract_frames.format_duration(ocr_duration_s),
+                extract_frames.format_duration(finalize_duration_s),
+                _format_video_rate(summary["source_length_s"], summary["processing_duration_s"]),
                 str(video_ocr_summary.get("race_count", 0)),
                 player_summary,
                 _review_summary_text(video_ocr_summary),
@@ -1702,7 +1711,9 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
                 or build_video_identity(Path(extract_summary["per_video_summaries"][index]["video_name"]), include_subfolders=include_subfolders)
             )
             performance_lines.append(_format_colored_table_row(row_values, row_widths, video_identity, alignments=table_alignments))
-    performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
+    peak_rows = [(line.split(": ", 1)[0], line.split(": ", 1)[1]) for line in LOGGER.peak_lines() if ": " in line]
+    if peak_rows:
+        performance_lines.extend(["", "Resource peaks", *_format_metric_table(peak_rows)])
     LOGGER.summary_block("[Run - Performance Summary]", performance_lines, color_name="cyan")
     LOGGER.blank_lines(2)
     latest_results_xlsx = Path(ocr_result.get("output_excel_path") or find_latest_results_xlsx(OUTPUT_DIR))
@@ -1782,7 +1793,7 @@ def run_all(
             if cleared else
             f"No prior exported artifacts found for {len(video_files)} selected video(s)"
         )
-        LOGGER.log("[Run - Selection Cleanup]", cleanup_message, color_name="cyan")
+        LOGGER.summary_block("[Run - Selection Cleanup]", [cleanup_message], color_name="cyan")
     if overlap_active:
         _run_all_with_video_overlap(video_files, selection_mode=selection_mode, include_subfolders=include_subfolders)
         return
@@ -1812,6 +1823,9 @@ def run_all(
     ocr_per_video_summary = ocr_result.get("per_video_summary", {})
     total_ocr_duration_s = float(ocr_result.get("duration_s", 0.0))
     total_ocr_work_s = sum(float(value) for value in ocr_per_video_work_durations.values())
+    total_finalize_duration_s = float(ocr_result.get("finalize_duration_s", 0.0) or 0.0)
+    total_logic_duration_s = float(ocr_result.get("logic_duration_s", 0.0) or 0.0)
+    total_export_duration_s = float(ocr_result.get("export_duration_s", 0.0) or 0.0)
     total_corrupt_check_s = float(extract_summary.get('corrupt_check_duration_s', 0.0))
     total_repair_s = float(extract_summary.get('repair_duration_s', 0.0))
     total_repairs = int(extract_summary.get('repair_count', 0))
@@ -1826,7 +1840,7 @@ def run_all(
         "Run totals",
         *_format_metric_table([
             ("Source length", extract_frames.format_duration(total_source_seconds)),
-            ("Processing time", extract_frames.format_duration(total_processing_seconds)),
+            ("Wall clock time", extract_frames.format_duration(total_processing_seconds)),
             ("Speed vs playback", f"{ratio:.1f}x real-time"),
             ("Time saved by overlap", extract_frames.format_duration(overlap_time_saved_s)),
             ("Main slowdown", likely_bottleneck),
@@ -1837,7 +1851,10 @@ def run_all(
             ["Phase", "Duration", "Notes"],
             [
                 ["Extract race and score screens", extract_frames.format_duration(extract_summary.get('duration_s', 0.0)), ""],
-                ["OCR and workbook export", extract_frames.format_duration(ocr_result.get('duration_s', 0.0)), ""],
+                ["OCR race reading", extract_frames.format_duration(total_ocr_work_s), ""],
+                ["Validation and export", extract_frames.format_duration(total_finalize_duration_s), ""],
+                ["Validation / logic", extract_frames.format_duration(total_logic_duration_s), ""],
+                ["Workbook / CSV export", extract_frames.format_duration(total_export_duration_s), ""],
                 ["Corrupt preflight checks", extract_frames.format_duration(total_corrupt_check_s), ""],
                 ["Repair file creation", extract_frames.format_duration(total_repair_s), f"{total_repairs} {('video' if total_repairs == 1 else 'videos')}"],
             ],
@@ -1846,23 +1863,29 @@ def run_all(
     ]
     if per_video_summaries:
         performance_lines.extend(["", "Per-video summary"])
-        table_headers = ["Video", "Source", "Total", "Scan", "Score", "OCR", "Races", "Players", "Review"]
-        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "left", "left"]
+        table_headers = ["Video", "Source", "Wall", "StageSum", "Scan", "Score", "OCR", "Final", "Rate", "Races", "Players", "Review"]
+        table_alignments = ["left", "right", "right", "right", "right", "right", "right", "right", "right", "right", "left", "left"]
         per_video_rows = []
         for summary in per_video_summaries:
             video_identity = str(summary.get("video_label") or Path(summary["video_name"]).stem)
             video_ocr_summary = ocr_per_video_summary.get(video_identity, {})
             player_summary = video_ocr_summary.get("player_count_summary", "n/a")
+            ocr_duration_s = (
+                total_ocr_duration_s * (float(ocr_per_video_work_durations.get(video_identity, 0.0)) / total_ocr_work_s)
+                if total_ocr_work_s > 0 else 0.0
+            )
+            finalize_duration_s = total_finalize_duration_s if len(per_video_summaries) == 1 else 0.0
+            process_duration_s = float(summary["scan_duration_s"]) + float(summary["total_score_duration_s"]) + ocr_duration_s + finalize_duration_s
             per_video_rows.append([
                 _display_video_name_for_table(summary["video_name"]),
                 extract_frames.format_duration(summary["source_length_s"]),
                 extract_frames.format_duration(summary["processing_duration_s"]),
+                extract_frames.format_duration(process_duration_s),
                 extract_frames.format_duration(summary["scan_duration_s"]),
                 extract_frames.format_duration(summary["total_score_duration_s"]),
-                extract_frames.format_duration(
-                    total_ocr_duration_s * (float(ocr_per_video_work_durations.get(video_identity, 0.0)) / total_ocr_work_s)
-                    if total_ocr_work_s > 0 else 0.0
-                ),
+                extract_frames.format_duration(ocr_duration_s),
+                extract_frames.format_duration(finalize_duration_s) if finalize_duration_s > 0 else "-",
+                _format_video_rate(summary["source_length_s"], summary["processing_duration_s"]),
                 str(video_ocr_summary.get("race_count", 0)),
                 player_summary,
                 _review_summary_text(video_ocr_summary),
@@ -1886,7 +1909,9 @@ def run_all(
                     alignments=table_alignments,
                 )
             )
-    performance_lines.extend(["", "Resource peaks", *[f"- {line}" for line in LOGGER.peak_lines()]])
+    peak_rows = [(line.split(": ", 1)[0], line.split(": ", 1)[1]) for line in LOGGER.peak_lines() if ": " in line]
+    if peak_rows:
+        performance_lines.extend(["", "Resource peaks", *_format_metric_table(peak_rows)])
     LOGGER.summary_block(
         "[Run - Performance Summary]",
         performance_lines,

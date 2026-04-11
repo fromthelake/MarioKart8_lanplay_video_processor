@@ -70,6 +70,7 @@ from .name_unicode import (
 )
 from .ocr_scoreboard_consensus import (
     TOTAL_SCORE_CONSENSUS_WINDOW_SIZE,
+    _masked_cutout_color_score,
     best_character_matches,
     build_consensus_observation,
     build_race_warning_messages,
@@ -116,15 +117,17 @@ CHARACTER_VARIANT_FAMILY_ROSTER_NAMES = {
     7: "Birdo",
     8: "Yoshi",
     11: "Shy Guy",
+    40: "Inkling",
 }
 CHARACTER_VARIANT_FAMILY_ROSTER_INDICES = set(CHARACTER_VARIANT_FAMILY_ROSTER_NAMES.keys())
 EXPLICIT_CHARACTER_VARIANT_FAMILIES = {
+    "Mario": ("Mario", "Metal Mario", "Gold Mario"),
     "Peach": ("Peach", "Cat Peach", "Baby Peach", "Pink Gold Peach", "Peachette"),
 }
 VARIANT_FAMILY_REFINEMENT_MIN_SUPPORT = 3
 VARIANT_FAMILY_REFINEMENT_MIN_DOMINANT_RATIO = 0.9
 VARIANT_FAMILY_REFINEMENT_MIN_AVG_MARGIN = 0.5
-VARIANT_FAMILY_REFINEMENT_METHOD = "variant_family_diagnostic_refine"
+VARIANT_FAMILY_REFINEMENT_METHOD = "variant_family_aligned_color_refine"
 
 # Record the start time
 start_run_time = time.time()
@@ -292,6 +295,31 @@ def diagnostic_character_variant_score(
     return max(0.0, min(1.0, score))
 
 
+def aligned_family_color_variant_score(source_image: np.ndarray, family_template: dict[str, object]) -> float:
+    """Score a family variant using the same aligned alpha cutout used by the main character matcher."""
+    if source_image.size == 0:
+        return 0.0
+
+    template_image = family_template["template_image"]
+    template_height, template_width = template_image.shape[:2]
+    if source_image.shape[0] != template_height or source_image.shape[1] != template_width:
+        source_image = cv2.resize(source_image, (template_width, template_height), interpolation=cv2.INTER_LINEAR)
+    source_rgb = source_image.astype(np.float32)
+
+    best_score = 0.0
+    for variant in family_template.get("aligned_variants") or ():
+        score = _masked_cutout_color_score(
+            source_image,
+            variant["image"],
+            variant["alpha"],
+            source_rgb=source_rgb,
+            target_rgb=variant.get("image_float"),
+            target_mask=variant.get("core_mask"),
+        )
+        best_score = max(best_score, float(score))
+    return max(0.0, min(1.0, best_score))
+
+
 def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Path) -> pd.DataFrame:
     """Resolve stable color-variant families using family-specific diagnostic pixels."""
     if df.empty or "Character" not in df.columns or "FixPlayerName" not in df.columns:
@@ -359,11 +387,13 @@ def refine_character_variant_families(df: pd.DataFrame, frames_folder: str | Pat
 
         ranked_scores = []
         for family_template in family_templates:
-            score = diagnostic_character_variant_score(
-                row_roi,
-                family_template["template_image"],
-                diagnostic_mask,
-            )
+            score = aligned_family_color_variant_score(row_roi, family_template)
+            if score <= 0.0:
+                score = diagnostic_character_variant_score(
+                    row_roi,
+                    family_template["template_image"],
+                    diagnostic_mask,
+                )
             ranked_scores.append(
                 (
                     str(family_template["character_name"]),
@@ -660,6 +690,7 @@ class ProgressPrinter:
         self.last_percent = -1
         self.last_print_time = 0.0
         self.start_time = time.perf_counter()
+        self.last_completion_time = self.start_time
         self.phase_peak = {
             "cpu_percent": None,
             "ram_used_gb": None,
@@ -668,6 +699,21 @@ class ProgressPrinter:
             "vram_used_gb": None,
             "vram_total_gb": None,
         }
+
+    def _format_status_line(self, done_text: str, percent_text: str, snapshot, detail: str = "") -> str:
+        cpu_text = f"{float(snapshot.cpu_percent):.0f}%" if snapshot.cpu_percent is not None else "-"
+        ram_text = "-"
+        if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
+            ram_text = f"{snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB"
+        fields = [
+            f"Done {done_text}",
+            f"Comp {percent_text}",
+            f"CPU {cpu_text:>4}",
+            f"RAM {ram_text}",
+        ]
+        if detail:
+            fields.append(detail)
+        return " | ".join(fields)
 
     def update(self, completed_units: int, detail: str = "") -> None:
         percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
@@ -679,13 +725,14 @@ class ProgressPrinter:
             should_print = True
         if not should_print:
             return
-        detail_suffix = f" | {detail}" if detail else ""
         snapshot = LOGGER.resources.sample()
         self._update_phase_peak(snapshot)
-        resource_text = LOGGER.resource_text(snapshot)
+        self.last_completion_time = now
+        done_text = LOGGER.video_value(f"{min(completed_units, self.total_units):02}/{self.total_units:02}", self.scope)
+        percent_text = LOGGER.video_value(f"{percent:3d}%", self.scope)
         LOGGER.log(
             self.scope,
-            f"{completed_units}/{self.total_units} ({percent}%) | {resource_text}{detail_suffix}",
+            self._format_status_line(done_text, percent_text, snapshot, detail),
             color_name="magenta",
         )
         self.last_percent = percent
@@ -698,11 +745,14 @@ class ProgressPrinter:
         percent = min(100, int((max(0, completed_units) / self.total_units) * 100))
         snapshot = LOGGER.resources.sample()
         self._update_phase_peak(snapshot)
-        resource_text = LOGGER.resource_text(snapshot)
-        detail_suffix = f" | {detail}" if detail else ""
+        heartbeat_detail = "Alive"
+        if detail:
+            heartbeat_detail = f"{heartbeat_detail} | {detail}"
+        done_text = LOGGER.video_value(f"{min(completed_units, self.total_units):02}/{self.total_units:02}", self.scope)
+        percent_text = LOGGER.video_value(f"{percent:3d}%", self.scope)
         LOGGER.log(
             self.scope,
-            f"{completed_units}/{self.total_units} ({percent}%) | {resource_text}{detail_suffix}",
+            self._format_status_line(done_text, percent_text, snapshot, heartbeat_detail),
             color_name="magenta",
         )
         self.last_print_time = now
@@ -790,7 +840,7 @@ def get_race_points(position: int, num_players: int) -> int:
         12: [15, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
         11: [13, 11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
         10: [12, 10, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-        9: [11, 9, 8, 6, 5, 4, 3, 2, 1, 0],
+        9: [11, 9, 7, 6, 5, 4, 3, 2, 1, 0],
         8: [10, 8, 6, 5, 4, 3, 2, 1, 0],
         7: [9, 7, 5, 4, 3, 2, 1, 0],
         6: [7, 5, 4, 3, 2, 1, 0],
@@ -2150,6 +2200,7 @@ def finalize_ocr_results(
     write_outputs: bool = True,
     emit_logs: bool = True,
 ):
+    finalize_start_time = time.time()
     df = pd.DataFrame(results, columns=[
         "RaceClass", "RaceIDNumber", "TrackName", "RacePosition", "PlayerName",
         "Character", "CharacterIndex", "CharacterMatchConfidence", "CharacterMatchMethod",
@@ -2171,7 +2222,16 @@ def finalize_ocr_results(
     if df.empty:
         if emit_logs:
             LOGGER.log("[OCR - Phase Complete]", "No races were extracted", color_name="yellow")
-        return {"duration_s": 0.0, "output_excel_path": None, "per_video_durations": {}, "df": df, "per_video_summary": {}}
+        return {
+            "duration_s": 0.0,
+            "output_excel_path": None,
+            "per_video_durations": {},
+            "df": df,
+            "per_video_summary": {},
+            "logic_duration_s": 0.0,
+            "export_duration_s": 0.0,
+            "finalize_duration_s": 0.0,
+        }
 
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
     df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
@@ -2219,6 +2279,7 @@ def finalize_ocr_results(
     df = append_identity_ambiguity_review_notes(df)
     df = apply_temporary_player_drop_scoring_policy(df)
     write_identity_trace_stage("final_identity_export_input", df)
+    logic_duration_s = max(0.0, time.time() - finalize_start_time)
 
     if write_outputs:
         completion_payload = build_completion_payload(
@@ -2243,6 +2304,9 @@ def finalize_ocr_results(
             "df": df,
             "progress_peak_lines": progress_peak_lines,
             "ocr_profiler_lines": ocr_profiler_lines,
+            "logic_duration_s": logic_duration_s,
+            "export_duration_s": float(completion_payload.get("export_duration_s", 0.0) or 0.0),
+            "finalize_duration_s": logic_duration_s + float(completion_payload.get("export_duration_s", 0.0) or 0.0),
         }
 
     summary_lines, per_video_summary = build_player_count_summary_lines(df, build_race_warning_messages, pluralize)
@@ -2256,6 +2320,9 @@ def finalize_ocr_results(
         "progress_peak_lines": progress_peak_lines,
         "ocr_profiler_lines": ocr_profiler_lines,
         "summary_lines": summary_lines,
+        "logic_duration_s": logic_duration_s,
+        "export_duration_s": 0.0,
+        "finalize_duration_s": logic_duration_s,
     }
 
 
@@ -2346,7 +2413,7 @@ def process_images_in_folder(
             done, pending = wait(pending, timeout=3.0, return_when=FIRST_COMPLETED)
             if not done:
                 if emit_logs:
-                    progress.heartbeat(completed_count, f"In flight: {len(pending)} | Still processing OCR races")
+                    progress.heartbeat(completed_count, f"Active {len(pending)}")
                 elif progress_callback is not None:
                     progress_callback(
                         {
@@ -2369,7 +2436,7 @@ def process_images_in_folder(
                 if race_result["summary"] is not None:
                     race_summaries.append(race_result["summary"])
                 if emit_logs:
-                    progress.update(completed_count, f"In flight: {len(pending)}")
+                    progress.update(completed_count, f"Active {len(pending)}")
                 elif progress_callback is not None:
                     progress_callback(
                         {
@@ -2389,19 +2456,37 @@ def process_images_in_folder(
                     if emit_logs:
                         LOGGER.log(
                             "",
-                            f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03} | Track: {matching_summary['track_name']}",
-                            color_name="magenta",
-                        )
-                        LOGGER.log(
-                            "",
-                            f"Players: race score {matching_summary['race_score_players']} | total score {matching_summary['total_score_players']}",
+                            (
+                                "Video "
+                                + LOGGER.video_value(str(race_class), race_class)
+                                + " | Race "
+                                + LOGGER.video_value(
+                                    f"{race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03}",
+                                    race_class,
+                                )
+                                + " | Track "
+                                + LOGGER.video_value(str(matching_summary["track_name"]), race_class)
+                                + " | Ply "
+                                + LOGGER.video_value(
+                                    f"{int(matching_summary['race_score_players']):02}/{int(matching_summary['total_score_players']):02}",
+                                    race_class,
+                                )
+                            ),
                             color_name="magenta",
                         )
                 else:
                     if emit_logs:
                         LOGGER.log(
                             "",
-                            f"Video: {race_class} | Race: {race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03}",
+                            (
+                                "Video "
+                                + LOGGER.video_value(str(race_class), race_class)
+                                + " | Race "
+                                + LOGGER.video_value(
+                                    f"{race_id_number:03}/{race_totals_by_class.get(race_class, race_id_number):03}",
+                                    race_class,
+                                )
+                            ),
                             color_name="magenta",
                         )
                 if matching_summary is not None:

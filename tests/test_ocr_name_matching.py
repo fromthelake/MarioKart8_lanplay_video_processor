@@ -90,6 +90,28 @@ class OcrNameMatchingTests(unittest.TestCase):
         self.assertEqual(list(race1["FixPlayerName"]), ["Floris", "floris"])
         self.assertEqual(list(race2["FixPlayerName"]), ["Floris", "floris"])
 
+    def test_standardize_player_names_allows_case_conflict_when_total_and_character_continue(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 3, "PlayerName": "Willemijn", "CharacterIndex": 62, "DetectedOldTotalScore": 62, "DetectedTotalScore": 72, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 4, "PlayerName": "Willemijn", "CharacterIndex": 5, "DetectedOldTotalScore": 57, "DetectedTotalScore": 66, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 2, "PlayerName": "willemijn", "CharacterIndex": 62, "DetectedOldTotalScore": 72, "DetectedTotalScore": 84, "ScoreLayoutId": "lan2_split_2p"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 11, "PlayerName": "Willemijn", "CharacterIndex": 5, "DetectedOldTotalScore": 66, "DetectedTotalScore": 68, "ScoreLayoutId": "lan2_split_2p"},
+            ]
+        )
+
+        with (
+            mock.patch("mk8_local_play.ocr_name_matching.find_score_bundle_anchor_path", return_value=None),
+            mock.patch("mk8_local_play.ocr_name_matching._prepare_visual_identity_features", return_value={}),
+        ):
+            standardized = standardize_player_names(df, output_folder=".", write_debug_linking_excel=False)
+
+        race1 = standardized.loc[standardized["RaceIDNumber"] == 1].sort_values("RacePosition")
+        race2 = standardized.loc[standardized["RaceIDNumber"] == 2].sort_values("RacePosition")
+
+        self.assertEqual(list(race1["FixPlayerName"]), ["Willemijn_1", "Willemijn_2"])
+        self.assertEqual(list(race2["FixPlayerName"]), ["Willemijn_1", "Willemijn_2"])
+
     def test_reconcile_connection_reset_identities_can_merge_two_identity_swaps(self):
         df = pd.DataFrame(
             [

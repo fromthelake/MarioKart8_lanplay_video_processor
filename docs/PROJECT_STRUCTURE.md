@@ -29,6 +29,7 @@ The project has two main phases:
     - track-name screen
     - race-number screen
   - uses the left-side row-box position prefix as the real score trigger
+  - can locally confirm borderline score candidates with a narrow offset search
   - race-number detection supports both the legacy and Dutch template/ROI variants
 - `mk8_local_play/extract_score_screen_selection.py`
   - takes rough score detections and chooses the best race-score and total-score frames
@@ -44,10 +45,12 @@ The project has two main phases:
 - `mk8_local_play/extract_text.py`
   - OCR/export orchestrator
   - groups screenshots into races and coordinates the OCR pipeline
+  - runs player-level character-family refinement with aligned alpha-cutout color scoring before the Mii fallback
 - `mk8_local_play/ocr_scoreboard_consensus.py`
   - reads several nearby score frames
   - combines them into one best guess
   - maps race-score rows to total-score rows
+  - performs the main aligned alpha-cutout character template matching
 - `mk8_local_play/ocr_name_matching.py`
   - fuzzy matching for noisy OCR player names across races
   - chooses a canonical player spelling for each row history
@@ -60,6 +63,7 @@ The project has two main phases:
 - `mk8_local_play/ocr_export.py`
   - writes the final workbook
   - builds the user-facing OCR completion summary
+  - reports player-count and identity-split investigation summaries
 - `mk8_local_play/ocr_common.py`
   - shared OCR frame and metadata helpers
 
@@ -120,6 +124,14 @@ The project has two main phases:
   - fuller benchmark flow for optimization passes
 - `tools/validate_outputs.py`
   - compare a current run against a saved baseline
+- `tools/evaluate_character_variant_families.py`
+  - inspect character-family rankings on saved character crops
+- `tools/evaluate_mii_memory_probe.py`
+  - inspect player-specific character memory candidates for Mii fallback research
+- `tools/probe_corrupt_remux_viability.py`
+  - compare corrupt-video preflight before and after a light remux
+- `tools/move_practical_duplicate_candidates_to_exclude.ps1`
+  - apply a reviewed duplicate-video move plan into `Input_Videos/exclude`
 
 ## Naming Rules Used In The Codebase
 

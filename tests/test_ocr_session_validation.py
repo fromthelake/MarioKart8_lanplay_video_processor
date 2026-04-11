@@ -18,6 +18,7 @@ from mk8_local_play.ocr_session_validation import (
 class OcrSessionValidationTests(unittest.TestCase):
     def test_race_points_support_small_player_tables_in_normal_and_low_res_paths(self):
         expected_tables = {
+            9: [11, 9, 7, 6, 5, 4, 3, 2, 1],
             6: [7, 5, 4, 3, 2, 1],
             5: [6, 4, 3, 2, 1],
             4: [4, 3, 2, 1],

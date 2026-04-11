@@ -618,7 +618,12 @@ def sample_video_readability(video_path: str, nominal_total_frames: int, stats: 
             }
         last_successful_probe_frame = int(frame_number)
     capture.release()
-    LOGGER.log("[Frame Count Scan]", f"sample probe passed for {display_video_name}: {len(probe_frames)} frames checked", color_name="green")
+    LOGGER.log(
+        "[Frame Count Scan]",
+        f"sample probe {LOGGER.bold(LOGGER.color('PASSED', 'green'))} for {display_video_name}: {len(probe_frames)} frames checked",
+        color_name="green",
+    )
+    LOGGER.blank_lines(1)
     _record_corrupt_check_duration(stats, overall_start)
     return result
 

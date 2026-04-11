@@ -281,6 +281,13 @@ Current character icon settings:
 
 Character template images are loaded from the asset folder using the character metadata catalog.
 
+Current character matching behavior:
+- the main score-row character matcher compares roster templates with aligned alpha-cutout scoring across calibrated local offsets
+- family refinement runs after OCR/identity standardization and before the conservative Mii fallback
+- family refinement uses aligned alpha-cutout color scoring on saved `2RaceScore` anchor crops, then applies a player-level dominance gate before changing exported characters
+- catalog-backed family groups currently include `Birdo`, `Yoshi`, `Shy Guy`, and `Inkling`
+- explicit close-cutout groups currently include `Peach`, `Cat Peach`, `Baby Peach`, `Pink Gold Peach`, `Peachette`, and `Mario`, `Metal Mario`, `Gold Mario`
+
 Low-resolution identity fallback notes:
 - low-resolution runs now keep position-confirmed visible rows even when OCR is too weak to supply a usable name or score
 - low-resolution character matching uses a fixed net ROI per row and `51x52` resized character templates
@@ -426,9 +433,10 @@ Low-resolution behavior:
 - after score OCR and identity standardization, a session-level Mii fallback can relabel a player to `Mii` when the saved `2RaceScore` frames show repeatedly weak, near-tied, unstable non-Mii character winners
 - those rows receive review reason `mii_fallback_unstable_character_match`
 - before the Mii fallback, character-family refinement can now stabilize variant families from saved `2RaceScore` anchors:
-  - catalog-backed color families such as `Birdo`, `Yoshi`, and `Shy Guy`
+  - catalog-backed color families such as `Birdo`, `Yoshi`, `Shy Guy`, and `Inkling`
   - the explicit `Peach` family: `Peach`, `Cat Peach`, `Baby Peach`, `Pink Gold Peach`, `Peachette`
-- the `Peach` family mask also uses silhouette-sensitive alpha-occupancy variance, so `Cat Peach` can win on ear/shape cues that the old color-only family mask discarded
+  - the explicit `Mario` family: `Mario`, `Metal Mario`, `Gold Mario`
+- family refinement uses aligned alpha-cutout color scoring rather than the older unaligned diagnostic HSV scoring in production
 - debug exports now expose the family comparison directly through `Character Family`, `Character Family Best`, `Character Family Best Coeff`, `Character Family Second`, `Character Family Second Coeff`, and `Character Family Margin`
 
 Validation / review behavior:
@@ -475,17 +483,20 @@ Other debug artifacts are grouped by video so the debug tree sorts like `Output_
 
 ## 10A. Console Reporting Baseline
 
-The console and GUI share the same runtime logger. Each new top-level run resets the timer and resource peaks, so elapsed timestamps always start at `00:00` for a fresh `Run`, `Selection`, or profiled run, even if the GUI has been open for a long time.
+The console and GUI share the same runtime logger. Each new top-level run resets the timer and resource peaks, so elapsed timestamps always start at `00:00:00` for a fresh `Run`, `Selection`, or profiled run, even if the GUI has been open for a long time.
 
 Current reporting conventions:
 - elapsed timestamps shown in log prefixes are wall-clock time since the current run started
-- `Run - Performance Summary` reports wall-clock phase durations
+- live progress rows use aligned `Comp` / `Done` fields and include CPU/RAM where useful for stall detection
+- confirmed scan detections are emitted in frame order as `Race ### | Track/Race/Score | Source HH:MM:SS | Frame #######`
+- `Run - Performance Summary` reports wall-clock run timing and split phase timings
 - OCR profiler sections explicitly label cumulative timing so they are not confused with wall-clock runtime
-- OCR progress lines show completed groups plus `In flight: N` while race bundles are still running
-- per-video run summaries use an aligned table for source length, processing time, race count, and player-count status
+- OCR progress lines show completed groups plus `Active N` while race bundles are still running
+- OCR finalization is split into OCR race reading, validation/export, validation logic, and workbook/CSV export timings
+- per-video run summaries use an aligned table for source length, wall time, stage-sum time, scan time, score time, OCR time, finalization time, processing rate, race count, player-count status, and review status
 - each selected video is assigned a stable neon console accent for the current run
 - labels remain neutral while video-owned values use that video's color across input summary, live scan, score selection, overlap OCR, and per-video summary rows
-- `Pipeline time avoided` is reported as the cumulative per-video elapsed wall-clock minus total run wall-clock, so users can see the benefit from overlap and parallelism directly
+- `Time saved by overlap` is reported as the cumulative per-video elapsed wall-clock minus total run wall-clock, so users can see the benefit from overlap and parallelism directly
 
 Current OCR profiling sections:
 - `OCR Call Matrix`
@@ -498,6 +509,7 @@ When changing console output, preserve the distinction between:
 - wall-clock run timing
 - cumulative OCR engine timing
 - cumulative observation-stage timing
+- validation/export finalization timing
 
 ## 10B. OCR Performance Guardrails
 

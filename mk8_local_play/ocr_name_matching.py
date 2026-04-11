@@ -254,7 +254,12 @@ def _build_match_candidates(identity_state, race_rows, visual_features, protecte
                 and visible_identity_name
                 and visible_row_name != visible_identity_name
             )
-            if protected_case_conflict and not row_is_unreliable:
+            protected_case_override = (
+                protected_case_conflict
+                and total_similarity >= 0.95
+                and character_similarity >= 1.0
+            )
+            if protected_case_conflict and not row_is_unreliable and not protected_case_override:
                 continue
             combined_score = (
                 (name_similarity * 0.50)

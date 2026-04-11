@@ -73,7 +73,7 @@ class TestExtractTextRefinements(TestCase):
                     "FixPlayerName": "Gianni",
                     "Character": "Pink Yoshi",
                     "CharacterIndex": 23,
-                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_aligned_color_refine",
                     "CharacterMatchRawBest": 86.8,
                     "CharacterMatchRawMargin": 2.1,
                     "CharacterMatchRawTop5Spread": 5.1,
@@ -84,7 +84,7 @@ class TestExtractTextRefinements(TestCase):
                     "FixPlayerName": "Gianni",
                     "Character": "Red Yoshi",
                     "CharacterIndex": 19,
-                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_aligned_color_refine",
                     "CharacterMatchRawBest": 85.9,
                     "CharacterMatchRawMargin": 1.9,
                     "CharacterMatchRawTop5Spread": 5.0,
@@ -95,7 +95,7 @@ class TestExtractTextRefinements(TestCase):
                     "FixPlayerName": "Gianni",
                     "Character": "Yellow Yoshi",
                     "CharacterIndex": 20,
-                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_diagnostic_refine",
+                    "CharacterMatchMethod": "aligned_alpha_cutout_template_local_search+variant_family_aligned_color_refine",
                     "CharacterMatchRawBest": 86.2,
                     "CharacterMatchRawMargin": 2.0,
                     "CharacterMatchRawTop5Spread": 5.3,
@@ -380,7 +380,7 @@ class TestExtractTextRefinements(TestCase):
 
         self.assertEqual(set(refined["Character"]), {"Green Shy Guy"})
         self.assertTrue(
-            all("variant_family_diagnostic_refine" in str(value) for value in refined["CharacterMatchMethod"])
+            all("variant_family_aligned_color_refine" in str(value) for value in refined["CharacterMatchMethod"])
         )
 
     def test_refine_character_variant_families_can_stabilize_cat_peach_family(self):
@@ -456,7 +456,7 @@ class TestExtractTextRefinements(TestCase):
 
         self.assertEqual(set(refined["Character"]), {"Cat Peach"})
         self.assertTrue(
-            all("variant_family_diagnostic_refine" in str(value) for value in refined["CharacterMatchMethod"])
+            all("variant_family_aligned_color_refine" in str(value) for value in refined["CharacterMatchMethod"])
         )
 
     def test_build_grouped_race_images_skips_incomplete_races_without_race_score(self):

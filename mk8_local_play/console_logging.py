@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import colorsys
@@ -56,6 +57,7 @@ class ResourceMonitor:
 
 
 class ConsoleLogger:
+    ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
     NEON_VIDEO_PALETTE = [
         (0, 255, 255),   # cyan
         (255, 64, 255),  # hot magenta
@@ -112,9 +114,67 @@ class ConsoleLogger:
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
         secs = total_seconds % 60
-        if hours > 0:
-            return f"{hours:02}:{minutes:02}:{secs:02}"
-        return f"{minutes:02}:{secs:02}"
+        return f"{hours:02}:{minutes:02}:{secs:02}"
+
+    @classmethod
+    def strip_ansi(cls, text: str) -> str:
+        return cls.ANSI_RE.sub("", str(text))
+
+    @classmethod
+    def visible_width(cls, text: str) -> int:
+        return len(cls.strip_ansi(text))
+
+    @classmethod
+    def fit_cell(cls, value: object, width: int, alignment: str = "left") -> str:
+        text = str(value)
+        plain = cls.strip_ansi(text)
+        if len(plain) > width:
+            if width <= 0:
+                return ""
+            if width <= 3:
+                text = plain[:width]
+            else:
+                text = plain[: max(0, width - 3)] + "..."
+            plain = cls.strip_ansi(text)
+        padding = max(0, width - len(plain))
+        if alignment == "right":
+            return (" " * padding) + text
+        return text + (" " * padding)
+
+    def render_table(
+        self,
+        headers: list[str],
+        rows: list[list[object]],
+        *,
+        alignments: list[str] | None = None,
+        indent: str = "  ",
+    ) -> list[str]:
+        if not rows:
+            return []
+        alignments = list(alignments or ["left"] * len(headers))
+        widths = [self.visible_width(header) for header in headers]
+        for row in rows:
+            for index, value in enumerate(row):
+                widths[index] = max(widths[index], self.visible_width(str(value)))
+        lines = [
+            indent + "  ".join(self.fit_cell(headers[index], widths[index], alignments[index]) for index in range(len(headers))),
+            indent + "  ".join("-" * widths[index] for index in range(len(headers))),
+        ]
+        for row in rows:
+            lines.append(
+                indent + "  ".join(self.fit_cell(row[index], widths[index], alignments[index]) for index in range(len(headers)))
+            )
+        return lines
+
+    def render_kv_table(self, rows: list[tuple[object, object]], *, indent: str = "  ") -> list[str]:
+        if not rows:
+            return []
+        return self.render_table(
+            ["Metric", "Value"],
+            [[metric, value] for metric, value in rows],
+            alignments=["left", "left"],
+            indent=indent,
+        )
 
     def color(self, text: str, color_name: str | None) -> str:
         if not self.use_color or not color_name:
@@ -179,7 +239,10 @@ class ConsoleLogger:
         self.log(scope, "", color_name=color_name)
         print("")
         for line in lines:
-            print(f"  {line}")
+            if not line:
+                print("")
+                continue
+            self.log("", f"  {line}")
         print("")
 
     def blank_lines(self, count: int = 1) -> None:
