@@ -118,6 +118,8 @@ The format is intentionally simple and human-readable.
 - First-race total recomputation now preserves validated non-zero `OldTotalScore` baselines for the players actually present instead of resetting the workbook totals back to zero.
 - Overlap OCR finalization no longer stalls a whole video when a tail race folder contains only `0TrackName` / `1RaceNumber` without an exported `2RaceScore` bundle.
 - Case-distinct players such as `Floris` and `floris` no longer collapse into one standardized identity chain when both appear in the same race.
+- Connection-reset relinking now includes a single-swap fallback: when exactly one identity disappears and one appears at the reset boundary, the post-reset identity is relinked by elimination even if OCR name/character hints are noisy.
+- Identity relinking now also fixes one-race OCR outliers: a transient low-confidence name that appears in exactly one race is reassigned to the stable identity that exists in both adjacent races when character continuity is compatible.
 - Score-layout anchor matching no longer incorrectly reports `rejected_as_blank` when one supported layout is blank but another layout matches strongly.
 - Session-level character relabeling now supports Mii fallback when one player repeatedly produces weak, near-tied, unstable non-Mii character matches across the saved `2RaceScore` frames.
 - Mii fallback rows now keep a short explicit review note: `mii_fallback_unstable_character_match`.

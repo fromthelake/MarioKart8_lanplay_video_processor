@@ -661,7 +661,18 @@ def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:
                 candidate_pairs.append((score, prior_identity, new_identity))
 
         if len(candidate_pairs) < len(appeared_players):
-            continue
+            # Fallback for the common reset edge-case where only one identity changes
+            # and OCR corrupts the post-reset display name (for example both rows read
+            # as "Bonno"). In that case, relink by elimination if timing is consistent.
+            if len(disappeared_players) == 1 and len(appeared_players) == 1:
+                prior_identity = next(iter(disappeared_players))
+                new_identity = next(iter(appeared_players))
+                prior_last_race = int(identity_stats[prior_identity]["last_race"])
+                new_first_race = int(identity_stats[new_identity]["first_race"])
+                if prior_last_race == reset_start_race - 1 and new_first_race == reset_start_race:
+                    candidate_pairs.append((-1.0, prior_identity, new_identity))
+            if len(candidate_pairs) < len(appeared_players):
+                continue
 
         assigned_priors = set()
         assigned_news = set()
@@ -699,6 +710,115 @@ def reconcile_connection_reset_identities(df: pd.DataFrame) -> pd.DataFrame:
                     if str(value).strip() else "connection_reset_relink"
                 )
             )
+
+    return merged_df
+
+
+def reconcile_single_race_identity_outliers(df: pd.DataFrame) -> pd.DataFrame:
+    """Relink one-race OCR identity outliers when adjacent races prove continuity."""
+    if df.empty:
+        return df.copy()
+    if "FixPlayerName" not in df.columns:
+        return df.copy()
+
+    merged_df = df.copy()
+    if "IdentityRelinkDetected" not in merged_df.columns:
+        merged_df["IdentityRelinkDetected"] = False
+    if "IdentityRelinkSummary" not in merged_df.columns:
+        merged_df["IdentityRelinkSummary"] = ""
+    if "IdentityRelinkNote" not in merged_df.columns:
+        merged_df["IdentityRelinkNote"] = ""
+
+    for race_class, race_group in merged_df.groupby("RaceClass", sort=False):
+        race_group = race_group.sort_values(["RaceIDNumber", "RacePosition"], kind="stable")
+        race_ids = sorted(int(value) for value in race_group["RaceIDNumber"].dropna().unique())
+        if len(race_ids) < 3:
+            continue
+
+        expected_players = int(race_group.groupby("RaceIDNumber").size().mode().iloc[0])
+        unique_players = set(str(value) for value in race_group["FixPlayerName"].dropna().unique())
+        if len(unique_players) <= expected_players:
+            continue
+
+        players_by_race: dict[int, set[str]] = {}
+        for race_id, race_rows in race_group.groupby("RaceIDNumber", sort=True):
+            players_by_race[int(race_id)] = set(str(value) for value in race_rows["FixPlayerName"].dropna().unique())
+
+        identity_rows = {
+            str(label): rows.sort_values(["RaceIDNumber", "RacePosition"], kind="stable")
+            for label, rows in race_group.groupby("FixPlayerName", sort=False)
+        }
+
+        for transient_label, rows in identity_rows.items():
+            transient_races = sorted(int(value) for value in rows["RaceIDNumber"].dropna().unique())
+            if len(transient_races) != 1 or len(rows.index) != 1:
+                continue
+            transient_race = transient_races[0]
+            if transient_race not in players_by_race:
+                continue
+            if transient_race == race_ids[0] or transient_race == race_ids[-1]:
+                continue
+
+            transient_index = race_ids.index(transient_race)
+            previous_race = race_ids[transient_index - 1]
+            next_race = race_ids[transient_index + 1]
+
+            previous_players = players_by_race.get(previous_race, set())
+            next_players = players_by_race.get(next_race, set())
+            current_players = players_by_race.get(transient_race, set())
+            if transient_label not in current_players:
+                continue
+
+            missing_candidates = (previous_players & next_players) - current_players
+            if len(missing_candidates) != 1:
+                continue
+            prior_label = next(iter(missing_candidates))
+
+            transient_row = rows.iloc[0]
+            if not _row_name_is_unreliable(transient_row):
+                continue
+
+            prior_character_values = [
+                int(value)
+                for value in identity_rows.get(prior_label, pd.DataFrame())["CharacterIndex"].dropna().tolist()
+                if pd.notna(value)
+            ]
+            prior_character = Counter(prior_character_values).most_common(1)[0][0] if prior_character_values else None
+            transient_character = transient_row.get("CharacterIndex")
+            if (
+                prior_character is not None
+                and pd.notna(transient_character)
+                and int(prior_character) != int(transient_character)
+            ):
+                continue
+
+            prior_raw_name = choose_canonical_name(identity_rows[prior_label]["PlayerName"].tolist()) or str(prior_label)
+            transient_raw_name = str(transient_row.get("PlayerName") or transient_label)
+            note = (
+                f'Identity relinked after one-race OCR outlier: matched transient player "{transient_raw_name}" '
+                f'to adjacent-race identity "{prior_label}" (previous OCR name "{prior_raw_name}").'
+            )
+            summary = f'One-race OCR name outlier: "{transient_raw_name}" -> "{prior_label}"'
+
+            merge_mask = (merged_df["RaceClass"] == race_class) & (merged_df["FixPlayerName"] == transient_label)
+            merged_df.loc[merge_mask, "FixPlayerName"] = prior_label
+            merged_df.loc[merge_mask, "IdentityLabel"] = prior_label
+            merged_df.loc[merge_mask, "IdentityRelinkDetected"] = True
+            merged_df.loc[merge_mask, "IdentityRelinkSummary"] = summary
+            merged_df.loc[merge_mask, "IdentityRelinkNote"] = note
+            merged_df.loc[merge_mask, "IdentityResolutionMethod"] = merged_df.loc[
+                merge_mask, "IdentityResolutionMethod"
+            ].map(
+                lambda value: (
+                    f"{str(value).strip()}+single_race_relink"
+                    if str(value).strip() else "single_race_relink"
+                )
+            )
+
+            # Keep in-memory sets in sync in case multiple transient identities are resolved.
+            current_players.discard(transient_label)
+            current_players.add(prior_label)
+            players_by_race[transient_race] = current_players
 
     return merged_df
 

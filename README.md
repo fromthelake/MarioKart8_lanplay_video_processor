@@ -32,6 +32,8 @@ Recent scoring and validation behavior:
 - first-race scoring recompute now preserves a valid non-zero `OldTotalScore` baseline for the players actually present instead of resetting those totals back to zero
 - overlap OCR finalization now ignores incomplete race folders that never exported a `2RaceScore` bundle, so partially scanned tail races no longer block a whole video's workbook rows from appearing in full multi-video runs
 - identity standardization now preserves visibly distinct case-only names when they coexist in the same race, so players such as `Floris` and `floris` are not merged into one identity chain
+- connection-reset relinking now has a single-swap fallback, so if exactly one player identity changes at reset time it can still relink by elimination even when OCR names are noisy
+- one-race low-confidence OCR outlier names are now relinked to the stable adjacent-race identity when continuity proves they are the same player
 - recursive runs now skip any videos under a folder named `corrupt` or `exclude`
 - final-race duplicate-name ambiguity notes now only mark the rows that are still truly interchangeable, and the note names the conflicting identity label(s)
 - score detection now uses the left-side row-box position signal for the required visible-player prefix instead of relying on a standalone score-strip template match

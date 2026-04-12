@@ -54,6 +54,7 @@ from .ocr_name_matching import (
     merge_fragmented_identity_aliases,
     preprocess_name,
     reconcile_connection_reset_identities,
+    reconcile_single_race_identity_outliers,
     resolve_duplicate_name_identity_chains,
     standardize_player_names,
     weighted_similarity,
@@ -2262,6 +2263,8 @@ def finalize_ocr_results(
     write_identity_trace_stage("after_duplicate_name_chain_resolution", df)
     df = merge_fragmented_identity_aliases(df)
     write_identity_trace_stage("after_alias_merge", df)
+    df = reconcile_single_race_identity_outliers(df)
+    write_identity_trace_stage("after_single_race_relink", df)
     frames_folder = os.path.join(PROJECT_ROOT, 'Output_Results', 'Frames')
     df = annotate_raw_character_match_metrics(df, frames_folder)
     df = refine_black_blue_character_variants(df, frames_folder)

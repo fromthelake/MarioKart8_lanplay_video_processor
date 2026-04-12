@@ -5,6 +5,7 @@ from unittest import mock
 
 from mk8_local_play.ocr_name_matching import (
     append_identity_ambiguity_review_notes,
+    reconcile_single_race_identity_outliers,
     reconcile_connection_reset_identities,
     resolve_duplicate_name_identity_chains,
     standardize_player_names,
@@ -128,6 +129,47 @@ class OcrNameMatchingTests(unittest.TestCase):
         self.assertEqual(list(race13["FixPlayerName"]), ["ñiæłß", "Caitlin"])
         self.assertTrue(all(bool(value) for value in race13["IdentityRelinkDetected"]))
         self.assertTrue(all("connection_reset_relink" in str(value) for value in race13["IdentityResolutionMethod"]))
+
+    def test_reconcile_connection_reset_identities_single_swap_fallback_when_name_is_corrupted(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "demo", "RaceIDNumber": 7, "RacePosition": 4, "FixPlayerName": "Bonno_1", "IdentityLabel": "Bonno_1", "PlayerName": "Bonno", "CharacterIndex": 11, "SessionResetDetected": False, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 7, "RacePosition": 11, "FixPlayerName": "Willem", "IdentityLabel": "Willem", "PlayerName": "Willem", "CharacterIndex": 14, "SessionResetDetected": False, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 8, "RacePosition": 9, "FixPlayerName": "Bonno_1", "IdentityLabel": "Bonno_1", "PlayerName": "Bonno", "CharacterIndex": 11, "SessionResetDetected": True, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 8, "RacePosition": 12, "FixPlayerName": "Bonno_2", "IdentityLabel": "Bonno_2", "PlayerName": "Bonno", "CharacterIndex": 8, "SessionResetDetected": True, "IdentityResolutionMethod": "new_identity"},
+                {"RaceClass": "demo", "RaceIDNumber": 9, "RacePosition": 2, "FixPlayerName": "Bonno_1", "IdentityLabel": "Bonno_1", "PlayerName": "Bonno", "CharacterIndex": 11, "SessionResetDetected": False, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 9, "RacePosition": 10, "FixPlayerName": "Bonno_2", "IdentityLabel": "Bonno_2", "PlayerName": "Bonno", "CharacterIndex": 8, "SessionResetDetected": False, "IdentityResolutionMethod": "name+total_hint"},
+            ]
+        )
+
+        updated = reconcile_connection_reset_identities(df)
+
+        self.assertFalse((updated["FixPlayerName"] == "Bonno_2").any())
+        relinked_rows = updated.loc[updated["RaceIDNumber"] >= 8].sort_values(["RaceIDNumber", "RacePosition"])
+        relinked_willem = relinked_rows.loc[relinked_rows["RacePosition"].isin([10, 12])]
+        self.assertEqual(list(relinked_willem["FixPlayerName"]), ["Willem", "Willem"])
+        self.assertTrue(all(bool(value) for value in relinked_willem["IdentityRelinkDetected"]))
+        self.assertTrue(all("connection_reset_relink" in str(value) for value in relinked_willem["IdentityResolutionMethod"]))
+
+    def test_reconcile_single_race_identity_outliers_relinks_transient_unreliable_name(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 1, "FixPlayerName": "Alex", "IdentityLabel": "Alex", "PlayerName": "Alex", "CharacterIndex": 10, "NameConfidence": 98, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 1, "RacePosition": 2, "FixPlayerName": "Jens", "IdentityLabel": "Jens", "PlayerName": "Jens", "CharacterIndex": 62, "NameConfidence": 98, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 1, "FixPlayerName": "Alex", "IdentityLabel": "Alex", "PlayerName": "Alex", "CharacterIndex": 10, "NameConfidence": 98, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 2, "RacePosition": 2, "FixPlayerName": "4", "IdentityLabel": "4", "PlayerName": "4", "CharacterIndex": 62, "NameConfidence": 40, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "new_identity"},
+                {"RaceClass": "demo", "RaceIDNumber": 3, "RacePosition": 1, "FixPlayerName": "Alex", "IdentityLabel": "Alex", "PlayerName": "Alex", "CharacterIndex": 10, "NameConfidence": 98, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "name+visual"},
+                {"RaceClass": "demo", "RaceIDNumber": 3, "RacePosition": 2, "FixPlayerName": "Jens", "IdentityLabel": "Jens", "PlayerName": "Jens", "CharacterIndex": 62, "NameConfidence": 98, "NameAllowedCharRatio": 100, "IdentityResolutionMethod": "name+visual"},
+            ]
+        )
+
+        updated = reconcile_single_race_identity_outliers(df)
+
+        self.assertFalse((updated["FixPlayerName"] == "4").any())
+        race2_row = updated.loc[(updated["RaceIDNumber"] == 2) & (updated["RacePosition"] == 2)].iloc[0]
+        self.assertEqual(str(race2_row["FixPlayerName"]), "Jens")
+        self.assertTrue(bool(race2_row["IdentityRelinkDetected"]))
+        self.assertIn("single_race_relink", str(race2_row["IdentityResolutionMethod"]))
 
 
 if __name__ == "__main__":
