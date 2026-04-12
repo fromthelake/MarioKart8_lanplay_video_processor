@@ -16,6 +16,7 @@ Current output set for a normal run:
 Debug outputs can be enabled for a scoped headless run with:
 - `.\.venv\Scripts\mk8-local-play.exe --selection --debug --video <video-name>`
 - `.\.venv\Scripts\mk8-local-play.exe --selection --subfolders --videos "2026-03-28/VideoA.mp4" "2026-03-28/VideoB.mp4"`
+- `.\.venv\Scripts\mk8-local-play.exe --ocr --selection --subfolders --videos "Mario Kart Toernooien/Level Level/2023-10-12/Toernooi 1 - Ronde 2 - Divisie 1.mp4" --ultra_low_res --debug`
 
 When `--debug` is enabled, the run also writes:
 - `Debug/*_Tournament_Results_Debug.xlsx`
@@ -34,6 +35,7 @@ Recent scoring and validation behavior:
 - identity standardization now preserves visibly distinct case-only names when they coexist in the same race, so players such as `Floris` and `floris` are not merged into one identity chain
 - connection-reset relinking now has a single-swap fallback, so if exactly one player identity changes at reset time it can still relink by elimination even when OCR names are noisy
 - one-race low-confidence OCR outlier names are now relinked to the stable adjacent-race identity when continuity proves they are the same player
+- headless runs now support experimental `--ultra_low_res` mode for explicitly selected videos, forcing those race classes through the existing low-res/ultra-low-res identity path without changing default behavior
 - recursive runs now skip any videos under a folder named `corrupt` or `exclude`
 - final-race duplicate-name ambiguity notes now only mark the rows that are still truly interchangeable, and the note names the conflicting identity label(s)
 - score detection now uses the left-side row-box position signal for the required visible-player prefix instead of relying on a standalone score-strip template match

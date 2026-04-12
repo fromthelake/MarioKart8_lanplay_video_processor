@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from mk8_local_play.extract_text import (
+    apply_forced_ultra_low_res_override,
     apply_mii_character_fallback,
     build_character_variant_family_diagnostic_mask,
     build_grouped_race_images,
@@ -19,6 +20,21 @@ from mk8_local_play.extract_text import (
 
 
 class TestExtractTextRefinements(TestCase):
+    def test_apply_forced_ultra_low_res_override_sets_is_low_res_for_forced_classes(self):
+        df = pd.DataFrame(
+            [
+                {"RaceClass": "VideoA", "IsLowRes": False},
+                {"RaceClass": "VideoB", "IsLowRes": False},
+                {"RaceClass": "VideoC", "IsLowRes": True},
+            ]
+        )
+        with patch("mk8_local_play.extract_text.forced_ultra_low_res_race_classes", return_value={"VideoA", "VideoC"}):
+            updated = apply_forced_ultra_low_res_override(df)
+
+        self.assertTrue(bool(updated.loc[updated["RaceClass"] == "VideoA", "IsLowRes"].iloc[0]))
+        self.assertFalse(bool(updated.loc[updated["RaceClass"] == "VideoB", "IsLowRes"].iloc[0]))
+        self.assertTrue(bool(updated.loc[updated["RaceClass"] == "VideoC", "IsLowRes"].iloc[0]))
+
     def test_apply_mii_character_fallback_rejects_unstable_closed_set_identity(self):
         df = pd.DataFrame(
             [

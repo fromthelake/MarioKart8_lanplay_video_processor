@@ -79,6 +79,42 @@ def configure_headless_debug_outputs(enabled: bool | None) -> None:
     os.environ["MK8_WRITE_DEBUG_LINKING_EXCEL"] = value
 
 
+def _normalize_ultra_low_res_selected_classes(
+    selected_video: str | list[str] | None,
+    *,
+    include_subfolders: bool,
+) -> list[str]:
+    if selected_video is None or (isinstance(selected_video, str) and not selected_video.strip()):
+        raise RuntimeError("--ultra_low_res requires explicit video selection via --video or --videos.")
+    if isinstance(selected_video, (list, tuple)) and not [str(item).strip() for item in selected_video if str(item).strip()]:
+        raise RuntimeError("--ultra_low_res requires explicit video selection via --video or --videos.")
+    video_files = selected_input_video_files(
+        selected_video=selected_video,
+        include_subfolders=include_subfolders,
+    )
+    if not video_files:
+        raise RuntimeError("--ultra_low_res could not resolve selected video(s).")
+    return selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
+
+
+def configure_ultra_low_res_override(
+    selected_video: str | list[str] | None,
+    *,
+    include_subfolders: bool,
+    enabled: bool,
+) -> str | None:
+    if not enabled:
+        os.environ.pop("MK8_ULTRA_LOW_RES_RACE_CLASSES", None)
+        return None
+    selected_classes = _normalize_ultra_low_res_selected_classes(
+        selected_video,
+        include_subfolders=include_subfolders,
+    )
+    value = ",".join(selected_classes)
+    os.environ["MK8_ULTRA_LOW_RES_RACE_CLASSES"] = value
+    return value
+
+
 def _workflow_sorted_source_summaries(video_files: list[Path], *, include_subfolders: bool) -> tuple[list[tuple[str, str]], float]:
     workflow_plan, total_source_seconds = extract_frames.build_workflow_video_plan(
         video_files,
@@ -679,9 +715,15 @@ def run_ocr(
     include_subfolders: bool = False,
     selection_mode: bool = False,
     debug: bool | None = None,
+    ultra_low_res: bool = False,
 ) -> None:
     configure_headless_debug_outputs(debug)
     ensure_runtime_or_raise()
+    forced_ultra_low_res = configure_ultra_low_res_override(
+        selected_video,
+        include_subfolders=include_subfolders,
+        enabled=ultra_low_res,
+    )
     extra_args = []
     if selection_mode:
         video_files = selected_input_video_files(
@@ -702,6 +744,8 @@ def run_ocr(
             if include_subfolders else Path(selected_video).stem
         )
         extra_args.extend(["--video", selected_identifier])
+    if forced_ultra_low_res:
+        LOGGER.log("[OCR - Settings]", f"Forced ultra-low-res classes: {forced_ultra_low_res}", color_name="yellow")
     run_python_module(OCR_MODULE, extra_args=extra_args)
 
 
@@ -1732,9 +1776,15 @@ def run_all(
     *,
     include_subfolders: bool = False,
     debug: bool | None = None,
+    ultra_low_res: bool = False,
 ) -> None:
     LOGGER.reset()
     configure_headless_debug_outputs(debug)
+    forced_ultra_low_res = configure_ultra_low_res_override(
+        selected_video,
+        include_subfolders=include_subfolders,
+        enabled=ultra_low_res,
+    )
     ensure_runtime_or_raise()
     from . import extract_frames, extract_text
     runtime_config = load_app_config()
@@ -1745,6 +1795,8 @@ def run_all(
 
     mode_label = "Run selection" if selection_mode else "Run all"
     LOGGER.log("[Run - Phase Start]", mode_label, color_name="cyan")
+    if forced_ultra_low_res:
+        LOGGER.log("[Run - Settings]", f"Forced ultra-low-res classes: {forced_ultra_low_res}", color_name="yellow")
     video_files = selected_input_video_files(selected_video=selected_video, include_subfolders=include_subfolders)
     overlap_active = overlap_enabled and runtime_easyocr_gpu_enabled(runtime_config) and len(video_files) > 1
     if ocr_trace_enabled():
@@ -1960,6 +2012,7 @@ def run_profiled_all(
     include_subfolders: bool = False,
     selection_mode: bool = False,
     debug: bool | None = None,
+    ultra_low_res: bool = False,
 ) -> None:
     LOGGER.reset()
     profiler = cProfile.Profile()
@@ -1970,6 +2023,7 @@ def run_profiled_all(
             include_subfolders=include_subfolders,
             selection_mode=selection_mode,
             debug=debug,
+            ultra_low_res=ultra_low_res,
         )
     finally:
         profiler.disable()
@@ -2747,6 +2801,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subfolders", action="store_true", help="Include supported videos from subfolders under Input_Videos during headless runs")
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--debug", action="store_true", help="Enable debug CSV/images/linking outputs for this headless run")
+    parser.add_argument("--ultra_low_res", action="store_true", help="Experimental: force selected videos through low-res identity pipeline")
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     parser.add_argument(
         "--videos",
@@ -2780,6 +2835,7 @@ def main() -> int:
             include_subfolders=args.subfolders,
             selection_mode=args.selection,
             debug=args.debug,
+            ultra_low_res=args.ultra_low_res,
         )
         return 0
     if args.all:
@@ -2788,9 +2844,15 @@ def main() -> int:
                 selected_video=selected_videos,
                 include_subfolders=args.subfolders,
                 debug=args.debug,
+                ultra_low_res=args.ultra_low_res,
             )
         else:
-            run_all(selected_video=selected_videos, include_subfolders=args.subfolders, debug=args.debug)
+            run_all(
+                selected_video=selected_videos,
+                include_subfolders=args.subfolders,
+                debug=args.debug,
+                ultra_low_res=args.ultra_low_res,
+            )
         return 0
     if args.selection:
         if args.profile:
@@ -2799,9 +2861,16 @@ def main() -> int:
                 include_subfolders=args.subfolders,
                 selection_mode=True,
                 debug=args.debug,
+                ultra_low_res=args.ultra_low_res,
             )
         else:
-            run_all(selected_video=selected_videos, selection_mode=True, include_subfolders=args.subfolders, debug=args.debug)
+            run_all(
+                selected_video=selected_videos,
+                selection_mode=True,
+                include_subfolders=args.subfolders,
+                debug=args.debug,
+                ultra_low_res=args.ultra_low_res,
+            )
         return 0
     return launch_gui()
 

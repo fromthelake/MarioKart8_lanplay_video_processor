@@ -579,6 +579,25 @@ def ocr_trace_label() -> str:
     return os.environ.get("MK8_OCR_TRACE_LABEL", "").strip() or "adhoc"
 
 
+def forced_ultra_low_res_race_classes() -> set[str]:
+    raw_value = os.environ.get("MK8_ULTRA_LOW_RES_RACE_CLASSES", "").strip()
+    if not raw_value:
+        return set()
+    return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
+def apply_forced_ultra_low_res_override(df: pd.DataFrame) -> pd.DataFrame:
+    forced_classes = forced_ultra_low_res_race_classes()
+    if df.empty or not forced_classes or "RaceClass" not in df.columns:
+        return df
+    result = df.copy()
+    forced_mask = result["RaceClass"].isin(forced_classes)
+    if not forced_mask.any():
+        return result
+    result.loc[forced_mask, "IsLowRes"] = True
+    return result
+
+
 def ocr_trace_mode() -> str:
     return os.environ.get("MK8_OCR_TRACE_MODE", "").strip() or "unspecified"
 
@@ -2237,6 +2256,8 @@ def finalize_ocr_results(
     df['CupName'] = df['TrackName'].apply(lambda name: get_cup_name(name, tracks_list))
     df['TrackID'] = df['TrackName'].apply(lambda name: next((track[0] for track in tracks_list if track[1] == name), None))
     write_identity_trace_stage("raw_ocr_input", df)
+    df = apply_forced_ultra_low_res_override(df)
+    write_identity_trace_stage("after_ultra_low_res_override", df)
 
     low_res_mask = df["IsLowRes"].fillna(False).astype(bool)
     standardized_frames = []
@@ -2376,6 +2397,7 @@ def process_images_in_folder(
             }
         )
     if emit_logs:
+        forced_ultra_low_res_classes = forced_ultra_low_res_race_classes()
         LOGGER.log("[OCR - Read text from image - Phase Start]", "", color_name="magenta")
         LOGGER.log(
             "[OCR - Settings]",
@@ -2387,6 +2409,12 @@ def process_images_in_folder(
                 "[OCR - Settings]",
                 f"Selection scope: {len(selected_race_classes)} video classes",
                 color_name="magenta",
+            )
+        if forced_ultra_low_res_classes:
+            LOGGER.log(
+                "[OCR - Settings]",
+                f"Forced ultra-low-res classes: {', '.join(sorted(forced_ultra_low_res_classes))}",
+                color_name="yellow",
             )
     results = []
     race_summaries = []

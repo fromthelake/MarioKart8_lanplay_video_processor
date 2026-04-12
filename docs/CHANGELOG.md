@@ -36,6 +36,7 @@ The format is intentionally simple and human-readable.
   - `Output_Results/Debug/Score_Frames/.gitkeep`
 
 ### Changed
+- Headless OCR runs now support an experimental `--ultra_low_res` mode for explicitly selected videos, forcing only those race classes through the existing low-res/ultra-low-res identity pipeline without changing default run behavior.
 - `Transition + stable-hint` is now the default TotalScore timing baseline. The second pass first lands in a small learned transition window, then probes early/late stable-total clusters before falling back to the old broad search path. This keeps the old safety net, but cut the reviewed top-30 benchmark from `01:03:19` to `00:37:54`.
 - Character family refinement now uses aligned alpha-cutout color scoring on saved `2RaceScore` anchor crops instead of the older unaligned diagnostic HSV scorer in production. It covers catalog-backed `Birdo`, `Yoshi`, `Shy Guy`, and `Inkling` families, plus explicit close-cutout groups for `Peach` / `Pink Gold Peach` and `Mario` / `Metal Mario` / `Gold Mario`.
 - Debug exports now include explicit character-family review fields: `Character Family`, `Character Family Best`, `Character Family Best Coeff`, `Character Family Second`, `Character Family Second Coeff`, and `Character Family Margin`.

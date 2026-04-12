@@ -116,6 +116,44 @@ class MainSelectionHelpersTests(unittest.TestCase):
         self.assertTrue(args.all)
         self.assertTrue(args.subfolders)
 
+    def test_parse_args_accepts_ultra_low_res_flag(self):
+        with mock.patch("sys.argv", ["mk8", "--ocr", "--ultra_low_res", "--video", "a.mp4"]):
+            args = main.parse_args()
+        self.assertTrue(args.ocr)
+        self.assertTrue(args.ultra_low_res)
+        self.assertEqual(args.video, "a.mp4")
+
+    def test_configure_ultra_low_res_override_requires_explicit_selection(self):
+        with self.assertRaisesRegex(RuntimeError, "--ultra_low_res requires explicit video selection"):
+            main.configure_ultra_low_res_override(
+                selected_video=None,
+                include_subfolders=True,
+                enabled=True,
+            )
+
+    def test_configure_ultra_low_res_override_sets_selected_race_classes(self):
+        with (
+            mock.patch.object(main, "selected_input_video_files", return_value=[Path("Input_Videos/demo.mp4")]),
+            mock.patch.object(main, "selected_race_classes_for_videos", return_value=["RaceClassDemo"]),
+        ):
+            value = main.configure_ultra_low_res_override(
+                selected_video="demo.mp4",
+                include_subfolders=False,
+                enabled=True,
+            )
+        self.assertEqual(value, "RaceClassDemo")
+        self.assertEqual(main.os.environ.get("MK8_ULTRA_LOW_RES_RACE_CLASSES"), "RaceClassDemo")
+
+    def test_configure_ultra_low_res_override_disabled_clears_env(self):
+        main.os.environ["MK8_ULTRA_LOW_RES_RACE_CLASSES"] = "RaceClassDemo"
+        value = main.configure_ultra_low_res_override(
+            selected_video=None,
+            include_subfolders=False,
+            enabled=False,
+        )
+        self.assertIsNone(value)
+        self.assertIsNone(main.os.environ.get("MK8_ULTRA_LOW_RES_RACE_CLASSES"))
+
     def test_normalize_export_image_format_defaults_to_png_and_accepts_jpeg_aliases(self):
         self.assertEqual(normalize_export_image_format(None), "png")
         self.assertEqual(normalize_export_image_format("png"), "png")
