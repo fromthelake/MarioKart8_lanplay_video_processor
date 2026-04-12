@@ -4,6 +4,7 @@ import re
 import time
 import threading
 import heapq
+import unicodedata
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -331,7 +332,14 @@ def _eligible_player_character_priors(
 
 
 def player_identity_key(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+    normalized = normalize_name_key(name)
+    if not normalized:
+        return ""
+    accent_folded = "".join(
+        ch for ch in unicodedata.normalize("NFKD", normalized)
+        if unicodedata.category(ch) != "Mn"
+    )
+    return "".join(ch for ch in accent_folded if ch.isalnum())
 
 
 def is_risky_character_family(character_name: str) -> bool:

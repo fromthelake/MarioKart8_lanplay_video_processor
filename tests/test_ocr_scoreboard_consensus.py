@@ -9,6 +9,12 @@ from mk8_local_play.ocr_scoreboard_consensus import map_total_rows_to_race_rows
 
 
 class OcrScoreboardConsensusTests(unittest.TestCase):
+    def test_player_identity_key_folds_accents(self):
+        self.assertEqual(
+            ocr_scoreboard_consensus.player_identity_key("Erík"),
+            ocr_scoreboard_consensus.player_identity_key("Erik"),
+        )
+
     def test_aligned_character_match_score_recovers_small_translation(self):
         template = np.zeros((48, 48, 3), dtype=np.uint8)
         template[12:36, 18:30] = (0, 0, 255)
