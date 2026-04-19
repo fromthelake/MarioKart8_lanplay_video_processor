@@ -74,6 +74,8 @@ Short setup guide for Windows.
 
 Linux or macOS? Read [docs/LINUX_MACOS_SETUP.md](./docs/LINUX_MACOS_SETUP.md).
 
+Scan/debug tooling reference: [docs/SCAN_DEBUG_TOOLS.md](./docs/SCAN_DEBUG_TOOLS.md).
+
 GitHub:
 - https://github.com/fromthelake/MarioKart8_lanplay_video_processor
 

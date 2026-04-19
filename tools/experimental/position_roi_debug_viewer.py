@@ -39,8 +39,8 @@ from mk8_local_play.ocr_scoreboard_consensus import (
     POSITION_ROW_PADDING_X,
     _template_match_score,
     build_position_signal_metrics,
-    extract_position_row_match_crops,
-    load_position_row_templates,
+    extract_position_tile_match_crops,
+    load_position_row_template_tiles,
     position_strip_roi,
     position_template_row_windows,
     process_image,
@@ -327,10 +327,10 @@ class PositionRoiDebugViewer:
     def _evaluate_score_gate(self, upscaled) -> dict:
         stats = defaultdict(float)
         gate_result = _initial_scan_score_gate(upscaled, stats)
-        templates = load_position_row_templates()
+        templates_by_variant = load_position_row_template_tiles()
         row_details = []
         for layout in all_score_layouts():
-            position_rows = extract_position_row_match_crops(
+            position_rows = extract_position_tile_match_crops(
                 upscaled,
                 score_layout_id=layout.layout_id,
                 max_rows=max(1, int(INITIAL_SCAN_GATE_ROW_END)),
@@ -338,7 +338,13 @@ class PositionRoiDebugViewer:
             for row_number in range(int(INITIAL_SCAN_GATE_ROW_START), int(INITIAL_SCAN_GATE_ROW_END) + 1):
                 if row_number > len(position_rows):
                     continue
-                coeff = float(_template_match_score(position_rows[row_number - 1], templates[row_number - 1]))
+                coeff = 0.0
+                row_index = int(row_number) - 1
+                for variant_tiles in templates_by_variant.values():
+                    if row_index >= len(variant_tiles):
+                        continue
+                    template_tile, _alpha = variant_tiles[row_index]
+                    coeff = max(float(coeff), float(_template_match_score(position_rows[row_index], template_tile)))
                 row_details.append(
                     {
                         "layout_id": str(layout.layout_id),
