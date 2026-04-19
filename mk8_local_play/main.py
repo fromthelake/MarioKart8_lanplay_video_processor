@@ -85,15 +85,15 @@ def _normalize_ultra_low_res_selected_classes(
     include_subfolders: bool,
 ) -> list[str]:
     if selected_video is None or (isinstance(selected_video, str) and not selected_video.strip()):
-        raise RuntimeError("--ultra_low_res requires explicit video selection via --video or --videos.")
+        raise RuntimeError("--low_res requires explicit video selection via --video or --videos.")
     if isinstance(selected_video, (list, tuple)) and not [str(item).strip() for item in selected_video if str(item).strip()]:
-        raise RuntimeError("--ultra_low_res requires explicit video selection via --video or --videos.")
+        raise RuntimeError("--low_res requires explicit video selection via --video or --videos.")
     video_files = selected_input_video_files(
         selected_video=selected_video,
         include_subfolders=include_subfolders,
     )
     if not video_files:
-        raise RuntimeError("--ultra_low_res could not resolve selected video(s).")
+        raise RuntimeError("--low_res could not resolve selected video(s).")
     return selected_race_classes_for_videos(video_files, include_subfolders=include_subfolders)
 
 
@@ -2801,7 +2801,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--subfolders", action="store_true", help="Include supported videos from subfolders under Input_Videos during headless runs")
     parser.add_argument("--profile", action="store_true", help="Write a whole-process performance profile during --all")
     parser.add_argument("--debug", action="store_true", help="Enable debug CSV/images/linking outputs for this headless run")
-    parser.add_argument("--ultra_low_res", action="store_true", help="Experimental: force selected videos through low-res identity pipeline")
+    parser.add_argument(
+        "--low_res",
+        action="store_true",
+        dest="ultra_low_res",
+        help="Experimental: force selected videos through low-res identity pipeline",
+    )
+    parser.add_argument(
+        "--ultra_low_res",
+        action="store_true",
+        dest="ultra_low_res",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
     parser.add_argument(
         "--videos",

@@ -116,7 +116,14 @@ class MainSelectionHelpersTests(unittest.TestCase):
         self.assertTrue(args.all)
         self.assertTrue(args.subfolders)
 
-    def test_parse_args_accepts_ultra_low_res_flag(self):
+    def test_parse_args_accepts_low_res_flag(self):
+        with mock.patch("sys.argv", ["mk8", "--ocr", "--low_res", "--video", "a.mp4"]):
+            args = main.parse_args()
+        self.assertTrue(args.ocr)
+        self.assertTrue(args.ultra_low_res)
+        self.assertEqual(args.video, "a.mp4")
+
+    def test_parse_args_keeps_ultra_low_res_alias_for_back_compat(self):
         with mock.patch("sys.argv", ["mk8", "--ocr", "--ultra_low_res", "--video", "a.mp4"]):
             args = main.parse_args()
         self.assertTrue(args.ocr)
@@ -124,7 +131,7 @@ class MainSelectionHelpersTests(unittest.TestCase):
         self.assertEqual(args.video, "a.mp4")
 
     def test_configure_ultra_low_res_override_requires_explicit_selection(self):
-        with self.assertRaisesRegex(RuntimeError, "--ultra_low_res requires explicit video selection"):
+        with self.assertRaisesRegex(RuntimeError, "--low_res requires explicit video selection"):
             main.configure_ultra_low_res_override(
                 selected_video=None,
                 include_subfolders=True,
