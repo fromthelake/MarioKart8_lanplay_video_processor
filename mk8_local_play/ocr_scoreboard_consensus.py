@@ -52,8 +52,10 @@ POSITION_ROW_PADDING_X = 1
 POSITION_ROW_PADDING_TOP = 1
 POSITION_ROW_PADDING_BOTTOM = 4
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
-POSITION_PRESENT_COEFF_THRESHOLD = 0.60
-POSITION_PRESENT_ROW1_COEFF_THRESHOLD = 0.40
+POSITION_PRESENT_COEFF_THRESHOLD = float(os.environ.get("MK8_POSITION_PRESENT_COEFF_THRESHOLD", "0.55"))
+POSITION_PRESENT_ROW1_COEFF_THRESHOLD = float(os.environ.get("MK8_POSITION_PRESENT_ROW1_COEFF_THRESHOLD", "0.30"))
+LOW_RES_POSITION_PRESENT_COEFF_THRESHOLD = float(os.environ.get("MK8_LOW_RES_POSITION_PRESENT_COEFF_THRESHOLD", "0.35"))
+LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD = float(os.environ.get("MK8_LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD", "0.35"))
 POSITION_TEMPLATE_BEAM_WIDTH = max(1, int(os.environ.get("MK8_POSITION_TEMPLATE_BEAM_WIDTH", "3")))
 POSITION_TEMPLATE_TILE_WIDTH = 52
 POSITION_TEMPLATE_TILE_HEIGHT = 52
@@ -1882,7 +1884,12 @@ def build_row_presence_metrics(names: List[str], confidence_scores: List[int], r
     return metrics
 
 
-def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]], occupancy_threshold: float = 1.0) -> int:
+def determine_position_guided_visible_rows(
+    row_metrics: List[Dict[str, object]],
+    occupancy_threshold: float = 1.0,
+    *,
+    is_low_res: bool = False,
+) -> int:
     """Count visible rows using occupancy plus position-strip presence.
 
     Player count should be based on whether a row visibly contains a plausible rank badge,
@@ -1897,7 +1904,14 @@ def determine_position_guided_visible_rows(row_metrics: List[Dict[str, object]],
         )
         occupancy_score = float(metric.get("occupancy_score", 0.0))
 
-        threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
+        if bool(is_low_res):
+            threshold = (
+                LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD
+                if row_number == 1
+                else LOW_RES_POSITION_PRESENT_COEFF_THRESHOLD
+            )
+        else:
+            threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
         row_supported = occupancy_score >= occupancy_threshold and best_position_score >= threshold
         if row_supported:
             return row_number
@@ -2564,6 +2578,7 @@ def extract_scoreboard_observation(
     race_points_field_name: str = "",
     total_points_field_name: str = "",
     include_name_ocr: bool = True,
+    is_low_res: bool = False,
 ) -> Dict[str, object]:
     """Read one score frame into names, race points, totals, and a visible-row estimate."""
     score_layout = get_score_layout(score_layout_id)
@@ -2682,7 +2697,10 @@ def extract_scoreboard_observation(
         if row_present:
             visible_rows = index
 
-    position_guided_visible_rows = determine_position_guided_visible_rows(row_metrics)
+    position_guided_visible_rows = determine_position_guided_visible_rows(
+        row_metrics,
+        is_low_res=bool(is_low_res),
+    )
 
     template_row_confidence = max(0.0, min(1.0, visible_rows / 12.0))
     return {
@@ -3390,6 +3408,32 @@ def select_race_score_recovery(
     return {"used": False, "source": "", "count": current_score_rows}
 
 
+def _should_promote_low_res_score_row_count_with_legacy(
+    *,
+    is_low_res: bool,
+    score_rows: int,
+    total_rows: int,
+    legacy_score_rows: int,
+    legacy_total_rows: int,
+    legacy_confidence: float,
+) -> bool:
+    """Allow low-res score-row count promotion when both legacy paths consistently agree.
+
+    This is intentionally strict: only promote when the current low-res position-guided
+    race count is lower than the total-score count and the legacy race/total counts both
+    support that higher value with high confidence.
+    """
+    if not is_low_res:
+        return False
+    if total_rows < 12:
+        return False
+    if score_rows >= total_rows:
+        return False
+    if legacy_score_rows < total_rows or legacy_total_rows < total_rows:
+        return False
+    return legacy_confidence >= 0.80
+
+
 def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.ndarray], extract_player_names_batched,
                                 preprocess_name, weighted_similarity, annotate_path: str | None = None,
                                 frame_numbers: List[int] | None = None,
@@ -3429,6 +3473,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 race_points_field_name="RacePoints",
                 total_points_field_name="OldTotalScore",
                 include_name_ocr=not names_from_late_override,
+                is_low_res=bool(is_low_res),
             )
         )
     score_core_observations = score_observations[-APP_CONFIG.ocr_consensus_frames:] or score_observations
@@ -3457,6 +3502,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                 name_field_name="TotalPlayerName",
                 race_points_field_name="RacePointsOnTotalScore",
                 total_points_field_name="NewTotalScore",
+                is_low_res=bool(is_low_res),
             )
         )
     if not total_observations:
@@ -3481,6 +3527,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                     name_field_name="RacePlayerName",
                     race_points_field_name="RacePoints",
                     total_points_field_name="OldTotalScore",
+                    is_low_res=bool(is_low_res),
                 )
             )
     point_override_observations = []
@@ -3499,6 +3546,7 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
                     race_points_field_name="RacePoints",
                     total_points_field_name="OldTotalScore",
                     include_name_ocr=False,
+                    is_low_res=bool(is_low_res),
                 )
             )
     if late_override_observations:
@@ -3618,6 +3666,18 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     if recovery["used"]:
         position_guided_visible_rows = int(recovery["count"])
         position_guided_row_count_confidence = max(position_guided_row_count_confidence, 0.85)
+    low_res_legacy_count_alignment_source = ""
+    if _should_promote_low_res_score_row_count_with_legacy(
+        is_low_res=is_low_res,
+        score_rows=int(position_guided_visible_rows),
+        total_rows=int(total_position_guided_visible_rows),
+        legacy_score_rows=int(visible_rows),
+        legacy_total_rows=int(total_visible_rows),
+        legacy_confidence=float(row_count_confidence),
+    ):
+        position_guided_visible_rows = int(total_position_guided_visible_rows)
+        position_guided_row_count_confidence = max(position_guided_row_count_confidence, float(row_count_confidence))
+        low_res_legacy_count_alignment_source = "low_res_legacy_count_alignment"
 
     representative_score_observation = score_position_observations[len(score_position_observations) // 2] if score_position_observations else {}
     representative_total_observation = (
@@ -3677,6 +3737,8 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
         "race_point_anchor_frame": race_point_anchor_frame,
         "race_score_recovery_used": bool(recovery["used"]),
         "race_score_recovery_source": str(recovery.get("source", "")) or (
+            low_res_legacy_count_alignment_source
+            or
             (
                 "ultra_low_res_row12_blob_fallback_center_frame"
                 if ultra_low_res_center_frame_row12_support

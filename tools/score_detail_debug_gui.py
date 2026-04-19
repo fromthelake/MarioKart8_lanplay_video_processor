@@ -72,7 +72,7 @@ def _parse_pause_seconds(text: str) -> float:
     return max(0.0, min(5.0, value))
 
 
-def _simulate_transition_rows(observations):
+def _simulate_transition_rows(observations, fps):
     pattern_lengths = (5,)
     # Experimental streak diagnostics: tolerate brief freeze frames in scoring animation.
     # This is intentionally separate from production debounce settings.
@@ -83,6 +83,9 @@ def _simulate_transition_rows(observations):
             int(changed_total_rows) >= 2
             and (int(changed_race_rows) >= 1 or int(changed_any_rows) >= 3)
         )
+
+    confirm_true_count = int(score_sel._points_transition_confirm_true_count_for_fps(float(fps)))
+    max_false_gap_frames = int(score_sel._points_transition_max_false_gap_for_fps(float(fps)))
 
     rows = []
     row_index_by_frame = {}
@@ -135,7 +138,7 @@ def _simulate_transition_rows(observations):
             else:
                 pending_true_count += 1
                 pending_false_streak = 0
-            if pending_true_count >= max(1, int(score_sel.POINTS_TRANSITION_CONFIRM_TRUE_COUNT)):
+            if pending_true_count >= int(confirm_true_count):
                 triggered = True
                 trigger_confirm_frame = int(frame_number)
                 anchor_index = row_index_by_frame.get(int(pending_start_frame))
@@ -149,7 +152,7 @@ def _simulate_transition_rows(observations):
                 pending_false_streak = 0
         elif pending_start_frame is not None:
             pending_false_streak += 1
-            if pending_false_streak > max(0, int(score_sel.POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES)):
+            if pending_false_streak > int(max_false_gap_frames):
                 pending_start_frame = None
                 pending_true_count = 0
                 pending_false_streak = 0
@@ -537,7 +540,7 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
                 obs = extract_points_transition_observation(image, score_layout_id=score_layout_id)
                 transition_observations.append((int(frame_number), obs))
 
-        transition_rows, transition_rule_frame = _simulate_transition_rows(transition_observations)
+        transition_rows, transition_rule_frame = _simulate_transition_rows(transition_observations, fps)
         report("Scanning TotalScore stable frames", 78.0)
 
         total_rows_map = {}
@@ -1873,8 +1876,8 @@ class ScoreDetailDebugGui(tk.Tk):
                     tc=int(row.get("pending_true_count", 0) or 0),
                     fs=int(row.get("pending_false_streak", 0) or 0),
                     sf=row.get("pending_start_frame"),
-                    need_true=int(score_sel.POINTS_TRANSITION_CONFIRM_TRUE_COUNT),
-                    max_false=int(score_sel.POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES),
+                    need_true=int(score_sel._points_transition_confirm_true_count_for_fps(float(self.context.get("fps", 30.0) if self.context else 30.0))),
+                    max_false=int(score_sel._points_transition_max_false_gap_for_fps(float(self.context.get("fps", 30.0) if self.context else 30.0))),
                 )
             )
             lines.append(f"- Transition rule triggered: {'TRUE' if bool(row.get('triggered', False)) else 'FALSE'}")

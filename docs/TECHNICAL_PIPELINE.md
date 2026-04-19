@@ -260,12 +260,13 @@ Current tile windows:
 
 Current row-count gating notes:
 - the normal position-template presence threshold stays at `Coeff >= 0.55`
-- row 1 now has a guarded exception at `Coeff >= 0.40` when the row is strongly occupied
+- row 1 now has a guarded exception at `Coeff >= 0.30` when the row is strongly occupied
 - player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
 - for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
 - the winning template label on that row is debug signal only
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 - for TotalScore drop confirmation, the code also supports a tie-aware prefix where a row may accept any non-decreasing rank up to its own row number
+- transition debounce (`p5` with false-gap tolerance) is now FPS-scaled so timing-equivalent behavior is preserved across 30fps/60fps videos
 - the black/white matcher checks the white tile first, then the black tile, and keeps the stronger masked score for that row
 
 ### Character icons

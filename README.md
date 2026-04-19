@@ -42,6 +42,7 @@ Recent scoring and validation behavior:
 - initial score confirmation now treats rows `2..6` as the required visible-player prefix, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score candidates
 - 12th-place checks now support both the legacy and Dutch templates during score selection
 - TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
+- points-transition debounce now scales with source FPS (instead of fixed frame counts), so 30fps and 60fps runs keep equivalent timing tolerance for transition trigger confirmation
 - second-pass score selection now uses a coarse search with rewind before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
 - RaceScore export bundles are now centered on the detected score-transition frame, and the saved `2RaceScore` frames are reused directly by OCR
 - the OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only

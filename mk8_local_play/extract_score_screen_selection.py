@@ -22,6 +22,8 @@ from .extract_common import (
 )
 from .extract_initial_scan import (
     IGNORE_FRAME_TARGETS,
+    LOW_RES_POSITION_SCAN_MIN_AVG_COEFF,
+    LOW_RES_POSITION_SCAN_MIN_ROW_COEFF,
     POSITION_SCAN_MIN_AVG_COEFF,
     POSITION_SCAN_MIN_PLAYERS,
     POSITION_SCAN_MIN_ROW_COEFF,
@@ -101,17 +103,38 @@ POINTS_TRANSITION_SEARCH_END_SECONDS = 6.0
 TOTAL_SCORE_FROM_TRANSITION_SECONDS = 3.6
 TOTAL_SCORE_STABLE_SEARCH_SECONDS = 5.0
 TOTAL_SCORE_STABLE_FRAMES_30FPS = 20
+TOTAL_SCORE_SIGNATURE_MAX_ROWS = max(
+    3,
+    int(os.environ.get("MK8_TOTAL_SCORE_SIGNATURE_MAX_ROWS", "6")),
+)
 COARSE_SEARCH_STEP_FRAMES = 10
 COARSE_SEARCH_REWIND_FRAMES = 10
 SMALL_FORWARD_GRAB_WINDOW_FRAMES = 12
 POINTS_TRANSITION_PRIMARY_OFFSET_FRAMES_30FPS = 23
 POINTS_TRANSITION_PRIMARY_RADIUS_FRAMES_30FPS = 2
+POINTS_TRANSITION_CONFIRM_TRUE_COUNT_30FPS = int(
+    os.environ.get("MK8_POINTS_TRANSITION_CONFIRM_TRUE_COUNT", "5")
+)
+POINTS_TRANSITION_CONFIRM_WINDOW_FRAMES = int(
+    os.environ.get("MK8_POINTS_TRANSITION_CONFIRM_WINDOW_FRAMES", "3")
+)
+POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES_30FPS = int(
+    os.environ.get("MK8_POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES", "2")
+)
 TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS = 35
 TOTAL_SCORE_EARLY_STABLE_END_FRAMES_30FPS = 50
 TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS = 89
 TOTAL_SCORE_LATE_STABLE_END_FRAMES_30FPS = 102
 TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS = 45
 TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS = 95
+LOW_RES_RACE_ANCHOR_BACKOFF_FRAMES_30FPS = 4
+LOW_RES_RACE_ANCHOR_REBASE_MIN_DELTA_30FPS = 8
+LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS = int(
+    os.environ.get(
+        "MK8_LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS",
+        "8",
+    )
+)
 
 
 APP_CONFIG = load_app_config()
@@ -120,6 +143,14 @@ APP_CONFIG = load_app_config()
 TOTAL_SCORE_TIMING_FAST_PATH_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TIMING_FAST_PATH", "1").strip().lower() not in {"0", "false", "no", "off"}
 TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED = os.environ.get("MK8_TOTAL_SCORE_TRANSITION_PRIMARY", "1").strip().lower() not in {"0", "false", "no", "off"}
 TOTAL_SCORE_STABLE_HINT_ENABLED = os.environ.get("MK8_TOTAL_SCORE_STABLE_HINT", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _points_transition_confirm_true_count_for_fps(fps):
+    return max(1, fps_scaled_frames(POINTS_TRANSITION_CONFIRM_TRUE_COUNT_30FPS, fps))
+
+
+def _points_transition_max_false_gap_for_fps(fps):
+    return max(0, fps_scaled_frames(POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES_30FPS, fps))
 
 
 def _build_score_analysis_trace(
@@ -131,6 +162,12 @@ def _build_score_analysis_trace(
     transition_frame=None,
     stable_total_score_frame=None,
     selected_points_anchor_frame=None,
+    expected_total_players=None,
+    raw_points_anchor_estimate=None,
+    cap_source_frame=None,
+    cap_source_visible_rows=None,
+    cap_source_label="",
+    cap_fallback_used=False,
     total_score_used_fallback=False,
     ignored_candidate=False,
     ignore_label="",
@@ -145,6 +182,12 @@ def _build_score_analysis_trace(
         "transition_frame": None if transition_frame is None else int(transition_frame),
         "stable_total_score_frame": None if stable_total_score_frame is None else int(stable_total_score_frame),
         "selected_points_anchor_frame": None if selected_points_anchor_frame is None else int(selected_points_anchor_frame),
+        "expected_total_players": None if expected_total_players is None else int(expected_total_players),
+        "raw_points_anchor_estimate": None if raw_points_anchor_estimate is None else int(raw_points_anchor_estimate),
+        "cap_source_frame": None if cap_source_frame is None else int(cap_source_frame),
+        "cap_source_visible_rows": None if cap_source_visible_rows is None else int(cap_source_visible_rows),
+        "cap_source_label": str(cap_source_label or ""),
+        "cap_fallback_used": bool(cap_fallback_used),
         "total_score_used_fallback": bool(total_score_used_fallback),
         "ignored_candidate": bool(ignored_candidate),
         "ignore_label": str(ignore_label or ""),
@@ -322,21 +365,43 @@ def _row_has_expected_template(position_metrics, row_number, min_score=0.4):
     )
 
 
-def _count_tie_aware_prefix_rows(position_metrics, min_players):
+def _tie_aware_signal_thresholds(*, is_low_res_source=False):
+    if bool(is_low_res_source):
+        row_threshold = float(LOW_RES_POSITION_SCAN_MIN_ROW_COEFF)
+        return {
+            "row1_coeff": row_threshold,
+            "row_coeff": row_threshold,
+            "avg_coeff": float(LOW_RES_POSITION_SCAN_MIN_AVG_COEFF),
+        }
+    return {
+        "row1_coeff": float(POSITION_PRESENT_ROW1_COEFF_THRESHOLD),
+        "row_coeff": float(POSITION_PRESENT_COEFF_THRESHOLD),
+        "avg_coeff": float(POSITION_SCAN_MIN_AVG_COEFF),
+    }
+
+
+def _count_tie_aware_prefix_rows(position_metrics, min_players, *, row1_threshold=None, row_threshold=None):
     """Count rows whose rank badges remain plausible when totals are tied."""
     visible_rows = 0
     last_confirmed_rank = 1
+    row1_threshold = float(
+        POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row1_threshold is None else row1_threshold
+    )
+    row_threshold = float(POSITION_PRESENT_COEFF_THRESHOLD if row_threshold is None else row_threshold)
     for row_number in range(1, min(int(min_players), len(position_metrics)) + 1):
         metric = position_metrics[row_number - 1]
         best_score = float(metric.get("best_position_score", 0.0))
+        if not np.isfinite(best_score):
+            best_score = float("-inf")
         best_rank = int(metric.get("best_position_template", 0))
         coeff_ranked_templates = [int(value) for value in metric.get("coeff_ranked_templates", [])]
-        threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
+        threshold = row1_threshold if row_number == 1 else row_threshold
 
         chosen_rank = 0
-        if best_score >= threshold and last_confirmed_rank <= best_rank <= row_number:
+        has_min_support = bool(best_score >= threshold)
+        if has_min_support and last_confirmed_rank <= best_rank <= row_number:
             chosen_rank = best_rank
-        else:
+        elif has_min_support:
             chosen_rank = next(
                 (
                     template_rank
@@ -400,40 +465,143 @@ def _raw_fixed_grid_prefix_confirm(frame_image, required_players=None, score_lay
     return passed, average_score
 
 
-def _tie_aware_score_signal_present_from_metrics(position_metrics, min_players=None):
+def _tie_aware_score_signal_present_from_metrics(position_metrics, min_players=None, *, is_low_res_source=False):
     required_players = max(2, int(min_players or POSITION_SCAN_MIN_PLAYERS))
-    if _count_tie_aware_prefix_rows(position_metrics, required_players) < required_players:
+    thresholds = _tie_aware_signal_thresholds(is_low_res_source=bool(is_low_res_source))
+    if _count_tie_aware_prefix_rows(
+        position_metrics,
+        required_players,
+        row1_threshold=thresholds["row1_coeff"],
+        row_threshold=thresholds["row_coeff"],
+    ) < required_players:
         return False
     prefix_scores = [
         float(position_metrics[row_number - 1].get("best_position_score", 0.0))
         for row_number in range(1, required_players + 1)
     ]
     average_score = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
-    return average_score >= float(POSITION_SCAN_MIN_AVG_COEFF)
+    return average_score >= float(thresholds["avg_coeff"])
 
 
-def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_players=None, stats=None):
+def _tie_aware_score_signal_present(frame_image, score_layout_id=None, min_players=None, stats=None, *, is_low_res_source=False):
     position_metrics = _position_metrics_for_frame(frame_image, score_layout_id=score_layout_id, stats=stats)
-    return _tie_aware_score_signal_present_from_metrics(position_metrics, min_players=min_players)
+    return _tie_aware_score_signal_present_from_metrics(
+        position_metrics,
+        min_players=min_players,
+        is_low_res_source=bool(is_low_res_source),
+    )
 
 
-def _extract_total_score_stable_signature(frame_image, score_layout_id=None):
+def _estimate_visible_players_for_total_checks(position_metrics, *, is_low_res_source=False):
+    thresholds = _tie_aware_signal_thresholds(is_low_res_source=bool(is_low_res_source))
+    return _count_tie_aware_prefix_rows(
+        position_metrics,
+        12,
+        row1_threshold=thresholds["row1_coeff"],
+        row_threshold=thresholds["row_coeff"],
+    )
+
+
+def _extract_total_score_stable_signature(
+    frame_image,
+    score_layout_id=None,
+    *,
+    is_low_res_source=False,
+    min_players_expected=None,
+):
+    required_players = max(
+        int(POSITION_SCAN_MIN_PLAYERS),
+        min(12, int(min_players_expected or POSITION_SCAN_MIN_PLAYERS)),
+    )
+    # Guard against fade-to-black frames that can still yield accidental digit patterns.
+    # Two-stage gate for performance + reliability:
+    # 1) rows 1..6 must look valid first
+    # 2) if more players are expected, rows 7..N are then enforced
+    position_metrics = _position_metrics_for_frame(
+        frame_image,
+        score_layout_id=score_layout_id,
+    )
+    fast_prefix_players = min(6, int(required_players))
+    if not _tie_aware_score_signal_present_from_metrics(
+        position_metrics,
+        min_players=fast_prefix_players,
+        is_low_res_source=bool(is_low_res_source),
+    ):
+        return None
+    if int(required_players) > int(fast_prefix_players) and not _tie_aware_score_signal_present_from_metrics(
+        position_metrics,
+        min_players=required_players,
+        is_low_res_source=bool(is_low_res_source),
+    ):
+        return None
+
+    selected_rows = _select_total_signature_rows(
+        required_players,
+        max_rows=TOTAL_SCORE_SIGNATURE_MAX_ROWS,
+    )
     observation = extract_points_transition_observation(
         frame_image,
         score_layout_id=score_layout_id,
     )
     totals = observation.get("total_points") or []
     signature = []
-    for row_index in range(3):
-        if row_index >= len(totals):
+    for row_number in selected_rows:
+        row_index = int(row_number) - 1
+        if row_index < 0 or row_index >= len(totals):
             return None
         parsed_value = parse_detected_int(totals[row_index])
         if parsed_value is None:
             return None
         signature.append(int(parsed_value))
-    if not (signature[0] >= signature[1] >= signature[2]):
+    if len(signature) < 3:
         return None
+    for idx in range(1, len(signature)):
+        if int(signature[idx - 1]) < int(signature[idx]):
+            return None
     return tuple(signature)
+
+
+def _select_total_signature_rows(required_players, *, max_rows=6):
+    required = max(1, min(12, int(required_players or 0)))
+    max_rows = max(3, int(max_rows or 6))
+    if required <= max_rows:
+        return list(range(1, required + 1))
+
+    selected = {1, min(3, required), min(6, required), required}
+
+    # Fill remaining slots with near-equal spacing from row 6 to the last row.
+    while len(selected) < max_rows:
+        remaining = max_rows - len(selected)
+        start = min(6, required)
+        span = max(0, required - start)
+        if span <= 0:
+            break
+        added = False
+        for i in range(1, remaining + 1):
+            candidate = int(round(start + (span * (i / float(remaining + 1)))))
+            candidate = max(1, min(required, candidate))
+            if candidate not in selected:
+                selected.add(candidate)
+                added = True
+        if not added:
+            for candidate in range(1, required + 1):
+                if candidate not in selected:
+                    selected.add(candidate)
+                    if len(selected) >= max_rows:
+                        break
+            if len(selected) >= max_rows:
+                break
+
+    ordered = sorted(selected)
+    if len(ordered) > max_rows:
+        keep = set([1, min(3, required), min(6, required), required])
+        for candidate in ordered:
+            if len(ordered) <= max_rows:
+                break
+            if candidate in keep:
+                continue
+            ordered.remove(candidate)
+    return sorted(ordered)
 
 
 def _find_points_transition_frame_in_range(
@@ -448,8 +616,21 @@ def _find_points_transition_frame_in_range(
     stats,
     *,
     seek_label,
+    fps=30.0,
 ):
+    def _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows):
+        return bool(
+            int(changed_total_rows) >= 2
+            and (int(changed_race_rows) >= 1 or int(changed_any_rows) >= 3)
+        )
+
+    confirm_true_count = _points_transition_confirm_true_count_for_fps(fps)
+    max_false_gap_frames = _points_transition_max_false_gap_for_fps(fps)
+
     previous_observation = None
+    pending_start_frame = None
+    pending_true_count = 0
+    pending_false_streak = 0
     seek_to_frame(local_cap, start_frame, stats, label=seek_label)
     for frame_number in range(int(start_frame), int(end_frame) + 1):
         ret, frame = read_video_frame(local_cap, stats)
@@ -474,8 +655,23 @@ def _find_points_transition_frame_in_range(
                 changed_race_rows += int(race_changed)
                 changed_total_rows += int(total_changed)
                 changed_any_rows += int(race_changed or total_changed)
-            if changed_total_rows >= 2 and (changed_race_rows >= 1 or changed_any_rows >= 3):
-                return int(frame_number), int(frame_number)
+            hit = _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows)
+            if hit:
+                if pending_start_frame is None:
+                    pending_start_frame = int(frame_number)
+                    pending_true_count = 1
+                    pending_false_streak = 0
+                else:
+                    pending_true_count += 1
+                    pending_false_streak = 0
+                if pending_true_count >= int(confirm_true_count):
+                    return int(pending_start_frame), int(pending_start_frame)
+            elif pending_start_frame is not None:
+                pending_false_streak += 1
+                if pending_false_streak > int(max_false_gap_frames):
+                    pending_start_frame = None
+                    pending_true_count = 0
+                    pending_false_streak = 0
         previous_observation = observation
     return None, None
 
@@ -510,6 +706,7 @@ def _find_points_transition_frame(
             score_layout_id,
             stats,
             seek_label="points_transition_start",
+            fps=fps,
         )
     primary_offset = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_OFFSET_FRAMES_30FPS, fps)
     primary_radius = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_RADIUS_FRAMES_30FPS, fps)
@@ -527,6 +724,7 @@ def _find_points_transition_frame(
             score_layout_id,
             stats,
             seek_label="points_transition_primary",
+            fps=fps,
         )
         if primary_transition_frame is not None:
             return primary_transition_frame, primary_points_anchor_frame
@@ -541,6 +739,7 @@ def _find_points_transition_frame(
         score_layout_id,
         stats,
         seek_label="points_transition_start",
+        fps=fps,
     )
 
 
@@ -555,6 +754,8 @@ def _frame_has_total_score_signature(
     stats,
     *,
     position_label,
+    is_low_res_source=False,
+    min_players_expected=None,
 ):
     position_capture_for_read(
         local_cap,
@@ -572,30 +773,113 @@ def _frame_has_total_score_signature(
     return _extract_total_score_stable_signature(
         upscaled_image,
         score_layout_id=score_layout_id,
+        is_low_res_source=bool(is_low_res_source),
+        min_players_expected=min_players_expected,
     ) is not None
 
 
-def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, crop_width, crop_height, score_layout_id, stats):
-    stable_frames_required = max(1, fps_scaled_frames(TOTAL_SCORE_STABLE_FRAMES_30FPS, fps))
-    search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
-    if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
-        early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
-        late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
-        early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
-        late_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS, fps)
-        if early_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
+def _estimate_visible_players_at_frame(
+    local_cap,
+    frame_number,
+    left,
+    top,
+    crop_width,
+    crop_height,
+    score_layout_id,
+    stats,
+    *,
+    is_low_res_source=False,
+):
+    position_capture_for_read(
+        local_cap,
+        int(frame_number),
+        stats,
+        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+        label="points_anchor_row_count",
+    )
+    ret, frame = read_video_frame(local_cap, stats)
+    if not ret:
+        return None
+    upscaled_image = crop_and_upscale_image(
+        frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+    )
+    position_metrics = _position_metrics_for_frame(
+        upscaled_image,
+        score_layout_id=score_layout_id,
+        stats=stats,
+    )
+    visible_rows = _estimate_visible_players_for_total_checks(
+        position_metrics,
+        is_low_res_source=bool(is_low_res_source),
+    )
+    if int(visible_rows) <= 0:
+        return None
+    return int(min(12, int(visible_rows)))
+
+
+def _estimate_visible_players_window_median(
+    local_cap,
+    center_frame,
+    left,
+    top,
+    crop_width,
+    crop_height,
+    score_layout_id,
+    stats,
+    *,
+    is_low_res_source=False,
+    radius_frames=2,
+):
+    center = int(center_frame)
+    radius = max(0, int(radius_frames))
+    estimates = []
+    for frame_number in range(center - radius, center + radius + 1):
+        estimate = _estimate_visible_players_at_frame(
             local_cap,
-            early_probe_frame,
+            max(0, int(frame_number)),
             left,
             top,
             crop_width,
             crop_height,
             score_layout_id,
             stats,
-            position_label="total_stable_probe_early",
-        ):
-            frame_number = max(int(transition_frame), int(early_search_start_frame))
-        elif late_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
+            is_low_res_source=bool(is_low_res_source),
+        )
+        if estimate is not None and int(estimate) > 0:
+            estimates.append(int(estimate))
+    if not estimates:
+        return None
+    return int(round(float(np.median(np.array(estimates, dtype=np.float32)))))
+
+
+def _find_total_score_stable_frame(
+    local_cap,
+    transition_frame,
+    fps,
+    left,
+    top,
+    crop_width,
+    crop_height,
+    score_layout_id,
+    stats,
+    *,
+    is_low_res_source=False,
+    min_players_expected=None,
+):
+    stable_frames_30fps = (
+        LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS
+        if bool(is_low_res_source)
+        else TOTAL_SCORE_STABLE_FRAMES_30FPS
+    )
+    stable_frames_required = max(1, fps_scaled_frames(stable_frames_30fps, fps))
+    search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
+    if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
+        early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
+        late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
+        early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
+        late_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS, fps)
+        fallback_start_frame = int(transition_frame)
+        if late_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
             local_cap,
             late_probe_frame,
             left,
@@ -605,71 +889,104 @@ def _find_total_score_stable_frame(local_cap, transition_frame, fps, left, top, 
             score_layout_id,
             stats,
             position_label="total_stable_probe_late",
+            is_low_res_source=bool(is_low_res_source),
+            min_players_expected=min_players_expected,
         ):
             frame_number = max(int(transition_frame), int(late_search_start_frame))
+            fallback_start_frame = max(int(transition_frame), int(early_search_start_frame))
+        elif early_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
+            local_cap,
+            early_probe_frame,
+            left,
+            top,
+            crop_width,
+            crop_height,
+            score_layout_id,
+            stats,
+            position_label="total_stable_probe_early",
+            is_low_res_source=bool(is_low_res_source),
+            min_players_expected=min_players_expected,
+        ):
+            frame_number = max(int(transition_frame), int(early_search_start_frame))
+            fallback_start_frame = int(transition_frame)
         else:
             frame_number = int(transition_frame)
+            fallback_start_frame = int(transition_frame)
     else:
         frame_number = int(transition_frame)
-    coarse_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
-    coarse_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
-    position_capture_for_read(
-        local_cap,
-        frame_number,
-        stats,
-        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
-        label="total_stable_search",
-    )
-    stable_run_start = None
-    stable_run_count = 0
-    stable_signature = None
-    while frame_number <= int(search_end_frame):
-        ret, frame = read_video_frame(local_cap, stats)
-        if not ret:
-            break
-        upscaled_image = crop_and_upscale_image(
-            frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+        fallback_start_frame = int(transition_frame)
+
+    def _scan_from(start_frame):
+        frame_number = int(start_frame)
+        coarse_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
+        coarse_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
+        position_capture_for_read(
+            local_cap,
+            frame_number,
+            stats,
+            max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+            label="total_stable_search",
         )
-        signature = _extract_total_score_stable_signature(
-            upscaled_image,
-            score_layout_id=score_layout_id,
-        )
-        if coarse_step > 1:
-            if signature is None:
-                next_frame = min(int(search_end_frame), int(frame_number) + coarse_step)
-                if next_frame <= int(frame_number):
-                    break
-                position_capture_for_read(
-                    local_cap,
-                    next_frame,
-                    stats,
-                    max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
-                    label="total_stable_search",
-                )
-                frame_number = next_frame
+        stable_run_start = None
+        stable_run_count = 0
+        stable_signature = None
+        while frame_number <= int(search_end_frame):
+            ret, frame = read_video_frame(local_cap, stats)
+            if not ret:
+                break
+            upscaled_image = crop_and_upscale_image(
+                frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+            )
+            signature = _extract_total_score_stable_signature(
+                upscaled_image,
+                score_layout_id=score_layout_id,
+                is_low_res_source=bool(is_low_res_source),
+                min_players_expected=min_players_expected,
+            )
+            if coarse_step > 1:
+                if signature is None:
+                    next_frame = min(int(search_end_frame), int(frame_number) + coarse_step)
+                    if next_frame <= int(frame_number):
+                        break
+                    position_capture_for_read(
+                        local_cap,
+                        next_frame,
+                        stats,
+                        max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+                        label="total_stable_search",
+                    )
+                    frame_number = next_frame
+                    continue
+                rewind_floor = max(int(transition_frame), int(start_frame))
+                rewind_frame = max(rewind_floor, int(frame_number) - coarse_rewind)
+                coarse_step = 1
+                stable_run_start = None
+                stable_run_count = 0
+                stable_signature = None
+                seek_to_frame(local_cap, rewind_frame, stats, label="total_stable_rewind")
+                frame_number = rewind_frame
                 continue
-            rewind_frame = max(int(transition_frame), int(frame_number) - coarse_rewind)
-            coarse_step = 1
-            stable_run_start = None
-            stable_run_count = 0
-            stable_signature = None
-            seek_to_frame(local_cap, rewind_frame, stats, label="total_stable_rewind")
-            frame_number = rewind_frame
-            continue
-        if signature is not None:
-            if stable_run_start is None or signature != stable_signature:
-                stable_run_start = int(frame_number)
-                stable_run_count = 1
-                stable_signature = signature
+            if signature is not None:
+                if stable_run_start is None or signature != stable_signature:
+                    stable_run_start = int(frame_number)
+                    stable_run_count = 1
+                    stable_signature = signature
+                else:
+                    stable_run_count += 1
+                if stable_run_count >= stable_frames_required:
+                    return int(frame_number)
             else:
-                stable_run_count += 1
-            if stable_run_count >= stable_frames_required:
-                return int(frame_number)
-        else:
-            stable_run_start = None
-            stable_run_count = 0
-            stable_signature = None
-        frame_number += 1
+                stable_run_start = None
+                stable_run_count = 0
+                stable_signature = None
+            frame_number += 1
+        return None
+
+    anchor_frame = _scan_from(frame_number)
+    if anchor_frame is not None:
+        return int(anchor_frame)
+    if int(fallback_start_frame) < int(frame_number):
+        return _scan_from(int(fallback_start_frame))
     return None
 
 
@@ -861,6 +1178,12 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
     scale_x = task["scale_x"]
     scale_y = task["scale_y"]
     source_height = int(task.get("source_height", 0) or 0)
+    low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+    is_low_res_source = bool(
+        source_height > 0
+        and low_res_height > 0
+        and int(source_height) <= low_res_height
+    )
     score_layout = get_score_layout(task.get("score_layout_id"))
 
     start_frame = frame_number - int(3 * fps)
@@ -873,6 +1196,12 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
     twelfth_template_detected = False
     drop_start_frame = None
     selected_points_anchor_frame = None
+    expected_total_players = None
+    raw_points_anchor_estimate = None
+    cap_source_frame = None
+    cap_source_visible_rows = None
+    cap_source_label = ""
+    cap_fallback_used = False
     transition_frame = None
     debug_rows = []
     stats = {}
@@ -1073,6 +1402,73 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
             if transition_frame is not None:
                 if selected_points_anchor_frame is None:
                     selected_points_anchor_frame = max(0, int(transition_frame) - 2)
+                if selected_points_anchor_frame is not None:
+                    raw_points_anchor_estimate = _estimate_visible_players_at_frame(
+                        local_cap,
+                        int(selected_points_anchor_frame),
+                        left,
+                        top,
+                        crop_width,
+                        crop_height,
+                        score_layout.layout_id,
+                        stats,
+                        is_low_res_source=bool(is_low_res_source),
+                    )
+                    transition_cap = _estimate_visible_players_window_median(
+                        local_cap,
+                        int(selected_points_anchor_frame),
+                        left,
+                        top,
+                        crop_width,
+                        crop_height,
+                        score_layout.layout_id,
+                        stats,
+                        is_low_res_source=bool(is_low_res_source),
+                        radius_frames=2,
+                    )
+                    if transition_cap is not None:
+                        cap_source_frame = int(selected_points_anchor_frame)
+                        cap_source_visible_rows = int(transition_cap)
+                        cap_source_label = "transition_rule_frame"
+                    elif race_score_frame > 0:
+                        race_anchor_cap = _estimate_visible_players_window_median(
+                            local_cap,
+                            int(race_score_frame),
+                            left,
+                            top,
+                            crop_width,
+                            crop_height,
+                            score_layout.layout_id,
+                            stats,
+                            is_low_res_source=bool(is_low_res_source),
+                            radius_frames=2,
+                        )
+                        if race_anchor_cap is not None:
+                            cap_source_frame = int(race_score_frame)
+                            cap_source_visible_rows = int(race_anchor_cap)
+                            cap_source_label = "race_score_anchor_frame"
+                            cap_fallback_used = True
+
+                    if raw_points_anchor_estimate is None:
+                        expected_total_players = (
+                            None if cap_source_visible_rows is None else int(cap_source_visible_rows)
+                        )
+                    elif cap_source_visible_rows is None:
+                        expected_total_players = int(raw_points_anchor_estimate)
+                    else:
+                        expected_total_players = int(
+                            min(int(raw_points_anchor_estimate), int(cap_source_visible_rows))
+                        )
+                if is_low_res_source and selected_points_anchor_frame is not None:
+                    rebase_delta = fps_scaled_frames(LOW_RES_RACE_ANCHOR_REBASE_MIN_DELTA_30FPS, fps)
+                    anchor_gap = int(selected_points_anchor_frame) - int(race_score_frame)
+                    if anchor_gap >= rebase_delta:
+                        anchor_backoff = fps_scaled_frames(LOW_RES_RACE_ANCHOR_BACKOFF_FRAMES_30FPS, fps)
+                        rebased_race_score_frame = max(
+                            int(score_hit_frame or race_score_frame),
+                            int(selected_points_anchor_frame) - int(anchor_backoff),
+                        )
+                        race_score_frame = max(int(race_score_frame), int(rebased_race_score_frame))
                 total_score_frame = _find_total_score_stable_frame(
                     local_cap,
                     int(transition_frame),
@@ -1083,6 +1479,8 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
                     crop_height,
                     score_layout.layout_id,
                     stats,
+                    is_low_res_source=bool(is_low_res_source),
+                    min_players_expected=expected_total_players,
                 )
                 if total_score_frame is None:
                     total_score_used_fallback = True
@@ -1105,6 +1503,7 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
             if selected_position_metrics and _tie_aware_score_signal_present_from_metrics(
                 selected_position_metrics,
                 min_players=POSITION_SCAN_MIN_PLAYERS,
+                is_low_res_source=bool(is_low_res_source),
             ):
                 stats["score_tie_aware_reuse_calls"] += 1
                 drop_start_frame = None
@@ -1191,6 +1590,12 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
         "race_consensus_frames": race_consensus_frames,
         "total_consensus_frames": total_consensus_frames,
         "selected_points_anchor_frame": selected_points_anchor_frame,
+        "expected_total_players": expected_total_players,
+        "raw_points_anchor_estimate": raw_points_anchor_estimate,
+        "cap_source_frame": cap_source_frame,
+        "cap_source_visible_rows": cap_source_visible_rows,
+        "cap_source_label": cap_source_label,
+        "cap_fallback_used": cap_fallback_used,
         "actual_points_anchor_frame": actual_points_anchor_frame,
         "points_anchor_image": points_anchor_image,
         "points_context_frames": points_context_frames,
@@ -1205,6 +1610,12 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
             transition_frame=transition_frame,
             stable_total_score_frame=stable_total_score_frame,
             selected_points_anchor_frame=selected_points_anchor_frame,
+            expected_total_players=expected_total_players,
+            raw_points_anchor_estimate=raw_points_anchor_estimate,
+            cap_source_frame=cap_source_frame,
+            cap_source_visible_rows=cap_source_visible_rows,
+            cap_source_label=cap_source_label,
+            cap_fallback_used=cap_fallback_used,
             total_score_used_fallback=total_score_used_fallback,
             ignored_candidate=bool(False),
             ignore_label="",
