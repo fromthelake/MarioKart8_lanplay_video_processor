@@ -132,7 +132,7 @@ The format is intentionally simple and human-readable.
 - RaceScore player counts now recover from later frames when the black results banner hides the last row.
 - Duplicate exact player names can now be split with character-aware identity tracking, producing stable names such as `Name_1` and `Name_2`.
 - Review-reason parsing no longer turns values like `15.0` into incorrect messages such as `150`.
-- Position-guided player count detection now treats rows with `Coeff < 0.60` as empty, preventing false extra rows in stable 10-player cases.
+- Position-guided player count detection now treats rows with `Coeff < 0.55` as empty, preventing false extra rows in stable 10-player cases.
 - Position-guided OCR row counts now allow a guarded row-1 exception at `Coeff >= 0.40` when first place is visually occupied but partly covered by the Nintendo `Capture taken.` overlay.
 - RaceScore frame selection now scales the old post-12th timing by FPS and can search slightly later frames for a valid 12th-place row when a 12-player race would otherwise be exported one frame too early.
 - `Digit confidence is low` and race-points mismatches caused by late RaceScore frames drifting downward are now eliminated on validated multi-video OCR runs.

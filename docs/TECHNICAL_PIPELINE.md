@@ -259,7 +259,7 @@ Current tile windows:
 - row step: `52`
 
 Current row-count gating notes:
-- the normal position-template presence threshold stays at `Coeff >= 0.60`
+- the normal position-template presence threshold stays at `Coeff >= 0.55`
 - row 1 now has a guarded exception at `Coeff >= 0.40` when the row is strongly occupied
 - player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
 - for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
