@@ -189,6 +189,8 @@ These are used by:
 Current RaceScore selection behavior:
 - the first score-screen hit still seeds a provisional RaceScore export time
 - before the first confirmed score hit, second-pass search now advances in coarse FPS-scaled steps and rewinds by an FPS-scaled amount once a hit is found (30fps baseline: `+10` / rewind `10`), then resumes fine `+1` scanning
+- detail-phase fine scanning uses `analysis_step=2` only for 60fps-class videos; other FPS values keep `analysis_step=1`
+- when a 60fps stepped detail pass misses transition/stable-total anchors, the same local search window is retried once at `step=1`
 - the second pass now uses the same row-box score helper as the initial scan instead of a standalone score-template coefficient
 - when a supported 12th-place template is seen, the later RaceScore offset is FPS-scaled instead of using a raw fixed-frame jump
 - both `12th_pos_template.png` and `12th_pos_templateNL.png` are checked; either one can trigger 12th-row logic
@@ -270,6 +272,7 @@ Current row-count gating notes:
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 - for TotalScore drop confirmation, the code also supports a tie-aware prefix where a row may accept any non-decreasing rank up to its own row number
 - transition debounce keeps a fixed confirm-hit target (`p5` by default), while false-gap tolerance is FPS-scaled so timing-equivalent gap tolerance is preserved across 30fps/60fps videos
+- in 60fps `analysis_step=2` mode, debounce/stable counters use `effective_analysis_fps = fps / step` so timing intent stays equivalent to frame-by-frame logic
 - the black/white matcher checks the white tile first, then the black tile, and keeps the stronger masked score for that row
 
 ### Character icons

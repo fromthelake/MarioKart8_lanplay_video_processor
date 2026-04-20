@@ -72,10 +72,11 @@ def _parse_pause_seconds(text: str) -> float:
     return max(0.0, min(5.0, value))
 
 
-def _simulate_transition_rows(observations, fps):
+def _simulate_transition_rows(observations, fps, analysis_step=1):
     pattern_lengths = (5,)
     # Keep p5 diagnostics aligned with production debounce/fallback behavior.
-    pattern_max_false_gap = int(score_sel._points_transition_max_false_gap_for_fps(float(fps)))
+    effective_fps = float(score_sel._effective_analysis_fps(float(fps), int(analysis_step)))
+    pattern_max_false_gap = int(score_sel._points_transition_max_false_gap_for_fps(effective_fps))
 
     def _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows):
         return bool(
@@ -83,9 +84,9 @@ def _simulate_transition_rows(observations, fps):
             and (int(changed_race_rows) >= 1 or int(changed_any_rows) >= 3)
         )
 
-    confirm_true_count = int(score_sel._points_transition_confirm_true_count_for_fps(float(fps)))
-    max_false_gap_frames = int(score_sel._points_transition_max_false_gap_for_fps(float(fps)))
-    fallback_max_false_gap_frames = int(score_sel._points_transition_fallback_max_false_gap_for_fps(float(fps)))
+    confirm_true_count = int(score_sel._points_transition_confirm_true_count_for_fps(effective_fps))
+    max_false_gap_frames = int(score_sel._points_transition_max_false_gap_for_fps(effective_fps))
+    fallback_max_false_gap_frames = int(score_sel._points_transition_fallback_max_false_gap_for_fps(effective_fps))
 
     rows = []
     row_index_by_frame = {}
@@ -298,6 +299,8 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
             pass
 
     fps = float(context["fps"])
+    analysis_step = int(score_sel._analysis_step_for_fps(fps))
+    effective_analysis_fps = float(score_sel._effective_analysis_fps(fps, analysis_step))
     score_layout_id = str(candidate.get("score_layout_id") or "")
     candidate_frame = int(candidate["frame_number"])
     start_frame = candidate_frame - int(3 * fps)
@@ -312,8 +315,8 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
     try:
         report("Preparing detail scan", 0.0)
         stats = defaultdict(float)
-        coarse_step = max(1, int(score_sel.COARSE_SEARCH_STEP_FRAMES))
-        coarse_rewind = max(1, int(score_sel.COARSE_SEARCH_REWIND_FRAMES))
+        coarse_step = max(1, int(score_sel._coarse_search_step_for_fps(fps)))
+        coarse_rewind = max(1, int(score_sel._coarse_search_rewind_for_fps(fps)))
         detail_frame_number = int(start_frame)
         race_score_frame = 0
         score_hit_frame = None
@@ -337,6 +340,18 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
             max_forward_grab_frames=score_sel.SMALL_FORWARD_GRAB_WINDOW_FRAMES,
             label="gui_detail_start",
         )
+
+        def _advance_detail_frame(current_frame):
+            step = max(1, int(analysis_step))
+            next_frame = int(current_frame) + int(step)
+            if next_frame >= int(end_frame):
+                return None
+            if step > 1:
+                for _ in range(step - 1):
+                    if not cap.grab():
+                        return None
+            return int(next_frame)
+
         last_report = -1
         while detail_frame_number < int(end_frame):
             ret, frame = read_video_frame(cap, stats)
@@ -575,7 +590,10 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
                 )
                 continue
 
-            detail_frame_number += 1
+            next_detail_frame = _advance_detail_frame(detail_frame_number)
+            if next_detail_frame is None:
+                break
+            detail_frame_number = int(next_detail_frame)
 
         if race_score_frame and transition_frame is not None:
             report("Scanning transition frames", 66.0)
@@ -601,15 +619,19 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
                 obs = extract_points_transition_observation(image, score_layout_id=score_layout_id)
                 transition_observations.append((int(frame_number), obs))
 
-        transition_rows, transition_rule_frame = _simulate_transition_rows(transition_observations, fps)
+        transition_rows, transition_rule_frame = _simulate_transition_rows(
+            transition_observations,
+            fps,
+            analysis_step=analysis_step,
+        )
         report("Scanning TotalScore stable frames", 78.0)
 
         total_rows_map = {}
         if transition_frame is not None:
             total_start = int(transition_frame)
             total_end = int(transition_frame) + max(1, int(round(score_sel.TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(fps, 1.0))))
-            stable_required_low = int(score_sel.fps_scaled_frames(score_sel.LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS, fps))
-            stable_required_high = int(score_sel.fps_scaled_frames(score_sel.TOTAL_SCORE_STABLE_FRAMES_30FPS, fps))
+            stable_required_low = int(score_sel.fps_scaled_frames(score_sel.LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS, effective_analysis_fps))
+            stable_required_high = int(score_sel.fps_scaled_frames(score_sel.TOTAL_SCORE_STABLE_FRAMES_30FPS, effective_analysis_fps))
             required_players = max(
                 int(score_sel.POSITION_SCAN_MIN_PLAYERS),
                 min(12, int(expected_total_players or score_sel.POSITION_SCAN_MIN_PLAYERS)),
@@ -844,6 +866,12 @@ def build_detail_trace(context, candidate, templates, progress_cb=None):
             "cap_source_visible_rows": int(cap_source_visible_rows) if cap_source_visible_rows is not None else None,
             "cap_source_label": str(cap_source_label or ""),
             "cap_fallback_used": bool(cap_fallback_used),
+            "analysis_step": int(analysis_step),
+            "effective_analysis_fps": float(effective_analysis_fps),
+            "transition_step1_fallback_used": bool(stats.get("analysis_step_transition_fallback_used", 0) > 0),
+            "transition_step1_fallback_success": bool(stats.get("analysis_step_transition_fallback_success", 0) > 0),
+            "total_step1_fallback_used": bool(stats.get("analysis_step_total_fallback_used", 0) > 0),
+            "total_step1_fallback_success": bool(stats.get("analysis_step_total_fallback_success", 0) > 0),
         }
         report("Finalizing trace", 99.0)
         return race_rows, transition_view_rows, total_view_rows, summary
@@ -1137,9 +1165,13 @@ class ScoreDetailDebugGui(tk.Tk):
                 ("Candidate Frame", str(summary.get("candidate_frame")), summary.get("candidate_frame")),
                 ("Detail Range Start", f"{range_start} (-3.0s)", range_start),
                 ("Detail Range End", f"{range_end} (+13.0s)", range_end),
+                ("Analysis Step", str(summary.get("analysis_step")), None),
+                ("Effective Analysis FPS", str(summary.get("effective_analysis_fps")), None),
                 ("Score Hit Frame", str(summary.get("score_hit_frame")), summary.get("score_hit_frame")),
                 ("Race Anchor Frame", str(summary.get("race_score_frame")), summary.get("race_score_frame")),
                 ("Transition Frame", str(summary.get("transition_frame")), summary.get("transition_frame")),
+                ("Transition Step1 Fallback", "TRUE" if bool(summary.get("transition_step1_fallback_used", False)) else "FALSE", None),
+                ("Transition Step1 Success", "TRUE" if bool(summary.get("transition_step1_fallback_success", False)) else "FALSE", None),
                 ("Points Anchor Frame", str(summary.get("points_anchor_frame")), summary.get("points_anchor_frame")),
                 ("Expected Players (from points anchor)", str(summary.get("expected_total_players")), None),
                 ("Max Detected Players", str(summary.get("max_detected_players")), None),
@@ -1150,6 +1182,8 @@ class ScoreDetailDebugGui(tk.Tk):
                 ("Cap Fallback Used", "TRUE" if bool(summary.get("cap_fallback_used", False)) else "FALSE", None),
                 ("Transition Rule Frame", str(summary.get("transition_rule_frame")), summary.get("transition_rule_frame")),
                 ("Total Anchor Frame", str(summary.get("total_score_frame")), summary.get("total_score_frame")),
+                ("Total Step1 Fallback", "TRUE" if bool(summary.get("total_step1_fallback_used", False)) else "FALSE", None),
+                ("Total Step1 Success", "TRUE" if bool(summary.get("total_step1_fallback_success", False)) else "FALSE", None),
                 ("Total Anchor Status", total_anchor_reason, None),
                 ("Selected Frames", ", ".join(str(v) for v in selected_frames), selected_frames),
             ]

@@ -37,7 +37,7 @@ Runtime baseline:
 - `mk8_local_play/extract_initial_scan.py`
   Fast scan for track-name, race-number, and score-screen anchors. Uses fixed ROIs, segment-based scanning, row-box score detection, a row `2..6` confirmation prefix with optional local offset confirmation for borderline score candidates, and multiple race-number template/ROI variants.
 - `mk8_local_play/extract_score_screen_selection.py`
-  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains FPS-adaptive coarse-to-fine search, transition-centered RaceScore bundle export, FPS-scaled timing logic, 12th-place/template recovery, tie-aware sustained-drop logic for TotalScore timing, and cached total-only stable-signature checks during TotalScore frame selection.
+  Second pass over score candidates to choose RaceScore and TotalScore frames. Contains FPS-adaptive coarse-to-fine search, 60fps-only detail `step=2` with step-1 safety retry, transition-centered RaceScore bundle export, FPS-scaled timing logic, 12th-place/template recovery, tie-aware sustained-drop logic for TotalScore timing, and cached total-only stable-signature checks during TotalScore frame selection.
 - `mk8_local_play/extract_video_io.py`
   Shared seek/read/grab helpers, corrupt-video sampling, and FFmpeg repair flow.
 - `mk8_local_play/extract_common.py`

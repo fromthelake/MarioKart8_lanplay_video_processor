@@ -49,6 +49,7 @@ The format is intentionally simple and human-readable.
 - Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.
 - Second-pass score selection now uses FPS-adaptive coarse stepping with rewind before the first RaceScore hit and again during TotalScore stabilization (30fps baseline remains `+10` / rewind `10`), reducing unnecessary frame-by-frame scanning in long candidate windows.
 - TotalScore stable-signature extraction now reads total digits only (no race-point OCR in that path), and reuses per-frame signature caching within each race detail pass to avoid duplicated probe/scan work.
+- Detail-phase fine scanning now applies `analysis_step=2` only on 60fps-class sources (`step=1` elsewhere). If a 60fps stepped pass misses transition/stable anchors, the same local window is retried once at `step=1`.
 - RaceScore export windows are now centered on the detected points-rollup transition so the saved `2RaceScore` bundle itself matches the intended OCR split.
 - The OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only; the older `Score_template.png` strip fallback has been removed.
 - Connection-reset handling now supports repeated resets within the same video instead of stopping after the first detected reset.

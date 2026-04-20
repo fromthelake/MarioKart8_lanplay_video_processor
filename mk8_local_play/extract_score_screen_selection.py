@@ -34,6 +34,7 @@ from .extract_initial_scan import (
 from .extract_video_io import (
     actual_frame_after_read,
     add_timing,
+    advance_frames_by_grab,
     increment_counter,
     log_exported_frame,
     position_capture_for_read,
@@ -148,6 +149,17 @@ LOW_RES_TOTAL_SCORE_STABLE_FRAMES_30FPS = int(
         "8",
     )
 )
+HIGH_FPS_ANALYSIS_TARGET_FPS = float(
+    os.environ.get("MK8_HIGH_FPS_ANALYSIS_TARGET_FPS", "60")
+)
+HIGH_FPS_ANALYSIS_STEP = max(
+    1,
+    int(os.environ.get("MK8_HIGH_FPS_ANALYSIS_STEP", "2")),
+)
+HIGH_FPS_ANALYSIS_FALLBACK_STEP1 = os.environ.get(
+    "MK8_HIGH_FPS_ANALYSIS_FALLBACK_STEP1",
+    "1",
+).strip().lower() not in {"0", "false", "no", "off"}
 
 
 APP_CONFIG = load_app_config()
@@ -179,6 +191,21 @@ def _coarse_search_step_for_fps(fps):
 
 def _coarse_search_rewind_for_fps(fps):
     return max(1, fps_scaled_frames(COARSE_SEARCH_REWIND_FRAMES_30FPS, fps))
+
+
+def _analysis_step_for_fps(fps):
+    try:
+        fps_value = float(fps)
+    except (TypeError, ValueError):
+        return 1
+    if int(round(fps_value)) == int(round(float(HIGH_FPS_ANALYSIS_TARGET_FPS))):
+        return int(HIGH_FPS_ANALYSIS_STEP)
+    return 1
+
+
+def _effective_analysis_fps(fps, analysis_step):
+    step = max(1, int(analysis_step or 1))
+    return max(1.0, float(fps) / float(step))
 
 
 def _parse_transition_top6(observation):
@@ -276,6 +303,12 @@ def _build_score_analysis_trace(
     cap_source_visible_rows=None,
     cap_source_label="",
     cap_fallback_used=False,
+    analysis_step=1,
+    effective_analysis_fps=None,
+    transition_step1_fallback_used=False,
+    transition_step1_fallback_success=False,
+    total_step1_fallback_used=False,
+    total_step1_fallback_success=False,
     total_score_used_fallback=False,
     ignored_candidate=False,
     ignore_label="",
@@ -296,6 +329,14 @@ def _build_score_analysis_trace(
         "cap_source_visible_rows": None if cap_source_visible_rows is None else int(cap_source_visible_rows),
         "cap_source_label": str(cap_source_label or ""),
         "cap_fallback_used": bool(cap_fallback_used),
+        "analysis_step": max(1, int(analysis_step or 1)),
+        "effective_analysis_fps": (
+            None if effective_analysis_fps is None else float(effective_analysis_fps)
+        ),
+        "transition_step1_fallback_used": bool(transition_step1_fallback_used),
+        "transition_step1_fallback_success": bool(transition_step1_fallback_success),
+        "total_step1_fallback_used": bool(total_step1_fallback_used),
+        "total_step1_fallback_success": bool(total_step1_fallback_success),
         "total_score_used_fallback": bool(total_score_used_fallback),
         "ignored_candidate": bool(ignored_candidate),
         "ignore_label": str(ignore_label or ""),
@@ -725,6 +766,7 @@ def _find_points_transition_frame_in_range(
     *,
     seek_label,
     fps=30.0,
+    analysis_step=1,
 ):
     def _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows):
         return bool(
@@ -732,9 +774,11 @@ def _find_points_transition_frame_in_range(
             and (int(changed_race_rows) >= 1 or int(changed_any_rows) >= 3)
         )
 
-    confirm_true_count = _points_transition_confirm_true_count_for_fps(fps)
-    max_false_gap_frames = _points_transition_max_false_gap_for_fps(fps)
-    fallback_max_false_gap_frames = _points_transition_fallback_max_false_gap_for_fps(fps)
+    analysis_step = max(1, int(analysis_step or 1))
+    effective_fps = _effective_analysis_fps(fps, analysis_step)
+    confirm_true_count = _points_transition_confirm_true_count_for_fps(effective_fps)
+    max_false_gap_frames = _points_transition_max_false_gap_for_fps(effective_fps)
+    fallback_max_false_gap_frames = _points_transition_fallback_max_false_gap_for_fps(effective_fps)
 
     previous_observation = None
     pending_start_frame = None
@@ -744,7 +788,8 @@ def _find_points_transition_frame_in_range(
     pending_last_race_points = None
     pending_last_total_points = None
     seek_to_frame(local_cap, start_frame, stats, label=seek_label)
-    for frame_number in range(int(start_frame), int(end_frame) + 1):
+    frame_number = int(start_frame)
+    while frame_number <= int(end_frame):
         ret, frame = read_video_frame(local_cap, stats)
         if not ret:
             break
@@ -809,6 +854,17 @@ def _find_points_transition_frame_in_range(
                     pending_last_race_points = None
                     pending_last_total_points = None
         previous_observation = observation
+        next_frame = int(frame_number) + int(analysis_step)
+        if next_frame > int(end_frame):
+            break
+        if int(analysis_step) > 1:
+            if not advance_frames_by_grab(
+                local_cap,
+                int(analysis_step) - 1,
+                stats,
+            ):
+                break
+        frame_number = int(next_frame)
     return None, None
 
 
@@ -825,12 +881,54 @@ def _find_points_transition_frame(
     fps=30.0,
     source_height=None,
 ):
-    low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
-    if (
-        not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED
-        or not TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED
-        or (source_height and low_res_height > 0 and int(source_height) <= low_res_height)
-    ):
+    analysis_step = _analysis_step_for_fps(fps)
+    stats["analysis_step_transition"] = int(analysis_step)
+    stats["analysis_step_transition_effective_fps"] = float(
+        _effective_analysis_fps(fps, analysis_step)
+    )
+
+    def _run_transition_search(step):
+        step = max(1, int(step or 1))
+        if (
+            not TOTAL_SCORE_TIMING_FAST_PATH_ENABLED
+            or not TOTAL_SCORE_TRANSITION_PRIMARY_ENABLED
+            or (source_height and low_res_height > 0 and int(source_height) <= low_res_height)
+        ):
+            return _find_points_transition_frame_in_range(
+                local_cap,
+                start_frame,
+                end_frame,
+                left,
+                top,
+                crop_width,
+                crop_height,
+                score_layout_id,
+                stats,
+                seek_label="points_transition_start",
+                fps=fps,
+                analysis_step=step,
+            )
+        primary_offset = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_OFFSET_FRAMES_30FPS, fps)
+        primary_radius = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_RADIUS_FRAMES_30FPS, fps)
+        primary_start_frame = max(int(start_frame), int(start_frame) + primary_offset - primary_radius - 1)
+        primary_end_frame = min(int(end_frame), int(start_frame) + primary_offset + primary_radius)
+        if primary_start_frame < primary_end_frame:
+            primary_transition_frame, primary_points_anchor_frame = _find_points_transition_frame_in_range(
+                local_cap,
+                primary_start_frame,
+                primary_end_frame,
+                left,
+                top,
+                crop_width,
+                crop_height,
+                score_layout_id,
+                stats,
+                seek_label="points_transition_primary",
+                fps=fps,
+                analysis_step=step,
+            )
+            if primary_transition_frame is not None:
+                return primary_transition_frame, primary_points_anchor_frame
         return _find_points_transition_frame_in_range(
             local_cap,
             start_frame,
@@ -843,40 +941,20 @@ def _find_points_transition_frame(
             stats,
             seek_label="points_transition_start",
             fps=fps,
+            analysis_step=step,
         )
-    primary_offset = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_OFFSET_FRAMES_30FPS, fps)
-    primary_radius = fps_scaled_frames(POINTS_TRANSITION_PRIMARY_RADIUS_FRAMES_30FPS, fps)
-    primary_start_frame = max(int(start_frame), int(start_frame) + primary_offset - primary_radius - 1)
-    primary_end_frame = min(int(end_frame), int(start_frame) + primary_offset + primary_radius)
-    if primary_start_frame < primary_end_frame:
-        primary_transition_frame, primary_points_anchor_frame = _find_points_transition_frame_in_range(
-            local_cap,
-            primary_start_frame,
-            primary_end_frame,
-            left,
-            top,
-            crop_width,
-            crop_height,
-            score_layout_id,
-            stats,
-            seek_label="points_transition_primary",
-            fps=fps,
-        )
-        if primary_transition_frame is not None:
-            return primary_transition_frame, primary_points_anchor_frame
-    return _find_points_transition_frame_in_range(
-        local_cap,
-        start_frame,
-        end_frame,
-        left,
-        top,
-        crop_width,
-        crop_height,
-        score_layout_id,
-        stats,
-        seek_label="points_transition_start",
-        fps=fps,
-    )
+
+    low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+    transition_frame, points_anchor_frame = _run_transition_search(analysis_step)
+    if transition_frame is not None:
+        return transition_frame, points_anchor_frame
+    if analysis_step > 1 and HIGH_FPS_ANALYSIS_FALLBACK_STEP1:
+        stats["analysis_step_transition_fallback_used"] += 1
+        transition_frame, points_anchor_frame = _run_transition_search(1)
+        if transition_frame is not None:
+            stats["analysis_step_transition_fallback_success"] += 1
+            return transition_frame, points_anchor_frame
+    return None, None
 
 
 def _frame_has_total_score_signature(
@@ -1007,9 +1085,13 @@ def _find_total_score_stable_frame(
         if bool(is_low_res_source)
         else TOTAL_SCORE_STABLE_FRAMES_30FPS
     )
-    stable_frames_required = max(1, fps_scaled_frames(stable_frames_30fps, fps))
     search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
     signature_cache = {}
+    analysis_step = _analysis_step_for_fps(fps)
+    stats["analysis_step_total"] = int(analysis_step)
+    stats["analysis_step_total_effective_fps"] = float(
+        _effective_analysis_fps(fps, analysis_step)
+    )
 
     def _cached_signature_from_frame(frame_number, *, position_label):
         frame_number = int(frame_number)
@@ -1038,35 +1120,11 @@ def _find_total_score_stable_frame(
         signature_cache[frame_number] = signature
         return signature
 
-    if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
-        early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
-        late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
-        early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
-        late_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS, fps)
-        fallback_start_frame = int(transition_frame)
-        if late_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
-            late_probe_frame,
-            position_label="total_stable_probe_late",
-        ) is not None:
-            frame_number = max(int(transition_frame), int(late_search_start_frame))
-            fallback_start_frame = max(int(transition_frame), int(early_search_start_frame))
-        elif early_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
-            early_probe_frame,
-            position_label="total_stable_probe_early",
-        ) is not None:
-            frame_number = max(int(transition_frame), int(early_search_start_frame))
-            fallback_start_frame = int(transition_frame)
-        else:
-            frame_number = int(transition_frame)
-            fallback_start_frame = int(transition_frame)
-    else:
-        frame_number = int(transition_frame)
-        fallback_start_frame = int(transition_frame)
-
-    def _scan_from(start_frame):
+    def _scan_from(start_frame, *, fine_step, stable_frames_required):
         frame_number = int(start_frame)
         coarse_step = _coarse_search_step_for_fps(fps)
         coarse_rewind = _coarse_search_rewind_for_fps(fps)
+        fine_step = max(1, int(fine_step or 1))
         position_capture_for_read(
             local_cap,
             frame_number,
@@ -1130,14 +1188,77 @@ def _find_total_score_stable_frame(
                 stable_run_start = None
                 stable_run_count = 0
                 stable_signature = None
-            frame_number += 1
+            next_frame = int(frame_number) + int(fine_step)
+            if next_frame > int(search_end_frame):
+                break
+            if int(fine_step) > 1:
+                if not advance_frames_by_grab(
+                    local_cap,
+                    int(fine_step) - 1,
+                    stats,
+                ):
+                    break
+            frame_number = int(next_frame)
         return None
 
-    anchor_frame = _scan_from(frame_number)
+    def _run_with_step(step):
+        step = max(1, int(step or 1))
+        stable_frames_required = max(
+            1,
+            fps_scaled_frames(
+                stable_frames_30fps,
+                _effective_analysis_fps(fps, step),
+            ),
+        )
+        if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
+            early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
+            late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
+            early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
+            late_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS, fps)
+            fallback_start_frame = int(transition_frame)
+            if late_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
+                late_probe_frame,
+                position_label="total_stable_probe_late",
+            ) is not None:
+                frame_number = max(int(transition_frame), int(late_search_start_frame))
+                fallback_start_frame = max(int(transition_frame), int(early_search_start_frame))
+            elif early_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
+                early_probe_frame,
+                position_label="total_stable_probe_early",
+            ) is not None:
+                frame_number = max(int(transition_frame), int(early_search_start_frame))
+                fallback_start_frame = int(transition_frame)
+            else:
+                frame_number = int(transition_frame)
+                fallback_start_frame = int(transition_frame)
+        else:
+            frame_number = int(transition_frame)
+            fallback_start_frame = int(transition_frame)
+
+        anchor_frame = _scan_from(
+            frame_number,
+            fine_step=step,
+            stable_frames_required=stable_frames_required,
+        )
+        if anchor_frame is not None:
+            return int(anchor_frame)
+        if int(fallback_start_frame) < int(frame_number):
+            return _scan_from(
+                int(fallback_start_frame),
+                fine_step=step,
+                stable_frames_required=stable_frames_required,
+            )
+        return None
+
+    anchor_frame = _run_with_step(analysis_step)
     if anchor_frame is not None:
         return int(anchor_frame)
-    if int(fallback_start_frame) < int(frame_number):
-        return _scan_from(int(fallback_start_frame))
+    if analysis_step > 1 and HIGH_FPS_ANALYSIS_FALLBACK_STEP1:
+        stats["analysis_step_total_fallback_used"] += 1
+        anchor_frame = _run_with_step(1)
+        if anchor_frame is not None:
+            stats["analysis_step_total_fallback_success"] += 1
+            return int(anchor_frame)
     return None
 
 
@@ -1359,6 +1480,11 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
     from collections import defaultdict
 
     stats = defaultdict(float)
+    detail_analysis_step = _analysis_step_for_fps(fps)
+    stats["analysis_step_detail"] = int(detail_analysis_step)
+    stats["analysis_step_detail_effective_fps"] = float(
+        _effective_analysis_fps(fps, detail_analysis_step)
+    )
     owned_capture = capture is None
     local_cap = capture if capture is not None else cv2.VideoCapture(video_path)
     if local_cap is None or not local_cap.isOpened():
@@ -1381,6 +1507,21 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
         max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
         label="detail_loop_start",
     )
+
+    def _advance_detail_frame(current_frame):
+        step = max(1, int(detail_analysis_step))
+        next_frame = int(current_frame) + int(step)
+        if next_frame >= int(end_frame):
+            return None
+        if step > 1:
+            if not advance_frames_by_grab(
+                local_cap,
+                step - 1,
+                stats,
+            ):
+                return None
+        return int(next_frame)
+
     while detail_frame_number < end_frame:
         stats["score_detail_frames"] += 1
         ret, frame = read_video_frame(local_cap, stats)
@@ -1467,7 +1608,10 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
                     label="detail_loop_skip",
                 )
                 continue
-            detail_frame_number += 1
+            next_detail_frame = _advance_detail_frame(detail_frame_number)
+            if next_detail_frame is None:
+                break
+            detail_frame_number = int(next_detail_frame)
             continue
 
         layout_metrics = {}
@@ -1520,7 +1664,10 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
                     label="detail_loop_skip",
                 )
                 continue
-            detail_frame_number += 1
+            next_detail_frame = _advance_detail_frame(detail_frame_number)
+            if next_detail_frame is None:
+                break
+            detail_frame_number = int(next_detail_frame)
             continue
 
         if max_val > 0.3 and not np.isinf(max_val) and race_score_frame == 0:
@@ -1667,7 +1814,10 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
                     total_score_frame = int(drop_start_frame) - int(2.7 * fps)
                     break
 
-        detail_frame_number += 1
+        next_detail_frame = _advance_detail_frame(detail_frame_number)
+        if next_detail_frame is None:
+            break
+        detail_frame_number = int(next_detail_frame)
 
     race_score_image = None
     total_score_image = None
@@ -1767,6 +1917,22 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
             cap_source_visible_rows=cap_source_visible_rows,
             cap_source_label=cap_source_label,
             cap_fallback_used=cap_fallback_used,
+            analysis_step=int(detail_analysis_step),
+            effective_analysis_fps=float(
+                _effective_analysis_fps(fps, detail_analysis_step)
+            ),
+            transition_step1_fallback_used=bool(
+                stats.get("analysis_step_transition_fallback_used", 0) > 0
+            ),
+            transition_step1_fallback_success=bool(
+                stats.get("analysis_step_transition_fallback_success", 0) > 0
+            ),
+            total_step1_fallback_used=bool(
+                stats.get("analysis_step_total_fallback_used", 0) > 0
+            ),
+            total_step1_fallback_success=bool(
+                stats.get("analysis_step_total_fallback_success", 0) > 0
+            ),
             total_score_used_fallback=total_score_used_fallback,
             ignored_candidate=bool(False),
             ignore_label="",
