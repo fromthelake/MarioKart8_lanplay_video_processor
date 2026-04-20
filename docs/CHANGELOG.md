@@ -44,6 +44,7 @@ The format is intentionally simple and human-readable.
 - Character shortlist acceleration remains available for experiments, but is disabled by default and only consults races strictly earlier than the current race when enabled, so later races can no longer leak identity priors backward.
 - Low-resolution placeholder-name rescue now clusters near-identical OCR spellings before choosing a canonical name, reducing low-res drift such as `Amber` / `Ambor`.
 - Scoped CLI runs now support `--videos` for selecting multiple explicit file paths in one run. When combined with `--subfolders`, exact relative paths are matched before basename/stem fallback so sibling folders such as `backup/` do not get pulled in accidentally.
+- Headless selection now allows folder targets in `--video` / `--videos` (for example `--videos "2026-03-28"`), and `--extract` now uses the same scoped resolver path instead of forwarding unsupported child args.
 - Scoring recomputation now resets running tournament totals per video/race class, so repeated player names in separate captures no longer inherit totals from earlier videos in the same export.
 - Headless CLI runs now accept `--debug`, which turns on debug CSV, debug workbook, and score-layout image output for that run without changing the normal default behavior.
 - Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.

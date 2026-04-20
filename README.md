@@ -8,6 +8,20 @@ In practice it:
 - rebuilds tournament progress race by race
 - exports the results into structured workbook files for review and sharing
 
+## Scope And Limits
+
+This project is currently designed for tournament videos with:
+- 6 to 12 players visible on score screens
+- one single session per video
+- all recorded races in that video counted toward final standings (except when explicit validation rules mark races as non-counting, for example late temporary player-drop exclusions)
+
+Unsupported input:
+- 5 players or fewer is not supported and is expected to fail or produce invalid standings.
+
+Robustness and known handling:
+- handles many real-world issues, including connection resets/errors, OCR name drift/name changes, pauses/low-motion stretches, and character recognition instability
+- still depends on video quality and readable score screens; low-quality sources can require review
+
 Current output set for a normal run:
 - `*_Tournament_Results.xlsx`
 - `*_Tournament_Results.csv`
@@ -24,6 +38,7 @@ When `--debug` is enabled, the run also writes:
 
 Recent scoring and validation behavior:
 - explicit multi-video CLI selection is now available through `--videos`, so you can process several exact file paths together in one scoped run
+- `--video` / `--videos` also accept folder paths; folder targets resolve to all supported videos in that folder (recursive when combined with `--subfolders`)
 - when `--subfolders` is combined with explicit relative paths in `--videos`, each requested path now resolves exactly instead of also pulling same-named files from other folders such as `backup/`
 - score recomputation now resets running tournament totals per video / race class, so repeated player names across separate captures no longer inherit totals from earlier videos
 - videos can now contain multiple connection resets; later resets in the same source video are detected and segmented correctly
@@ -328,6 +343,7 @@ When `--subfolders` is used:
 - exported frame bundles and Excel/CSV `Video` names include a sanitized relative folder path
 - this avoids naming conflicts when different folders contain files with the same base filename
 - with `--videos`, explicit relative paths are matched exactly before filename fallback is attempted
+- with `--videos`, folder entries are allowed (for example `"2026-03-28"`), and will include every supported file in that folder scope
 
 Process only the current selected input set:
 

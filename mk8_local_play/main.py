@@ -190,15 +190,51 @@ def _selected_input_video_files_single(selected_video: str | None = None, *, inc
     all_video_files = discover_input_video_files(include_subfolders=include_subfolders)
     if not selected_video:
         return all_video_files
-    selected_relative = selected_video.replace("\\", "/").lower()
-    if include_subfolders and ("/" in selected_relative or "\\" in selected_video):
+    selected_text = str(selected_video).strip()
+    requested_path = Path(selected_text)
+
+    # Folder selection support for --video/--videos.
+    # Accept both absolute folder paths and paths relative to Input_Videos.
+    folder_candidates: list[Path] = []
+    if requested_path.is_absolute():
+        folder_candidates.append(requested_path)
+    else:
+        folder_candidates.append(INPUT_DIR / requested_path)
+        folder_candidates.append(PROJECT_ROOT / requested_path)
+    normalized_seen: set[str] = set()
+    for candidate in folder_candidates:
+        try:
+            resolved_candidate = candidate.resolve()
+        except Exception:
+            resolved_candidate = candidate
+        candidate_key = str(resolved_candidate).lower()
+        if candidate_key in normalized_seen:
+            continue
+        normalized_seen.add(candidate_key)
+        if not candidate.exists() or not candidate.is_dir():
+            continue
+        if include_subfolders:
+            iterator = candidate.rglob("*")
+        else:
+            iterator = candidate.iterdir()
+        folder_matches = sorted(
+            path for path in iterator
+            if path.is_file()
+            and path.suffix.lower() in SUPPORTED_VIDEO_SUFFIXES
+            and should_include_input_video_path(path, INPUT_DIR, include_subfolders=True)
+        )
+        if folder_matches:
+            return folder_matches
+
+    selected_relative = selected_text.replace("\\", "/").lower()
+    if include_subfolders and ("/" in selected_relative or "\\" in selected_text):
         relative_matches = [
             path for path in all_video_files
             if str(path.relative_to(INPUT_DIR)).replace("\\", "/").lower() == selected_relative
         ]
         if relative_matches:
             return relative_matches
-    selected_name = Path(selected_video).name.lower()
+    selected_name = requested_path.name.lower()
     exact_matches = [path for path in all_video_files if path.name.lower() == selected_name]
     if exact_matches:
         return exact_matches
@@ -208,11 +244,11 @@ def _selected_input_video_files_single(selected_video: str | None = None, *, inc
     ]
     if relative_matches:
         return relative_matches
-    selected_stem = Path(selected_video).stem.lower()
+    selected_stem = requested_path.stem.lower()
     stem_matches = [path for path in all_video_files if path.stem.lower() == selected_stem]
     if not include_subfolders:
         return stem_matches
-    selected_identity = build_video_identity(Path(selected_video), include_subfolders=True).lower()
+    selected_identity = build_video_identity(requested_path, include_subfolders=True).lower()
     return [
         path for path in all_video_files
         if build_video_identity(path, include_subfolders=True).lower() == selected_identity
@@ -701,12 +737,15 @@ def run_extract(
     )
     if selected_video:
         clear_output_results_for_videos(video_files, include_subfolders=include_subfolders)
-    extra_args = []
-    if isinstance(selected_video, str) and selected_video:
-        extra_args.extend(["--video", selected_video])
-    if include_subfolders:
-        extra_args.append("--subfolders")
-    run_python_module(EXTRACT_MODULE, extra_args=extra_args)
+    selected_video_names = [
+        str(path.relative_to(INPUT_DIR)).replace("\\", "/") if include_subfolders else path.name
+        for path in video_files
+    ]
+    extract_frames.extract_frames(
+        return_frame_cache=False,
+        selected_videos=selected_video_names or None,
+        include_subfolders=include_subfolders,
+    )
 
 
 def run_ocr(
@@ -2829,11 +2868,20 @@ def parse_args() -> argparse.Namespace:
         dest="ultra_low_res",
         help=argparse.SUPPRESS,
     )
-    parser.add_argument("--video", help="Process only a specific video filename, for example Test_3_Races.mkv")
+    parser.add_argument(
+        "--video",
+        help=(
+            "Process one selected input target: video filename, relative/absolute video path, "
+            "or a folder path (folder selection works with --subfolders)"
+        ),
+    )
     parser.add_argument(
         "--videos",
         nargs="+",
-        help="Process multiple explicit video paths together, relative to Input_Videos when using --subfolders",
+        help=(
+            "Process multiple selected input targets together: each entry may be a video path/name or folder path; "
+            "relative entries are resolved under Input_Videos"
+        ),
     )
     return parser.parse_args()
 

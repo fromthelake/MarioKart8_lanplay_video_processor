@@ -78,7 +78,7 @@ Curated demo baseline command:
 - `config/app_config.json:export_image_format` controls exported screenshots globally. Accepted values are `jpg`/`jpeg` and `png`. `MK8_EXPORT_IMAGE_FORMAT` can still override it for scoped experiments.
 - `Output_Results/Frames/` now uses per-video per-race bundle folders. Score-screen OCR inputs are persisted as `anchor_<frame>` and `consensus_<frame>` images so `--selection` and `--ocr` consume the same saved bundles.
 - Character OCR now includes a family-level variant refinement pass for catalog-backed families such as `Birdo`, `Yoshi`, `Shy Guy`, and `Inkling`, plus explicit close-cutout groups such as `Peach` / `Pink Gold Peach` and `Mario` / `Metal Mario` / `Gold Mario`. The pass compares only family members with aligned alpha-cutout color scoring, includes the default/base roster member, and runs before the conservative `Mii` fallback so stable color-family identities are not erased by near-tied variant noise.
-- `--videos` accepts multiple explicit file paths. With `--subfolders`, exact relative paths are resolved before filename fallback so scoped runs do not accidentally include same-named files from sibling folders such as `backup/`.
+- `--video` / `--videos` accept explicit file paths and folder paths. With `--subfolders`, exact relative paths are resolved before filename fallback so scoped runs do not accidentally include same-named files from sibling folders such as `backup/`.
 - Generated outputs belong under `Output_Results/`; curated baselines belong under `benchmarks/baselines/`.
 - Comments should explain intent, assumptions, or tradeoffs, not restate syntax.
 

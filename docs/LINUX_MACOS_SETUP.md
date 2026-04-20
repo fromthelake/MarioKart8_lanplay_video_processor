@@ -207,6 +207,7 @@ When `--subfolders` is used:
 - exported frame bundles and Excel/CSV `Video` names include a sanitized relative folder path
 - this avoids naming conflicts when different folders contain files with the same base filename
 - with `--videos`, explicit relative paths are matched exactly before filename fallback is attempted
+- with `--videos`, folder entries are also valid (for example `"2026-03-28"`), and include all supported files inside that folder scope
 
 Process only the current selected input set:
 
