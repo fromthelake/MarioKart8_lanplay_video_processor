@@ -2781,6 +2781,39 @@ def extract_points_transition_observation(
     }
 
 
+def extract_total_points_observation(
+    frame_image: np.ndarray,
+    *,
+    score_layout_id: str | None = None,
+) -> Dict[str, object]:
+    """Read only total-score digits used for stable total-signature checks."""
+    score_layout = get_score_layout(score_layout_id)
+    processed_img = process_image(frame_image, score_layout_id=score_layout.layout_id)
+    processed_img_pil = Image.fromarray(processed_img).convert("RGB")
+    scale_factor = 5
+    scaled_image = processed_img_pil.resize(
+        (processed_img_pil.width * scale_factor, processed_img_pil.height * scale_factor),
+        Image.NEAREST,
+    )
+    layout = score_digit_layout(scale_factor, score_layout_id=score_layout.layout_id)
+    total_points, total_point_sources = detect_digits_in_image(
+        scaled_image,
+        *layout["total_points"],
+        valid_min=0,
+        valid_max=999,
+        annotation_prefix="",
+        bundle_kind="3TotalScore",
+        field_name="NewTotalScore",
+        draw_image=None,
+        draw_scale_divisor=scale_factor,
+    )
+    return {
+        "total_points": total_points,
+        "total_point_sources": total_point_sources,
+        "score_layout_id": score_layout.layout_id,
+    }
+
+
 def normalize_name_for_vote(name: str) -> str:
     return collapse_name_whitespace(name)
 

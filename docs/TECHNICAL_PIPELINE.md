@@ -188,7 +188,7 @@ These are used by:
 
 Current RaceScore selection behavior:
 - the first score-screen hit still seeds a provisional RaceScore export time
-- before the first confirmed score hit, second-pass search now advances in coarse `+10` frame steps; once a hit is found it rewinds `10` frames and resumes fine `+1` scanning
+- before the first confirmed score hit, second-pass search now advances in coarse FPS-scaled steps and rewinds by an FPS-scaled amount once a hit is found (30fps baseline: `+10` / rewind `10`), then resumes fine `+1` scanning
 - the second pass now uses the same row-box score helper as the initial scan instead of a standalone score-template coefficient
 - when a supported 12th-place template is seen, the later RaceScore offset is FPS-scaled instead of using a raw fixed-frame jump
 - both `12th_pos_template.png` and `12th_pos_templateNL.png` are checked; either one can trigger 12th-row logic
@@ -207,6 +207,8 @@ Current TotalScore selection behavior:
   - after the transition, stable-total detection first probes an early and a late cluster that were learned from the trace study
   - if neither cluster matches, it falls back to the older broad stable-total search
   - the old broad search path therefore still exists as a safety net, but most races avoid the unnecessary decoder work
+- TotalScore stable-signature extraction now uses total digits only (race-point OCR is skipped in this path)
+- within one race detail pass, per-frame TotalScore signatures are cached and reused across probe windows and the full stable scan to avoid duplicate ROI/OCR work
 
 ## 7. OCR Regions
 

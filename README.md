@@ -43,7 +43,8 @@ Recent scoring and validation behavior:
 - 12th-place checks now support both the legacy and Dutch templates during score selection
 - TotalScore timing now waits for a continuous score-signal drop of `5.0 * fps` and anchors from the start of that drop, so short transition animations no longer trigger early TotalScore exports
 - points-transition debounce now uses a fixed confirm-hit count (`p5` by default) with an FPS-scaled false-gap tolerance, so high-FPS sources keep equivalent gap tolerance without over-delaying transition confirmation
-- second-pass score selection now uses a coarse search with rewind before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
+- second-pass score selection now uses FPS-adaptive coarse search with rewind (30fps baseline: `+10` / rewind `10`) before the first hit and again during TotalScore stabilization, reducing wasted frame-by-frame scans
+- TotalScore stable-signature checks now read total digits only (no race-point OCR in that path) and cache per-frame signatures within each race detail pass to avoid duplicate probe/scan work
 - RaceScore export bundles are now centered on the detected score-transition frame, and the saved `2RaceScore` frames are reused directly by OCR
 - the OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only
 

@@ -47,7 +47,8 @@ The format is intentionally simple and human-readable.
 - Scoring recomputation now resets running tournament totals per video/race class, so repeated player names in separate captures no longer inherit totals from earlier videos in the same export.
 - Headless CLI runs now accept `--debug`, which turns on debug CSV, debug workbook, and score-layout image output for that run without changing the normal default behavior.
 - Initial score-candidate confirmation now uses rows `2..6` instead of `1..6`, so Nintendo `Capture taken.` overlays on row `1` no longer suppress real score screens during the first scan.
-- Second-pass score selection now uses coarse `+10` frame stepping with rewind before the first RaceScore hit and again during TotalScore stabilization, reducing unnecessary frame-by-frame scanning in long candidate windows.
+- Second-pass score selection now uses FPS-adaptive coarse stepping with rewind before the first RaceScore hit and again during TotalScore stabilization (30fps baseline remains `+10` / rewind `10`), reducing unnecessary frame-by-frame scanning in long candidate windows.
+- TotalScore stable-signature extraction now reads total digits only (no race-point OCR in that path), and reuses per-frame signature caching within each race detail pass to avoid duplicated probe/scan work.
 - RaceScore export windows are now centered on the detected points-rollup transition so the saved `2RaceScore` bundle itself matches the intended OCR split.
 - The OCR position-template matcher now uses the masked `Score_template_white.png` / `Score_template_black.png` tile path only; the older `Score_template.png` strip fallback has been removed.
 - Connection-reset handling now supports repeated resets within the same video instead of stopping after the first detected reset.

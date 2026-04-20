@@ -46,6 +46,7 @@ from .ocr_scoreboard_consensus import (
     _template_match_score,
     build_position_signal_metrics,
     extract_points_transition_observation,
+    extract_total_points_observation,
     parse_detected_int,
     process_image,
     stack_position_rows,
@@ -107,8 +108,8 @@ TOTAL_SCORE_SIGNATURE_MAX_ROWS = max(
     3,
     int(os.environ.get("MK8_TOTAL_SCORE_SIGNATURE_MAX_ROWS", "6")),
 )
-COARSE_SEARCH_STEP_FRAMES = 10
-COARSE_SEARCH_REWIND_FRAMES = 10
+COARSE_SEARCH_STEP_FRAMES_30FPS = int(os.environ.get("MK8_COARSE_SEARCH_STEP_FRAMES_30FPS", "10"))
+COARSE_SEARCH_REWIND_FRAMES_30FPS = int(os.environ.get("MK8_COARSE_SEARCH_REWIND_FRAMES_30FPS", "10"))
 SMALL_FORWARD_GRAB_WINDOW_FRAMES = 12
 POINTS_TRANSITION_PRIMARY_OFFSET_FRAMES_30FPS = 23
 POINTS_TRANSITION_PRIMARY_RADIUS_FRAMES_30FPS = 2
@@ -170,6 +171,14 @@ def _points_transition_max_false_gap_for_fps(fps):
 
 def _points_transition_fallback_max_false_gap_for_fps(fps):
     return max(0, fps_scaled_frames(POINTS_TRANSITION_FALLBACK_MAX_FALSE_GAP_FRAMES_30FPS, fps))
+
+
+def _coarse_search_step_for_fps(fps):
+    return max(1, fps_scaled_frames(COARSE_SEARCH_STEP_FRAMES_30FPS, fps))
+
+
+def _coarse_search_rewind_for_fps(fps):
+    return max(1, fps_scaled_frames(COARSE_SEARCH_REWIND_FRAMES_30FPS, fps))
 
 
 def _parse_transition_top6(observation):
@@ -638,7 +647,7 @@ def _extract_total_score_stable_signature(
         required_players,
         max_rows=TOTAL_SCORE_SIGNATURE_MAX_ROWS,
     )
-    observation = extract_points_transition_observation(
+    observation = extract_total_points_observation(
         frame_image,
         score_layout_id=score_layout_id,
     )
@@ -1000,40 +1009,51 @@ def _find_total_score_stable_frame(
     )
     stable_frames_required = max(1, fps_scaled_frames(stable_frames_30fps, fps))
     search_end_frame = int(transition_frame) + max(1, int(round(TOTAL_SCORE_STABLE_SEARCH_SECONDS * max(float(fps), 1.0))))
+    signature_cache = {}
+
+    def _cached_signature_from_frame(frame_number, *, position_label):
+        frame_number = int(frame_number)
+        if frame_number in signature_cache:
+            return signature_cache[frame_number]
+        position_capture_for_read(
+            local_cap,
+            frame_number,
+            stats,
+            max_forward_grab_frames=SMALL_FORWARD_GRAB_WINDOW_FRAMES,
+            label=position_label,
+        )
+        ret, frame = read_video_frame(local_cap, stats)
+        if not ret:
+            signature_cache[frame_number] = None
+            return None
+        upscaled_image = crop_and_upscale_image(
+            frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
+        )
+        signature = _extract_total_score_stable_signature(
+            upscaled_image,
+            score_layout_id=score_layout_id,
+            is_low_res_source=bool(is_low_res_source),
+            min_players_expected=min_players_expected,
+        )
+        signature_cache[frame_number] = signature
+        return signature
+
     if TOTAL_SCORE_TIMING_FAST_PATH_ENABLED and TOTAL_SCORE_STABLE_HINT_ENABLED:
         early_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_PROBE_FRAMES_30FPS, fps)
         late_probe_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_PROBE_FRAMES_30FPS, fps)
         early_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS, fps)
         late_search_start_frame = int(transition_frame) + fps_scaled_frames(TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS, fps)
         fallback_start_frame = int(transition_frame)
-        if late_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
-            local_cap,
+        if late_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
             late_probe_frame,
-            left,
-            top,
-            crop_width,
-            crop_height,
-            score_layout_id,
-            stats,
             position_label="total_stable_probe_late",
-            is_low_res_source=bool(is_low_res_source),
-            min_players_expected=min_players_expected,
-        ):
+        ) is not None:
             frame_number = max(int(transition_frame), int(late_search_start_frame))
             fallback_start_frame = max(int(transition_frame), int(early_search_start_frame))
-        elif early_probe_frame <= int(search_end_frame) and _frame_has_total_score_signature(
-            local_cap,
+        elif early_probe_frame <= int(search_end_frame) and _cached_signature_from_frame(
             early_probe_frame,
-            left,
-            top,
-            crop_width,
-            crop_height,
-            score_layout_id,
-            stats,
             position_label="total_stable_probe_early",
-            is_low_res_source=bool(is_low_res_source),
-            min_players_expected=min_players_expected,
-        ):
+        ) is not None:
             frame_number = max(int(transition_frame), int(early_search_start_frame))
             fallback_start_frame = int(transition_frame)
         else:
@@ -1045,8 +1065,8 @@ def _find_total_score_stable_frame(
 
     def _scan_from(start_frame):
         frame_number = int(start_frame)
-        coarse_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
-        coarse_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
+        coarse_step = _coarse_search_step_for_fps(fps)
+        coarse_rewind = _coarse_search_rewind_for_fps(fps)
         position_capture_for_read(
             local_cap,
             frame_number,
@@ -1064,12 +1084,16 @@ def _find_total_score_stable_frame(
             upscaled_image = crop_and_upscale_image(
                 frame, left, top, crop_width, crop_height, TARGET_WIDTH, TARGET_HEIGHT
             )
-            signature = _extract_total_score_stable_signature(
-                upscaled_image,
-                score_layout_id=score_layout_id,
-                is_low_res_source=bool(is_low_res_source),
-                min_players_expected=min_players_expected,
-            )
+            if int(frame_number) in signature_cache:
+                signature = signature_cache[int(frame_number)]
+            else:
+                signature = _extract_total_score_stable_signature(
+                    upscaled_image,
+                    score_layout_id=score_layout_id,
+                    is_low_res_source=bool(is_low_res_source),
+                    min_players_expected=min_players_expected,
+                )
+                signature_cache[int(frame_number)] = signature
             if coarse_step > 1:
                 if signature is None:
                     next_frame = min(int(search_end_frame), int(frame_number) + coarse_step)
@@ -1347,8 +1371,8 @@ def analyze_score_window_task(task, frame_to_timecode, capture=None):
             "analysis_trace": _build_score_analysis_trace(task, start_frame=start_frame, end_frame=end_frame),
         }
 
-    coarse_search_step = max(1, int(COARSE_SEARCH_STEP_FRAMES))
-    coarse_search_rewind = max(1, int(COARSE_SEARCH_REWIND_FRAMES))
+    coarse_search_step = _coarse_search_step_for_fps(fps)
+    coarse_search_rewind = _coarse_search_rewind_for_fps(fps)
     detail_frame_number = start_frame
     position_capture_for_read(
         local_cap,
