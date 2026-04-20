@@ -268,6 +268,7 @@ Current row-count gating notes:
 - player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
 - player-count support is position-template based (no occupancy-score requirement in the final gate)
 - for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
+- non-finite template scores (`inf` / `NaN`) are treated as invalid for row-count support so malformed scores cannot produce phantom visible rows
 - the winning template label on that row is debug signal only
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 - for TotalScore drop confirmation, the code also supports a tie-aware prefix where a row may accept any non-decreasing rank up to its own row number

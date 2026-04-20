@@ -150,6 +150,7 @@ The format is intentionally simple and human-readable.
 - Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
 - `Output_Results` can now be cleared safely from both CLI and GUI without breaking the expected folder structure, because the app recreates `Frames/`, `Debug/`, and `Debug/Score_Frames/` immediately after cleanup.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
+- Position-guided player counting now rejects non-finite template scores (`inf` / `NaN`) in the row-support gate, preventing malformed match values from producing phantom extra players in RaceScore count voting/recovery.
 - Total-score player-count vote ties are now deterministic and conservative: tied total-count votes prefer the race-score count and otherwise choose the lower tied count, preventing unstable `8/9/10` tie picks from creating false race/total count mismatches.
 - Review reasons are now shorter, deduplicated, capped for export, and no longer repeat connection-reset messages across later races after a detected reset.
 - Session validation now preserves the original OCR total-score row position, preventing false `Scoreboard total order is not descending.` warnings after tournament-only `Position After Race` recomputation.

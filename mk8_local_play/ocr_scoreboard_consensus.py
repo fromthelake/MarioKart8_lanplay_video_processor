@@ -1902,6 +1902,10 @@ def determine_position_guided_visible_rows(
             float(metric.get("best_position_score", 0.0)),
             float(metric.get("raw_best_position_score", 0.0)),
         )
+        # Guard against pathological template-match outputs (inf/NaN) creating
+        # phantom visible rows during player-count voting/recovery.
+        if not np.isfinite(best_position_score):
+            best_position_score = float("-inf")
         if bool(is_low_res):
             threshold = (
                 LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD

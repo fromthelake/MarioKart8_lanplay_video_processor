@@ -165,6 +165,11 @@ position method is consistent with the corrected expectation.
 The position-template method is now the official row-count guide, with the older OCR-only
 count retained only as a legacy debug reference.
 
+Additional guard in the row-count path:
+
+- non-finite template-match scores (`inf` / `NaN`) are treated as invalid row support
+- this prevents malformed match values from creating phantom extra players during vote/recovery
+
 For initial score detection, the same left-side row boxes now act as the score trigger:
 
 - rows `1..N` must all match their own rank
