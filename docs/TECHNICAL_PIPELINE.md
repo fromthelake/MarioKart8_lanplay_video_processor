@@ -259,14 +259,15 @@ Current tile windows:
 - row step: `52`
 
 Current row-count gating notes:
-- the normal position-template presence threshold stays at `Coeff >= 0.55`
-- row 1 now has a guarded exception at `Coeff >= 0.30` when the row is strongly occupied
+- the normal position-template presence threshold stays at `Coeff >= 0.50`
+- row 1 uses the dedicated row-1 presence threshold `Coeff >= 0.30`
 - player count now uses the highest row with convincing position-strip presence instead of stopping at the first failed middle row
+- player-count support is position-template based (no occupancy-score requirement in the final gate)
 - for counting, the row index decides the player count; any convincing position template `1..12` may satisfy that row
 - the winning template label on that row is debug signal only
 - this protects both top-row screenshot overlays and late-row tie / neighbour confusion such as `11` winning visually on row `12`
 - for TotalScore drop confirmation, the code also supports a tie-aware prefix where a row may accept any non-decreasing rank up to its own row number
-- transition debounce (`p5` with false-gap tolerance) is now FPS-scaled so timing-equivalent behavior is preserved across 30fps/60fps videos
+- transition debounce keeps a fixed confirm-hit target (`p5` by default), while false-gap tolerance is FPS-scaled so timing-equivalent gap tolerance is preserved across 30fps/60fps videos
 - the black/white matcher checks the white tile first, then the black tile, and keeps the stronger masked score for that row
 
 ### Character icons
@@ -488,7 +489,8 @@ The console and GUI share the same runtime logger. Each new top-level run resets
 
 Current reporting conventions:
 - elapsed timestamps shown in log prefixes are wall-clock time since the current run started
-- live progress rows use aligned `Comp` / `Done` fields and include CPU/RAM where useful for stall detection
+- live progress rows use aligned `Comp` / `Done` fields and include CPU/RAM/GPU where useful for stall detection
+- RAM in progress and phase summaries is reported as percentage
 - confirmed scan detections are emitted in frame order as `Race ### | Track/Race/Score | Source HH:MM:SS | Frame #######`
 - `Run - Performance Summary` reports wall-clock run timing and split phase timings
 - OCR profiler sections explicitly label cumulative timing so they are not confused with wall-clock runtime

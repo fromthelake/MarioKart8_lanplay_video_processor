@@ -9,6 +9,10 @@ try:
     import psutil  # type: ignore
 except Exception:
     psutil = None
+try:
+    import pynvml  # type: ignore
+except Exception:
+    pynvml = None
 
 
 @dataclass
@@ -24,11 +28,21 @@ class ResourceSnapshot:
 class ResourceMonitor:
     def __init__(self):
         self.peak = ResourceSnapshot()
+        self._gpu_handle = None
+        self._nvml_ready = False
         if psutil is not None:
             try:
                 psutil.cpu_percent(interval=None)
             except Exception:
                 pass
+        if pynvml is not None:
+            try:
+                pynvml.nvmlInit()
+                self._gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                self._nvml_ready = True
+            except Exception:
+                self._gpu_handle = None
+                self._nvml_ready = False
 
     def sample(self) -> ResourceSnapshot:
         snapshot = ResourceSnapshot()
@@ -38,6 +52,15 @@ class ResourceMonitor:
                 memory = psutil.virtual_memory()
                 snapshot.ram_used_gb = memory.used / (1024 ** 3)
                 snapshot.ram_total_gb = memory.total / (1024 ** 3)
+            except Exception:
+                pass
+        if self._nvml_ready and self._gpu_handle is not None and pynvml is not None:
+            try:
+                utilization = pynvml.nvmlDeviceGetUtilizationRates(self._gpu_handle)
+                memory_info = pynvml.nvmlDeviceGetMemoryInfo(self._gpu_handle)
+                snapshot.gpu_percent = float(utilization.gpu)
+                snapshot.vram_used_gb = float(memory_info.used) / (1024 ** 3)
+                snapshot.vram_total_gb = float(memory_info.total) / (1024 ** 3)
             except Exception:
                 pass
 
@@ -255,12 +278,13 @@ class ConsoleLogger:
         if snapshot.cpu_percent is not None:
             cpu_value = f"{snapshot.cpu_percent:.0f}%"
             parts.append(self.video_field("CPU ", cpu_value, value_color_token) if value_color_token is not None else f"CPU {cpu_value}")
-        if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
-            ram_value = f"{snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB"
-            parts.append(self.video_field("RAM ", ram_value, value_color_token) if value_color_token is not None else f"RAM {ram_value}")
-        if snapshot.gpu_percent is not None:
-            gpu_value = f"{snapshot.gpu_percent:.0f}%"
-            parts.append(self.video_field("GPU ", gpu_value, value_color_token) if value_color_token is not None else f"GPU {gpu_value}")
+        ram_value = "-"
+        if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None and snapshot.ram_total_gb > 0:
+            ram_percent = (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0
+            ram_value = f"{ram_percent:.0f}%"
+        parts.append(self.video_field("RAM ", ram_value, value_color_token) if value_color_token is not None else f"RAM {ram_value}")
+        gpu_value = f"{snapshot.gpu_percent:.0f}%" if snapshot.gpu_percent is not None else "-"
+        parts.append(self.video_field("GPU ", gpu_value, value_color_token) if value_color_token is not None else f"GPU {gpu_value}")
         if snapshot.vram_used_gb is not None and snapshot.vram_total_gb is not None:
             vram_value = f"{snapshot.vram_used_gb:.1f}/{snapshot.vram_total_gb:.1f} GB"
             parts.append(self.video_field("VRAM ", vram_value, value_color_token) if value_color_token is not None else f"VRAM {vram_value}")
@@ -272,7 +296,10 @@ class ConsoleLogger:
         if snapshot.cpu_percent is not None:
             lines.append(f"Peak CPU: {snapshot.cpu_percent:.0f}%")
         if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
-            lines.append(f"Peak RAM: {snapshot.ram_used_gb:.1f} / {snapshot.ram_total_gb:.1f} GB")
+            ram_percent = (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0 if snapshot.ram_total_gb > 0 else 0.0
+            lines.append(f"Peak RAM: {ram_percent:.0f}%")
+        if snapshot.gpu_percent is not None:
+            lines.append(f"Peak GPU: {snapshot.gpu_percent:.0f}%")
         return lines
 
 

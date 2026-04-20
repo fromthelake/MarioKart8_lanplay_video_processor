@@ -74,9 +74,8 @@ def _parse_pause_seconds(text: str) -> float:
 
 def _simulate_transition_rows(observations, fps):
     pattern_lengths = (5,)
-    # Experimental streak diagnostics: tolerate brief freeze frames in scoring animation.
-    # This is intentionally separate from production debounce settings.
-    pattern_max_false_gap = 2
+    # Keep p5 diagnostics aligned with production debounce/fallback behavior.
+    pattern_max_false_gap = int(score_sel._points_transition_max_false_gap_for_fps(float(fps)))
 
     def _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows):
         return bool(
@@ -86,6 +85,7 @@ def _simulate_transition_rows(observations, fps):
 
     confirm_true_count = int(score_sel._points_transition_confirm_true_count_for_fps(float(fps)))
     max_false_gap_frames = int(score_sel._points_transition_max_false_gap_for_fps(float(fps)))
+    fallback_max_false_gap_frames = int(score_sel._points_transition_fallback_max_false_gap_for_fps(float(fps)))
 
     rows = []
     row_index_by_frame = {}
@@ -94,6 +94,12 @@ def _simulate_transition_rows(observations, fps):
     pending_start_frame = None
     pending_true_count = 0
     pending_false_streak = 0
+    pending_base_race_points = None
+    pending_last_race_points = None
+    pending_last_total_points = None
+    pending_true_frames = []
+    production_p5_confirm_frame = None
+    production_p5_anchor_frame = None
     pattern_states = {
         int(length): {
             "start_frame": None,
@@ -110,6 +116,10 @@ def _simulate_transition_rows(observations, fps):
         changed_total_rows = 0
         changed_race_rows = 0
         changed_any_rows = 0
+        fallback_keep_alive = False
+        fallback_stable_race_rows = 0
+        fallback_stable_total_rows = 0
+        fallback_changed_from_base_rows = 0
         if previous is not None:
             for row_index in range(6):
                 prev_race = parse_detected_int(previous["race_points"][row_index])
@@ -131,16 +141,26 @@ def _simulate_transition_rows(observations, fps):
         triggered = False
         trigger_confirm_frame = None
         if raw_trigger:
+            current_race_points, current_total_points = score_sel._parse_transition_top6(obs)
             if pending_start_frame is None:
                 pending_start_frame = int(frame_number)
                 pending_true_count = 1
                 pending_false_streak = 0
+                pending_base_race_points, _ = score_sel._parse_transition_top6(previous)
+                pending_last_race_points = list(current_race_points)
+                pending_last_total_points = list(current_total_points)
+                pending_true_frames = [int(frame_number)]
             else:
                 pending_true_count += 1
                 pending_false_streak = 0
+                pending_last_race_points = list(current_race_points)
+                pending_last_total_points = list(current_total_points)
+                pending_true_frames = list(pending_true_frames) + [int(frame_number)]
             if pending_true_count >= int(confirm_true_count):
                 triggered = True
                 trigger_confirm_frame = int(frame_number)
+                production_p5_confirm_frame = int(frame_number)
+                production_p5_anchor_frame = int(pending_start_frame)
                 anchor_index = row_index_by_frame.get(int(pending_start_frame))
                 if anchor_index is not None:
                     rows[anchor_index]["triggered"] = True
@@ -150,13 +170,39 @@ def _simulate_transition_rows(observations, fps):
                 pending_start_frame = None
                 pending_true_count = 0
                 pending_false_streak = 0
+                pending_base_race_points = None
+                pending_last_race_points = None
+                pending_last_total_points = None
+                pending_true_frames = []
         elif pending_start_frame is not None:
             pending_false_streak += 1
             if pending_false_streak > int(max_false_gap_frames):
-                pending_start_frame = None
-                pending_true_count = 0
-                pending_false_streak = 0
-
+                current_race_points, current_total_points = score_sel._parse_transition_top6(obs)
+                (
+                    fallback_keep_alive,
+                    fallback_stable_race_rows,
+                    fallback_stable_total_rows,
+                    fallback_changed_from_base_rows,
+                ) = score_sel._points_transition_fallback_keep_alive(
+                    false_streak=int(pending_false_streak),
+                    max_false_gap=int(fallback_max_false_gap_frames),
+                    base_race_points=pending_base_race_points,
+                    previous_race_points=pending_last_race_points,
+                    previous_total_points=pending_last_total_points,
+                    current_race_points=current_race_points,
+                    current_total_points=current_total_points,
+                )
+                if bool(fallback_keep_alive):
+                    pending_last_race_points = list(current_race_points)
+                    pending_last_total_points = list(current_total_points)
+                else:
+                    pending_start_frame = None
+                    pending_true_count = 0
+                    pending_false_streak = 0
+                    pending_base_race_points = None
+                    pending_last_race_points = None
+                    pending_last_total_points = None
+                    pending_true_frames = []
         pattern_snapshot = {}
         for length in pattern_lengths:
             state = pattern_states[int(length)]
@@ -202,6 +248,10 @@ def _simulate_transition_rows(observations, fps):
                 "pending_false_streak": int(pending_false_streak),
                 "pending_start_frame": None if pending_start_frame is None else int(pending_start_frame),
                 "trigger_confirm_frame": trigger_confirm_frame,
+                "fallback_keep_alive": bool(fallback_keep_alive),
+                "fallback_stable_race_rows": int(fallback_stable_race_rows),
+                "fallback_stable_total_rows": int(fallback_stable_total_rows),
+                "fallback_changed_from_base_rows": int(fallback_changed_from_base_rows),
                 "changed_race_rows": int(changed_race_rows),
                 "changed_total_rows": int(changed_total_rows),
                 "changed_any_rows": int(changed_any_rows),
@@ -210,18 +260,29 @@ def _simulate_transition_rows(observations, fps):
                 "raw_trigger_history": "".join(raw_history),
                 "current_frame_contributes_to_streak": bool(raw_trigger),
                 "pattern_max_false_gap": int(pattern_max_false_gap),
+                "fallback_max_false_gap_frames": int(fallback_max_false_gap_frames),
             }
         )
         for length in pattern_lengths:
             snapshot = pattern_snapshot[int(length)]
-            rows[-1][f"p{int(length)}_true_count"] = int(snapshot["true_count"])
-            rows[-1][f"p{int(length)}_false_streak"] = int(snapshot["false_streak"])
-            rows[-1][f"p{int(length)}_confirmed"] = bool(snapshot["confirmed"])
-            rows[-1][f"p{int(length)}_start_frame"] = snapshot["start_frame"]
-            rows[-1][f"p{int(length)}_confirm_frame"] = snapshot["confirm_frame"]
-            rows[-1][f"p{int(length)}_anchor_frame"] = snapshot["anchor_frame"]
-            rows[-1][f"p{int(length)}_streak_alive"] = bool(snapshot["streak_alive"])
-            rows[-1][f"p{int(length)}_true_frames"] = "|".join(str(v) for v in snapshot["true_frames"])
+            if int(length) == 5:
+                rows[-1][f"p{int(length)}_true_count"] = int(pending_true_count)
+                rows[-1][f"p{int(length)}_false_streak"] = int(pending_false_streak)
+                rows[-1][f"p{int(length)}_confirmed"] = bool(production_p5_confirm_frame is not None)
+                rows[-1][f"p{int(length)}_start_frame"] = pending_start_frame
+                rows[-1][f"p{int(length)}_confirm_frame"] = production_p5_confirm_frame
+                rows[-1][f"p{int(length)}_anchor_frame"] = production_p5_anchor_frame
+                rows[-1][f"p{int(length)}_streak_alive"] = bool(pending_start_frame is not None)
+                rows[-1][f"p{int(length)}_true_frames"] = "|".join(str(v) for v in pending_true_frames)
+            else:
+                rows[-1][f"p{int(length)}_true_count"] = int(snapshot["true_count"])
+                rows[-1][f"p{int(length)}_false_streak"] = int(snapshot["false_streak"])
+                rows[-1][f"p{int(length)}_confirmed"] = bool(snapshot["confirmed"])
+                rows[-1][f"p{int(length)}_start_frame"] = snapshot["start_frame"]
+                rows[-1][f"p{int(length)}_confirm_frame"] = snapshot["confirm_frame"]
+                rows[-1][f"p{int(length)}_anchor_frame"] = snapshot["anchor_frame"]
+                rows[-1][f"p{int(length)}_streak_alive"] = bool(snapshot["streak_alive"])
+                rows[-1][f"p{int(length)}_true_frames"] = "|".join(str(v) for v in snapshot["true_frames"])
         row_index_by_frame[int(frame_number)] = len(rows) - 1
         previous = obs
     return rows, first_trigger
@@ -1878,6 +1939,16 @@ class ScoreDetailDebugGui(tk.Tk):
                     sf=row.get("pending_start_frame"),
                     need_true=int(score_sel._points_transition_confirm_true_count_for_fps(float(self.context.get("fps", 30.0) if self.context else 30.0))),
                     max_false=int(score_sel._points_transition_max_false_gap_for_fps(float(self.context.get("fps", 30.0) if self.context else 30.0))),
+                )
+            )
+            keep_state = "TRUE" if bool(row.get("fallback_keep_alive", False)) else "FALSE"
+            lines.append(
+                "- Fallback keep-alive (after max false gap): {keep_state} | stable race rows={sr}/6 | stable total rows={st}/6 | changed-from-base race rows={cb}/6 | max false gap fallback={fg}".format(
+                    keep_state=keep_state,
+                    sr=int(row.get("fallback_stable_race_rows", 0) or 0),
+                    st=int(row.get("fallback_stable_total_rows", 0) or 0),
+                    cb=int(row.get("fallback_changed_from_base_rows", 0) or 0),
+                    fg=int(row.get("fallback_max_false_gap_frames", 0) or 0),
                 )
             )
             lines.append(f"- Transition rule triggered: {'TRUE' if bool(row.get('triggered', False)) else 'FALSE'}")

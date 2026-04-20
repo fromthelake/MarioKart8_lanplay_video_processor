@@ -278,7 +278,7 @@ def _build_reset_segment_columns(df: pd.DataFrame, final_rows: pd.DataFrame) -> 
     if max_session_count <= 1:
         return pd.DataFrame(index=final_rows.index), []
 
-    valid_rows = df.loc[df["FixPlayerName"].notna()].copy()
+    valid_rows = df.loc[df["_ScoringKey"].notna()].copy()
     if valid_rows.empty:
         return pd.DataFrame(index=final_rows.index), []
 
@@ -286,7 +286,7 @@ def _build_reset_segment_columns(df: pd.DataFrame, final_rows: pd.DataFrame) -> 
     valid_rows["SessionNewTotalScore"] = pd.to_numeric(valid_rows["SessionNewTotalScore"], errors="coerce")
     session_totals = (
         valid_rows.dropna(subset=["SessionIndex", "SessionNewTotalScore"])
-        .groupby(["RaceClass", "FixPlayerName", "SessionIndex"], sort=False)["SessionNewTotalScore"]
+        .groupby(["RaceClass", "_ScoringKey", "SessionIndex"], sort=False)["SessionNewTotalScore"]
         .max()
         .to_dict()
     )
@@ -296,12 +296,12 @@ def _build_reset_segment_columns(df: pd.DataFrame, final_rows: pd.DataFrame) -> 
 
     for row_index, row in final_rows.iterrows():
         race_class = row["RaceClass"]
-        player_name = row["FixPlayerName"]
+        player_key = row["_ScoringKey"]
         session_count = int(session_counts_by_video.get(race_class, 1))
         if session_count <= 1:
             continue
         for session_index in range(1, session_count + 1):
-            value = session_totals.get((race_class, player_name, session_index))
+            value = session_totals.get((race_class, player_key, session_index))
             if value is None or pd.isna(value):
                 continue
             reset_segments.at[row_index, f"Points Segment {session_index}"] = int(value)
@@ -310,15 +310,25 @@ def _build_reset_segment_columns(df: pd.DataFrame, final_rows: pd.DataFrame) -> 
 
 
 def build_final_standings_df(df):
+    working_df = df.copy()
+    if "_ScoringKey" not in working_df.columns:
+        low_res_mask = working_df.get("IsLowRes", False).fillna(False).astype(bool) if "IsLowRes" in working_df.columns else False
+        identity_labels = working_df.get("IdentityLabel", "").fillna("").astype(str).str.strip() if "IdentityLabel" in working_df.columns else pd.Series([""] * len(working_df))
+        fix_names = working_df.get("FixPlayerName", "").fillna("").astype(str).str.strip() if "FixPlayerName" in working_df.columns else pd.Series([""] * len(working_df))
+        scoring_key = fix_names.copy()
+        scoring_key = scoring_key.where(~(low_res_mask & identity_labels.ne("")), identity_labels)
+        scoring_key = scoring_key.where(scoring_key.ne(""), fix_names)
+        working_df["_ScoringKey"] = scoring_key
+
     race_counts_by_video = (
-        df.groupby("RaceClass", sort=True)["RaceIDNumber"]
+        working_df.groupby("RaceClass", sort=True)["RaceIDNumber"]
         .nunique()
         .to_dict()
     )
 
     final_rows = (
-        df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable")
-        .groupby(["RaceClass", "FixPlayerName"], sort=False, as_index=False)
+        working_df.sort_values(["RaceClass", "RaceIDNumber", "RacePosition"], kind="stable")
+        .groupby(["RaceClass", "_ScoringKey"], sort=False, as_index=False)
         .tail(1)
         .copy()
         .reset_index(drop=True)
@@ -327,9 +337,9 @@ def build_final_standings_df(df):
     final_rows["Races"] = final_rows["RaceClass"].map(lambda value: int(race_counts_by_video.get(value, 0)))
     final_rows["Character"] = final_rows.apply(
         lambda row: _select_most_used_character(
-            df.loc[
-                (df["RaceClass"] == row["RaceClass"])
-                & (df["FixPlayerName"] == row["FixPlayerName"])
+            working_df.loc[
+                (working_df["RaceClass"] == row["RaceClass"])
+                & (working_df["_ScoringKey"] == row["_ScoringKey"])
             ]
         ),
         axis=1,
@@ -341,13 +351,16 @@ def build_final_standings_df(df):
         {
             "VideoName": final_rows["RaceClass"],
             "Races": final_rows["Races"],
-            "PlayerName": final_rows["FixPlayerName"],
+            "PlayerName": final_rows["FixPlayerName"].where(
+                final_rows["FixPlayerName"].fillna("").astype(str).str.strip().ne(""),
+                final_rows["_ScoringKey"],
+            ),
             "TotalPoints": final_rows["NewTotalScore"],
             "Character": final_rows["Character"],
             "CharacterRosterName": final_rows["CharacterRosterName"],
         }
     )
-    reset_segments_df, reset_segment_column_names = _build_reset_segment_columns(df, final_rows)
+    reset_segments_df, reset_segment_column_names = _build_reset_segment_columns(working_df, final_rows)
     for column_name in reset_segment_column_names:
         standings_df[column_name] = reset_segments_df[column_name].to_numpy()
 

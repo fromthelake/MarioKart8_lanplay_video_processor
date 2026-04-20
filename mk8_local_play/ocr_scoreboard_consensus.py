@@ -52,7 +52,7 @@ POSITION_ROW_PADDING_X = 1
 POSITION_ROW_PADDING_TOP = 1
 POSITION_ROW_PADDING_BOTTOM = 4
 POSITION_FALSE_NEGATIVE_WEIGHT = 2.0
-POSITION_PRESENT_COEFF_THRESHOLD = float(os.environ.get("MK8_POSITION_PRESENT_COEFF_THRESHOLD", "0.55"))
+POSITION_PRESENT_COEFF_THRESHOLD = float(os.environ.get("MK8_POSITION_PRESENT_COEFF_THRESHOLD", "0.50"))
 POSITION_PRESENT_ROW1_COEFF_THRESHOLD = float(os.environ.get("MK8_POSITION_PRESENT_ROW1_COEFF_THRESHOLD", "0.30"))
 LOW_RES_POSITION_PRESENT_COEFF_THRESHOLD = float(os.environ.get("MK8_LOW_RES_POSITION_PRESENT_COEFF_THRESHOLD", "0.35"))
 LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD = float(os.environ.get("MK8_LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD", "0.35"))
@@ -1890,7 +1890,7 @@ def determine_position_guided_visible_rows(
     *,
     is_low_res: bool = False,
 ) -> int:
-    """Count visible rows using occupancy plus position-strip presence.
+    """Count visible rows using position-strip template presence only.
 
     Player count should be based on whether a row visibly contains a plausible rank badge,
     not on whether the exact row-number template wins there. This avoids undercounting on
@@ -1902,8 +1902,6 @@ def determine_position_guided_visible_rows(
             float(metric.get("best_position_score", 0.0)),
             float(metric.get("raw_best_position_score", 0.0)),
         )
-        occupancy_score = float(metric.get("occupancy_score", 0.0))
-
         if bool(is_low_res):
             threshold = (
                 LOW_RES_POSITION_PRESENT_ROW1_COEFF_THRESHOLD
@@ -1912,10 +1910,27 @@ def determine_position_guided_visible_rows(
             )
         else:
             threshold = POSITION_PRESENT_ROW1_COEFF_THRESHOLD if row_number == 1 else POSITION_PRESENT_COEFF_THRESHOLD
-        row_supported = occupancy_score >= occupancy_threshold and best_position_score >= threshold
+        row_supported = best_position_score >= threshold
         if row_supported:
             return row_number
     return 0
+
+
+def _pick_visible_rows_from_votes(
+    votes: Counter,
+    *,
+    fallback: int = 0,
+    prefer: int | None = None,
+) -> int:
+    if not votes:
+        return int(fallback)
+    ordered = votes.most_common()
+    top_count = int(ordered[0][1])
+    top_candidates = [int(value) for value, count in ordered if int(count) == top_count]
+    if prefer is not None and int(prefer) in top_candidates:
+        return int(prefer)
+    # Conservative tie-break: choose the lower row-count candidate.
+    return int(min(top_candidates))
 
 
 def _observation_supports_low_res_row12_character_fallback(observation: Dict[str, object]) -> bool:
@@ -3594,12 +3609,12 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     )
     total_consensus_observations = total_observations
     visible_votes = Counter(observation["visible_rows"] for observation in score_count_observations if observation["visible_rows"] > 0)
-    visible_rows = visible_votes.most_common(1)[0][0] if visible_votes else 0
+    visible_rows = _pick_visible_rows_from_votes(visible_votes, fallback=0)
     row_count_confidence = (visible_votes[visible_rows] / len(score_count_observations)) if visible_rows and score_count_observations else 0.0
     position_guided_visible_votes = Counter(
         observation["position_guided_visible_rows"] for observation in score_count_observations if observation["position_guided_visible_rows"] > 0
     )
-    position_guided_visible_rows = position_guided_visible_votes.most_common(1)[0][0] if position_guided_visible_votes else 0
+    position_guided_visible_rows = _pick_visible_rows_from_votes(position_guided_visible_votes, fallback=0)
     position_guided_row_count_confidence = (
         position_guided_visible_votes[position_guided_visible_rows] / len(score_count_observations)
         if position_guided_visible_rows and score_count_observations else 0.0
@@ -3607,14 +3622,16 @@ def build_consensus_observation(frames: List[np.ndarray], total_frames: List[np.
     total_visible_votes = Counter(
         observation["visible_rows"] for observation in total_consensus_observations if observation["visible_rows"] > 0
     )
-    total_visible_rows = total_visible_votes.most_common(1)[0][0] if total_visible_votes else visible_rows
+    total_visible_rows = _pick_visible_rows_from_votes(total_visible_votes, fallback=visible_rows, prefer=visible_rows)
     total_position_guided_visible_votes = Counter(
         observation["position_guided_visible_rows"]
         for observation in total_consensus_observations
         if observation["position_guided_visible_rows"] > 0
     )
-    total_position_guided_visible_rows = (
-        total_position_guided_visible_votes.most_common(1)[0][0] if total_position_guided_visible_votes else position_guided_visible_rows
+    total_position_guided_visible_rows = _pick_visible_rows_from_votes(
+        total_position_guided_visible_votes,
+        fallback=position_guided_visible_rows,
+        prefer=position_guided_visible_rows,
     )
 
     low_res_row12_character_support_votes = 0

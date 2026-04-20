@@ -1707,9 +1707,25 @@ def _run_all_with_video_overlap(video_files: list[Path], *, selection_mode: bool
             performance_lines.append(f"- Avg active OCR consumers during extract: {avg_active_extract:.2f}")
         if active_extract_samples:
             avg_cpu_extract = sum(float(item.get("cpu_percent") or 0.0) for item in active_extract_samples) / len(active_extract_samples)
-            avg_ram_extract = sum(float(item.get("ram_used_gb") or 0.0) for item in active_extract_samples) / len(active_extract_samples)
+            ram_percent_values = [
+                (float(item.get("ram_used_gb") or 0.0) / float(item.get("ram_total_gb") or 0.0)) * 100.0
+                for item in active_extract_samples
+                if float(item.get("ram_total_gb") or 0.0) > 0.0
+            ]
+            avg_ram_extract = (sum(ram_percent_values) / len(ram_percent_values)) if ram_percent_values else None
+            gpu_values = [float(item.get("gpu_percent")) for item in active_extract_samples if item.get("gpu_percent") is not None]
+            avg_gpu_extract = (sum(gpu_values) / len(gpu_values)) if gpu_values else None
             performance_lines.append(f"- Avg CPU during extract while OCR active: {avg_cpu_extract:.0f}%")
-            performance_lines.append(f"- Avg RAM during extract while OCR active: {avg_ram_extract:.1f} GB")
+            performance_lines.append(
+                f"- Avg RAM during extract while OCR active: {avg_ram_extract:.0f}%"
+                if avg_ram_extract is not None else
+                "- Avg RAM during extract while OCR active: -"
+            )
+            performance_lines.append(
+                f"- Avg GPU during extract while OCR active: {avg_gpu_extract:.0f}%"
+                if avg_gpu_extract is not None else
+                "- Avg GPU during extract while OCR active: -"
+            )
     if extract_summary.get("per_video_summaries"):
         performance_lines.extend(["", "Per-video summary"])
         table_headers = ["Video", "Source", "Wall", "StageSum", "Scan", "Score", "OCR", "Final", "Rate", "Races", "Players", "Review"]

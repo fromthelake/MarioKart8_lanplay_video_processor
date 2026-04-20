@@ -485,6 +485,48 @@ class OcrScoreboardConsensusTests(unittest.TestCase):
 
         self.assertEqual(merged, [16, 19, 22, 56])
 
+    def test_low_res_legacy_row_count_promotion_requires_strong_alignment(self):
+        self.assertTrue(
+            ocr_scoreboard_consensus._should_promote_low_res_score_row_count_with_legacy(
+                is_low_res=True,
+                score_rows=10,
+                total_rows=12,
+                legacy_score_rows=12,
+                legacy_total_rows=12,
+                legacy_confidence=1.0,
+            )
+        )
+        self.assertFalse(
+            ocr_scoreboard_consensus._should_promote_low_res_score_row_count_with_legacy(
+                is_low_res=True,
+                score_rows=10,
+                total_rows=12,
+                legacy_score_rows=11,
+                legacy_total_rows=12,
+                legacy_confidence=1.0,
+            )
+        )
+        self.assertFalse(
+            ocr_scoreboard_consensus._should_promote_low_res_score_row_count_with_legacy(
+                is_low_res=True,
+                score_rows=10,
+                total_rows=12,
+                legacy_score_rows=12,
+                legacy_total_rows=12,
+                legacy_confidence=0.75,
+            )
+        )
+        self.assertFalse(
+            ocr_scoreboard_consensus._should_promote_low_res_score_row_count_with_legacy(
+                is_low_res=False,
+                score_rows=10,
+                total_rows=12,
+                legacy_score_rows=12,
+                legacy_total_rows=12,
+                legacy_confidence=1.0,
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

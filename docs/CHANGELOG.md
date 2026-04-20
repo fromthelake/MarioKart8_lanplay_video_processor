@@ -69,6 +69,7 @@ The format is intentionally simple and human-readable.
 - Selection and scoped extract runs now clear only the selected videos' exported artifacts internally before extraction starts, so repeated scoped runs start cleanly without external shell cleanup.
 - Console reporting is now clearer and more consistent during long runs: selected videos get stable neon accents, video-owned values are colored without coloring whole lines, the final performance summary is table-based, and `Time saved by overlap` shows the wall-clock savings gained from overlap and parallelism.
 - Console workflow ordering is now consistent across the input summary, frame-count preflight, scan/start labels, and per-video summaries. Scan progress now uses time-based `HH:MM:SS / HH:MM:SS` output, live progress rows use aligned `Comp` / `Done` fields, OCR progress reports `Active` race bundles, and the performance summary splits OCR race reading from validation/export and workbook/CSV export timing.
+- Resource progress lines now report `CPU`, `RAM`, and `GPU` together; RAM is shown as percentage in live status and phase summaries.
 - Score-screen extraction now supports both LAN 2 two-player split-screen and LAN 1 one-player full-screen layouts for `2RaceScore` / `3TotalScore`.
 - Initial score-screen detection now checks both supported score-anchor ROIs in one pass and tags the winning layout on each score candidate.
 - Initial scan ignore detection now supports multiple gallery/review templates so Nintendo Switch Album / Gallery control bars can be rejected before score candidates are queued.
@@ -132,9 +133,9 @@ The format is intentionally simple and human-readable.
 - RaceScore player counts now recover from later frames when the black results banner hides the last row.
 - Duplicate exact player names can now be split with character-aware identity tracking, producing stable names such as `Name_1` and `Name_2`.
 - Review-reason parsing no longer turns values like `15.0` into incorrect messages such as `150`.
-- Position-guided player count detection now treats rows with `Coeff < 0.55` as empty, preventing false extra rows in stable 10-player cases.
+- Position-guided player count detection now treats rows with `Coeff < 0.50` as empty, preventing false extra rows in stable 10-player cases.
 - Position-guided OCR row counts now allow a guarded row-1 exception at `Coeff >= 0.30` when first place is visually occupied but partly covered by the Nintendo `Capture taken.` overlay.
-- Transition debounce for the points-rollup trigger is now FPS-scaled (true-count and max-false-gap), preserving equivalent timing behavior across 30fps and 60fps sources.
+- Transition debounce for the points-rollup trigger now keeps a fixed confirm-hit target (`p5` default) while scaling false-gap tolerance with FPS, preserving equivalent timing tolerance across 30fps and 60fps sources without over-delaying confirmation.
 - RaceScore frame selection now scales the old post-12th timing by FPS and can search slightly later frames for a valid 12th-place row when a 12-player race would otherwise be exported one frame too early.
 - `Digit confidence is low` and race-points mismatches caused by late RaceScore frames drifting downward are now eliminated on validated multi-video OCR runs.
 - False RacePoints and TotalScore regressions caused by padded digit rows no longer trigger unnecessary OCR fallback on validated races.
@@ -147,6 +148,7 @@ The format is intentionally simple and human-readable.
 - Low-resolution ROI/template sizing and blob fallback thresholds are now exposed through `config/app_config.json` for future tuning without code edits.
 - `Output_Results` can now be cleared safely from both CLI and GUI without breaking the expected folder structure, because the app recreates `Frames/`, `Debug/`, and `Debug/Score_Frames/` immediately after cleanup.
 - Position-guided player counts now use the highest convincing row index instead of collapsing at the first failed middle row, which fixes `12 -> 5` count failures and allows row `12` to count when any convincing position template is present there, even if template `11` visually wins.
+- Total-score player-count vote ties are now deterministic and conservative: tied total-count votes prefer the race-score count and otherwise choose the lower tied count, preventing unstable `8/9/10` tie picks from creating false race/total count mismatches.
 - Review reasons are now shorter, deduplicated, capped for export, and no longer repeat connection-reset messages across later races after a detected reset.
 - Session validation now preserves the original OCR total-score row position, preventing false `Scoreboard total order is not descending.` warnings after tournament-only `Position After Race` recomputation.
 - Post-reset local `TotalScore` values are now validated against the reset-local session totals instead of continuing to trigger false tournament-total mismatches in later races.

@@ -40,6 +40,14 @@ def _race_level_player_count(race_rows: pd.DataFrame) -> int:
     return visible_rows
 
 
+def _scoring_player_key(row: pd.Series) -> str:
+    is_low_res = bool(row.get("IsLowRes", False))
+    identity_label = str(row.get("IdentityLabel") or "").strip()
+    if is_low_res and identity_label:
+        return identity_label
+    return str(row.get("FixPlayerName") or "").strip()
+
+
 def _seed_session_baseline_from_first_race(
     race_rows: pd.DataFrame,
     tournament_totals: dict[str, int],
@@ -69,7 +77,7 @@ def _seed_session_baseline_from_first_race(
         return
 
     for row_index, row in candidate_rows.iterrows():
-        player_key = str(row.get("FixPlayerName") or "").strip()
+        player_key = _scoring_player_key(row)
         if not player_key:
             continue
         tournament_totals[player_key] = int(old_totals.loc[row_index])
@@ -161,7 +169,7 @@ def _recompute_scoring_totals(df: pd.DataFrame) -> pd.DataFrame:
                 current_session_index = race_session_index
                 _seed_session_baseline_from_first_race(race_rows, tournament_totals, session_totals)
             for index, row in race_rows.iterrows():
-                player_key = str(row.get("FixPlayerName") or "")
+                player_key = _scoring_player_key(row)
                 old_total = int(tournament_totals[player_key])
                 old_session_total = int(session_totals[player_key])
                 counts_toward_totals = bool(row.get("CountsTowardTotals", True))

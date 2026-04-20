@@ -121,6 +121,18 @@ POINTS_TRANSITION_CONFIRM_WINDOW_FRAMES = int(
 POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES_30FPS = int(
     os.environ.get("MK8_POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES", "2")
 )
+POINTS_TRANSITION_FALLBACK_MAX_FALSE_GAP_FRAMES_30FPS = int(
+    os.environ.get("MK8_POINTS_TRANSITION_FALLBACK_MAX_FALSE_GAP_FRAMES", "6")
+)
+POINTS_TRANSITION_FALLBACK_MIN_STABLE_ROWS = int(
+    os.environ.get("MK8_POINTS_TRANSITION_FALLBACK_MIN_STABLE_ROWS", "4")
+)
+POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS = int(
+    os.environ.get("MK8_POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS", "4")
+)
+POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS_DESCENDING = int(
+    os.environ.get("MK8_POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS_DESCENDING", "3")
+)
 TOTAL_SCORE_EARLY_STABLE_START_FRAMES_30FPS = 35
 TOTAL_SCORE_EARLY_STABLE_END_FRAMES_30FPS = 50
 TOTAL_SCORE_LATE_STABLE_START_FRAMES_30FPS = 89
@@ -146,11 +158,98 @@ TOTAL_SCORE_STABLE_HINT_ENABLED = os.environ.get("MK8_TOTAL_SCORE_STABLE_HINT", 
 
 
 def _points_transition_confirm_true_count_for_fps(fps):
-    return max(1, fps_scaled_frames(POINTS_TRANSITION_CONFIRM_TRUE_COUNT_30FPS, fps))
+    # Keep confirm-hit requirement fixed across FPS.
+    # At higher FPS we naturally see more raw-hit opportunities, so scaling this value
+    # upward can over-delay/lose valid transitions.
+    return max(1, int(POINTS_TRANSITION_CONFIRM_TRUE_COUNT_30FPS))
 
 
 def _points_transition_max_false_gap_for_fps(fps):
     return max(0, fps_scaled_frames(POINTS_TRANSITION_MAX_FALSE_GAP_FRAMES_30FPS, fps))
+
+
+def _points_transition_fallback_max_false_gap_for_fps(fps):
+    return max(0, fps_scaled_frames(POINTS_TRANSITION_FALLBACK_MAX_FALSE_GAP_FRAMES_30FPS, fps))
+
+
+def _parse_transition_top6(observation):
+    race_points = [
+        parse_detected_int(value)
+        for value in list((observation or {}).get("race_points") or [])[:6]
+    ]
+    total_points = [
+        parse_detected_int(value)
+        for value in list((observation or {}).get("total_points") or [])[:6]
+    ]
+    if len(race_points) < 6:
+        race_points.extend([None] * (6 - len(race_points)))
+    if len(total_points) < 6:
+        total_points.extend([None] * (6 - len(total_points)))
+    return race_points[:6], total_points[:6]
+
+
+def _count_equal_known_rows(previous_values, current_values):
+    return sum(
+        1
+        for prev_value, cur_value in zip(list(previous_values or [])[:6], list(current_values or [])[:6])
+        if prev_value is not None and cur_value is not None and int(prev_value) == int(cur_value)
+    )
+
+
+def _count_changed_from_base_rows(base_values, current_values):
+    return sum(
+        1
+        for base_value, cur_value in zip(list(base_values or [])[:6], list(current_values or [])[:6])
+        if base_value is not None and cur_value is not None and int(base_value) != int(cur_value)
+    )
+
+
+def _is_non_increasing_with_empty_zero(values):
+    normalized = [
+        0 if value is None else int(value)
+        for value in list(values or [])[:6]
+    ]
+    if len(normalized) < 6:
+        normalized.extend([0] * (6 - len(normalized)))
+    return all(int(normalized[idx]) >= int(normalized[idx + 1]) for idx in range(5))
+
+
+def _count_positive_rows(values):
+    return sum(
+        1
+        for value in list(values or [])[:6]
+        if value is not None and int(value) > 0
+    )
+
+
+def _points_transition_fallback_keep_alive(
+    *,
+    false_streak,
+    max_false_gap,
+    base_race_points,
+    previous_race_points,
+    previous_total_points,
+    current_race_points,
+    current_total_points,
+):
+    stable_race_rows = _count_equal_known_rows(previous_race_points, current_race_points)
+    stable_total_rows = _count_equal_known_rows(previous_total_points, current_total_points)
+    changed_from_base_rows = _count_changed_from_base_rows(base_race_points, current_race_points)
+    keep_alive_standard = bool(
+        int(false_streak) <= int(max_false_gap)
+        and int(stable_race_rows) >= int(POINTS_TRANSITION_FALLBACK_MIN_STABLE_ROWS)
+        and int(stable_total_rows) >= int(POINTS_TRANSITION_FALLBACK_MIN_STABLE_ROWS)
+        and int(changed_from_base_rows) >= int(POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS)
+    )
+    keep_alive_descending = bool(
+        int(false_streak) <= int(max_false_gap)
+        and int(stable_total_rows) >= int(POINTS_TRANSITION_FALLBACK_MIN_STABLE_ROWS)
+        and int(changed_from_base_rows) >= int(POINTS_TRANSITION_FALLBACK_MIN_CHANGED_FROM_BASE_ROWS_DESCENDING)
+        and _is_non_increasing_with_empty_zero(current_race_points)
+        and int(_count_positive_rows(current_race_points)) >= 2
+    )
+    keep_alive = bool(keep_alive_standard or keep_alive_descending)
+    return keep_alive, int(stable_race_rows), int(stable_total_rows), int(changed_from_base_rows)
 
 
 def _build_score_analysis_trace(
@@ -626,11 +725,15 @@ def _find_points_transition_frame_in_range(
 
     confirm_true_count = _points_transition_confirm_true_count_for_fps(fps)
     max_false_gap_frames = _points_transition_max_false_gap_for_fps(fps)
+    fallback_max_false_gap_frames = _points_transition_fallback_max_false_gap_for_fps(fps)
 
     previous_observation = None
     pending_start_frame = None
     pending_true_count = 0
     pending_false_streak = 0
+    pending_base_race_points = None
+    pending_last_race_points = None
+    pending_last_total_points = None
     seek_to_frame(local_cap, start_frame, stats, label=seek_label)
     for frame_number in range(int(start_frame), int(end_frame) + 1):
         ret, frame = read_video_frame(local_cap, stats)
@@ -657,21 +760,45 @@ def _find_points_transition_frame_in_range(
                 changed_any_rows += int(race_changed or total_changed)
             hit = _is_transition_hit(changed_total_rows, changed_race_rows, changed_any_rows)
             if hit:
+                current_race_points, current_total_points = _parse_transition_top6(observation)
                 if pending_start_frame is None:
                     pending_start_frame = int(frame_number)
                     pending_true_count = 1
                     pending_false_streak = 0
+                    pending_base_race_points, _ = _parse_transition_top6(previous_observation)
+                    pending_last_race_points = list(current_race_points)
+                    pending_last_total_points = list(current_total_points)
                 else:
                     pending_true_count += 1
                     pending_false_streak = 0
+                    pending_last_race_points = list(current_race_points)
+                    pending_last_total_points = list(current_total_points)
                 if pending_true_count >= int(confirm_true_count):
                     return int(pending_start_frame), int(pending_start_frame)
             elif pending_start_frame is not None:
                 pending_false_streak += 1
                 if pending_false_streak > int(max_false_gap_frames):
+                    current_race_points, current_total_points = _parse_transition_top6(observation)
+                    keep_alive, _stable_race_rows, _stable_total_rows, _changed_from_base_rows = _points_transition_fallback_keep_alive(
+                        false_streak=int(pending_false_streak),
+                        max_false_gap=int(fallback_max_false_gap_frames),
+                        base_race_points=pending_base_race_points,
+                        previous_race_points=pending_last_race_points,
+                        previous_total_points=pending_last_total_points,
+                        current_race_points=current_race_points,
+                        current_total_points=current_total_points,
+                    )
+                    if keep_alive:
+                        pending_last_race_points = list(current_race_points)
+                        pending_last_total_points = list(current_total_points)
+                        previous_observation = observation
+                        continue
                     pending_start_frame = None
                     pending_true_count = 0
                     pending_false_streak = 0
+                    pending_base_race_points = None
+                    pending_last_race_points = None
+                    pending_last_total_points = None
         previous_observation = observation
     return None, None
 

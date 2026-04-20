@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import os
 from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -14,6 +16,7 @@ from .app_runtime import load_app_config
 from .extract_common import (
     debug_low_res_assignment_path,
     debug_low_res_resolution_path,
+    debug_low_res_video_dir,
     find_score_bundle_anchor_path,
 )
 from .ocr_name_matching import choose_canonical_name, normalize_name_for_vote, weighted_similarity
@@ -42,6 +45,14 @@ LOW_RES_CHARACTER_ROI_LEFT_SHIFT = LOW_RES_CHARACTER_OFFSET_X - LOW_RES_CHARACTE
 LOW_RES_CHARACTER_ROI_TOP_SHIFT = LOW_RES_CHARACTER_OFFSET_Y - LOW_RES_CHARACTER_ROI_PAD_Y
 ULTRA_LOW_RES_BLOB_MATCH_MIN_SCORE = APP_CONFIG.ultra_low_res_blob_match_min_score
 ULTRA_LOW_RES_BLOB_MATCH_MIN_MARGIN = APP_CONFIG.ultra_low_res_blob_match_min_margin
+LOW_RES_DEBUG_TILE_WIDTH = 240
+LOW_RES_DEBUG_TILE_HEIGHT = 64
+LOW_RES_DEBUG_HEADER_HEIGHT = 42
+LOW_RES_DEBUG_ROW_HEADER_WIDTH = 160
+LOW_RES_DEBUG_CELL_GAP = 4
+ULTRA_LOW_RES_LINK_BLOB_WEIGHT = 0.70
+ULTRA_LOW_RES_LINK_NAME_WEIGHT = 0.20
+ULTRA_LOW_RES_LINK_CHARACTER_WEIGHT = 0.10
 
 
 def is_low_res_height(source_height: int | None, max_source_height: int) -> bool:
@@ -650,6 +661,212 @@ def _write_debug_outputs(debug_dir: Path, race_class: str, assignment_rows: List
         writer.writerows(resolution_rows)
 
 
+def _resize_for_debug_tile(image: np.ndarray) -> np.ndarray:
+    if image.size == 0:
+        return np.zeros((LOW_RES_DEBUG_TILE_HEIGHT, LOW_RES_DEBUG_TILE_WIDTH, 3), dtype=np.uint8)
+    return cv2.resize(
+        image,
+        (LOW_RES_DEBUG_TILE_WIDTH, LOW_RES_DEBUG_TILE_HEIGHT),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+
+def _draw_roi_cell(cell_roi: np.ndarray, label_text: str) -> np.ndarray:
+    tile = _resize_for_debug_tile(cell_roi)
+    cv2.rectangle(tile, (0, 0), (LOW_RES_DEBUG_TILE_WIDTH - 1, LOW_RES_DEBUG_TILE_HEIGHT - 1), (255, 255, 255), 1)
+    cv2.rectangle(tile, (0, 0), (LOW_RES_DEBUG_TILE_WIDTH - 1, 18), (0, 0, 0), thickness=-1)
+    cv2.putText(tile, label_text, (4, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+    return tile
+
+
+def _draw_empty_roi_cell(label_text: str = "") -> np.ndarray:
+    tile = np.full((LOW_RES_DEBUG_TILE_HEIGHT, LOW_RES_DEBUG_TILE_WIDTH, 3), 32, dtype=np.uint8)
+    cv2.rectangle(tile, (0, 0), (LOW_RES_DEBUG_TILE_WIDTH - 1, LOW_RES_DEBUG_TILE_HEIGHT - 1), (96, 96, 96), 1)
+    if label_text:
+        cv2.putText(tile, label_text, (6, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
+    return tile
+
+
+def _write_identity_link_grid(
+    race_class: str,
+    group: pd.DataFrame,
+    row_assignments: Dict[int, dict],
+    race_ids: List[int],
+    placeholders: List[str],
+    frames_folder: str | Path,
+) -> None:
+    cells_by_placeholder: dict[str, dict[int, dict[str, object]]] = {
+        placeholder: {}
+        for placeholder in placeholders
+    }
+
+    for race_id in race_ids:
+        race_rows = group[group['RaceIDNumber'] == race_id].sort_values('RacePosition', kind='stable')
+        frame_path = race_score_image_path(frames_folder, race_class, race_id)
+        frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        if frame is None:
+            continue
+        score_layout_id = score_layout_id_from_filename(frame_path)
+
+        for row_index, row in race_rows.iterrows():
+            assignment = row_assignments.get(row_index)
+            if not assignment:
+                continue
+            placeholder = str(assignment.get('placeholder') or '')
+            if not placeholder:
+                continue
+            position = int(row.get('RacePosition') or 0)
+            if position <= 0:
+                continue
+            roi = _extract_ultra_low_res_combined_roi(frame, position, score_layout_id=score_layout_id)
+            cell_label = f"R{int(race_id)}P{position}"
+            cells_by_placeholder.setdefault(placeholder, {})[int(race_id)] = {
+                "roi": roi,
+                "cell_label": cell_label,
+                "position": position,
+                "frame_path": str(frame_path),
+            }
+
+    rows = len(placeholders)
+    cols = len(race_ids)
+    canvas_height = LOW_RES_DEBUG_HEADER_HEIGHT + rows * (LOW_RES_DEBUG_TILE_HEIGHT + LOW_RES_DEBUG_CELL_GAP) + LOW_RES_DEBUG_CELL_GAP
+    canvas_width = LOW_RES_DEBUG_ROW_HEADER_WIDTH + cols * (LOW_RES_DEBUG_TILE_WIDTH + LOW_RES_DEBUG_CELL_GAP) + LOW_RES_DEBUG_CELL_GAP
+    canvas = np.full((canvas_height, canvas_width, 3), 18, dtype=np.uint8)
+
+    title = f"Low-res identity link grid | {race_class} | rows={rows} cols={cols}"
+    cv2.putText(canvas, title, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA)
+
+    for col_idx, race_id in enumerate(race_ids):
+        x = LOW_RES_DEBUG_ROW_HEADER_WIDTH + LOW_RES_DEBUG_CELL_GAP + col_idx * (LOW_RES_DEBUG_TILE_WIDTH + LOW_RES_DEBUG_CELL_GAP)
+        cv2.putText(
+            canvas,
+            f"Race {int(race_id):02d}",
+            (x + 6, LOW_RES_DEBUG_HEADER_HEIGHT - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
+
+    manifest_rows: list[dict[str, object]] = []
+    for row_idx, placeholder in enumerate(placeholders):
+        y = LOW_RES_DEBUG_HEADER_HEIGHT + LOW_RES_DEBUG_CELL_GAP + row_idx * (LOW_RES_DEBUG_TILE_HEIGHT + LOW_RES_DEBUG_CELL_GAP)
+        cv2.putText(
+            canvas,
+            str(placeholder),
+            (8, y + 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (220, 220, 220),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            f"P{row_idx + 1:02d}",
+            (8, y + 46),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (150, 150, 150),
+            1,
+            cv2.LINE_AA,
+        )
+
+        for col_idx, race_id in enumerate(race_ids):
+            x = LOW_RES_DEBUG_ROW_HEADER_WIDTH + LOW_RES_DEBUG_CELL_GAP + col_idx * (LOW_RES_DEBUG_TILE_WIDTH + LOW_RES_DEBUG_CELL_GAP)
+            cell = cells_by_placeholder.get(placeholder, {}).get(race_id)
+            if cell is None:
+                tile = _draw_empty_roi_cell("--")
+                manifest_rows.append(
+                    {
+                        "Placeholder": placeholder,
+                        "Race": int(race_id),
+                        "CellLabel": "",
+                        "RacePosition": "",
+                        "FramePath": "",
+                    }
+                )
+            else:
+                tile = _draw_roi_cell(np.asarray(cell["roi"]), str(cell["cell_label"]))
+                manifest_rows.append(
+                    {
+                        "Placeholder": placeholder,
+                        "Race": int(race_id),
+                        "CellLabel": str(cell["cell_label"]),
+                        "RacePosition": int(cell["position"]),
+                        "FramePath": str(cell["frame_path"]),
+                    }
+                )
+            canvas[y:y + LOW_RES_DEBUG_TILE_HEIGHT, x:x + LOW_RES_DEBUG_TILE_WIDTH] = tile
+
+    output_dir = debug_low_res_video_dir(race_class)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_dir / "identity_link_grid.png"), canvas)
+    with (output_dir / "identity_link_grid_manifest.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["Placeholder", "Race", "CellLabel", "RacePosition", "FramePath"])
+        writer.writeheader()
+        writer.writerows(manifest_rows)
+
+
+def _write_identity_points_audit(
+    race_class: str,
+    group: pd.DataFrame,
+    row_assignments: Dict[int, dict],
+    race_ids: List[int],
+    placeholders: List[str],
+    resolution_by_placeholder: Dict[str, dict],
+) -> None:
+    cumulative_by_placeholder = {placeholder: 0 for placeholder in placeholders}
+    audit_rows: list[dict[str, object]] = []
+    for race_id in race_ids:
+        race_rows = group[group['RaceIDNumber'] == race_id].sort_values('RacePosition', kind='stable')
+        for row_index, row in race_rows.iterrows():
+            assignment = row_assignments.get(row_index)
+            if not assignment:
+                continue
+            placeholder = str(assignment.get('placeholder') or '')
+            if not placeholder:
+                continue
+            race_points = int(row.get('RacePoints') or 0)
+            cumulative_by_placeholder[placeholder] = int(cumulative_by_placeholder.get(placeholder, 0)) + race_points
+            audit_rows.append(
+                {
+                    "Race": int(race_id),
+                    "Placeholder": placeholder,
+                    "ResolvedName": str(resolution_by_placeholder.get(placeholder, {}).get("ResolvedName") or placeholder),
+                    "RacePosition": int(row.get('RacePosition') or 0),
+                    "RacePoints": race_points,
+                    "CumulativePoints": int(cumulative_by_placeholder[placeholder]),
+                    "CellLabel": f"R{int(race_id)}P{int(row.get('RacePosition') or 0)}",
+                }
+            )
+    output_dir = debug_low_res_video_dir(race_class)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "identity_points_audit.csv").open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=[
+                "Race",
+                "Placeholder",
+                "ResolvedName",
+                "RacePosition",
+                "RacePoints",
+                "CumulativePoints",
+                "CellLabel",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(audit_rows)
+
+
+def _forced_ultra_low_res_race_classes() -> set[str]:
+    raw_value = os.environ.get("MK8_ULTRA_LOW_RES_RACE_CLASSES", "").strip()
+    if not raw_value:
+        return set()
+    return {item.strip() for item in raw_value.split(",") if item.strip()}
+
+
 def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: str | Path, race_class: str,
                                     *, write_debug_outputs: bool = False, debug_dir: str | Path | None = None) -> pd.DataFrame:
     group = race_class_df.sort_values(['RaceIDNumber', 'RacePosition'], kind='stable').copy()
@@ -666,11 +883,14 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
     seed_race_id = min(race_ids, key=lambda race_id: (-visible_rows_by_race[race_id], race_id))
     max_players = int(visible_rows_by_race[seed_race_id])
     placeholders = [_placeholder_name(index) for index in range(1, max_players + 1)]
+    forced_ultra_classes = _forced_ultra_low_res_race_classes()
+    blob_first_mode = race_class in forced_ultra_classes
 
     identity_state: Dict[str, dict] = {
         placeholder: {
             'placeholder': placeholder,
             'name_refs': [],
+            'blob_refs': [],
             'character_votes': [],
             'ocr_history': [],
         }
@@ -696,6 +916,7 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
             row_features.append({
                 'position': position,
                 'name_binary': preprocess_low_res_name_roi(name_roi),
+                'combined_blob': _extract_ultra_low_res_combined_roi(frame, position, score_layout_id=score_layout_id),
                 'character_index': row.get('CharacterIndex'),
                 'ocr_name': str(row.get('PlayerName') or ''),
             })
@@ -705,12 +926,14 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
             for row_index, row_feature, placeholder in zip(row_indices, row_features, placeholders[:visible_rows]):
                 state = identity_state[placeholder]
                 state['name_refs'].append(row_feature['name_binary'])
+                state['blob_refs'].append(row_feature['combined_blob'])
                 state['character_votes'].append(row_feature['character_index'])
                 state['ocr_history'].append({'ocr_name': row_feature['ocr_name'], 'assignment_score': 1.0})
                 row_assignments[row_index] = {
                     'placeholder': placeholder,
                     'assigned_name': placeholder,
                     'combined_score': 1.0,
+                    'blob_score': 1.0,
                     'name_score': 1.0,
                     'character_score': 1.0,
                 }
@@ -720,8 +943,17 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
                     'Placeholder': placeholder,
                     'AssignedName': placeholder,
                     'CombinedScore': 1.0,
+                    'BlobScore': 1.0,
                     'NameScore': 1.0,
                     'CharacterScore': 1.0,
+                    'LinkMode': 'ultra_blob_first' if blob_first_mode else 'name_character',
+                    'AssignmentMethod': 'seed_race_bootstrap',
+                    'RowBestPlaceholder': placeholder,
+                    'RowBestScore': 1.0,
+                    'RowSecondPlaceholder': '',
+                    'RowSecondScore': '',
+                    'RowScoreMargin': '',
+                    'RowTop3': '',
                 })
             continue
 
@@ -733,25 +965,52 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
                 name_score = 0.0
                 if state['name_refs']:
                     name_score = max(compare_low_res_name_features(row_feature['name_binary'], ref) for ref in state['name_refs'][-5:])
+                blob_score = 0.0
+                if state['blob_refs']:
+                    blob_score = max(
+                        _compare_ultra_low_res_blob(reference_blob, row_feature['combined_blob'])
+                        for reference_blob in state['blob_refs'][-5:]
+                    )
                 character_score = compare_character_indices(_dominant_character_index(state['character_votes']), row_feature['character_index'])
-                combined_score = (LOW_RES_NAME_WEIGHT * name_score) + (LOW_RES_CHARACTER_WEIGHT * character_score)
+                if blob_first_mode:
+                    combined_score = (
+                        (ULTRA_LOW_RES_LINK_BLOB_WEIGHT * blob_score)
+                        + (ULTRA_LOW_RES_LINK_NAME_WEIGHT * name_score)
+                        + (ULTRA_LOW_RES_LINK_CHARACTER_WEIGHT * character_score)
+                    )
+                else:
+                    combined_score = (LOW_RES_NAME_WEIGHT * name_score) + (LOW_RES_CHARACTER_WEIGHT * character_score)
                 score_matrix[row_pos, col_pos] = combined_score
-                detail_scores[row_pos][col_pos] = (name_score, character_score, combined_score)
+                detail_scores[row_pos][col_pos] = (blob_score, name_score, character_score, combined_score)
 
         assignments = _solve_max_assignment(score_matrix)
         for row_pos, col_pos in enumerate(assignments):
             row_index = row_indices[row_pos]
             row_feature = row_features[row_pos]
             placeholder = placeholders[col_pos]
-            name_score, character_score, combined_score = detail_scores[row_pos][col_pos]
+            blob_score, name_score, character_score, combined_score = detail_scores[row_pos][col_pos]
+            ranked_cols = sorted(range(max_players), key=lambda idx: float(score_matrix[row_pos, idx]), reverse=True)
+            row_best_col = ranked_cols[0] if ranked_cols else col_pos
+            row_second_col = ranked_cols[1] if len(ranked_cols) > 1 else None
+            row_best_score = float(score_matrix[row_pos, row_best_col])
+            row_second_score = float(score_matrix[row_pos, row_second_col]) if row_second_col is not None else 0.0
+            row_top3 = [
+                {
+                    "placeholder": placeholders[top_col],
+                    "score": round(float(score_matrix[row_pos, top_col]), 3),
+                }
+                for top_col in ranked_cols[:3]
+            ]
             state = identity_state[placeholder]
             state['name_refs'].append(row_feature['name_binary'])
+            state['blob_refs'].append(row_feature['combined_blob'])
             state['character_votes'].append(row_feature['character_index'])
             state['ocr_history'].append({'ocr_name': row_feature['ocr_name'], 'assignment_score': combined_score})
             row_assignments[row_index] = {
                 'placeholder': placeholder,
                 'assigned_name': placeholder,
                 'combined_score': round(float(combined_score), 3),
+                'blob_score': round(float(blob_score), 3),
                 'name_score': round(float(name_score), 3),
                 'character_score': round(float(character_score), 3),
             }
@@ -761,8 +1020,17 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
                 'Placeholder': placeholder,
                 'AssignedName': placeholder,
                 'CombinedScore': round(float(combined_score), 3),
+                'BlobScore': round(float(blob_score), 3),
                 'NameScore': round(float(name_score), 3),
                 'CharacterScore': round(float(character_score), 3),
+                'LinkMode': 'ultra_blob_first' if blob_first_mode else 'name_character',
+                'AssignmentMethod': 'max_assignment',
+                'RowBestPlaceholder': placeholders[row_best_col],
+                'RowBestScore': round(row_best_score, 3),
+                'RowSecondPlaceholder': placeholders[row_second_col] if row_second_col is not None else '',
+                'RowSecondScore': round(row_second_score, 3) if row_second_col is not None else '',
+                'RowScoreMargin': round(row_best_score - row_second_score, 3) if row_second_col is not None else '',
+                'RowTop3': json.dumps(row_top3, ensure_ascii=True),
             })
 
     resolution_by_placeholder = _resolve_placeholder_names(identity_state)
@@ -797,5 +1065,7 @@ def apply_low_res_identity_pipeline(race_class_df: pd.DataFrame, frames_folder: 
             for placeholder in sorted(resolution_by_placeholder.keys(), key=_placeholder_sort_key)
         ]
         _write_debug_outputs(Path(debug_dir), race_class, debug_assignment_rows, resolution_rows)
+        _write_identity_link_grid(race_class, group, row_assignments, race_ids, placeholders, frames_folder)
+        _write_identity_points_audit(race_class, group, row_assignments, race_ids, placeholders, resolution_by_placeholder)
 
     return group

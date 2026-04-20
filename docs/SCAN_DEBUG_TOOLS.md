@@ -14,6 +14,7 @@ This document describes the scan/debug tools currently in `tools/` for candidate
   - Purpose: debug **per-race detail selection** after candidate detection.
   - Modes: `RaceScore Detail`, `Transition Scan`, `TotalScore Scan`.
   - Shows: clickable summary frames, production-step playback, live ROI overlays, trigger progress, stable-run counters, expected/max player diagnostics.
+  - Transition diagnostics: `p5` display now mirrors production debounce/fallback state (fixed confirm-hit target, FPS-scaled false-gap, fallback keep-alive details).
   - Use when: transition frame, points-anchor frame, or total-anchor frame are wrong.
 
 ## Supporting CLI Probes (Keep)

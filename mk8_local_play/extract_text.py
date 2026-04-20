@@ -711,6 +711,11 @@ class ProgressPrinter:
         self.last_print_time = 0.0
         self.start_time = time.perf_counter()
         self.last_completion_time = self.start_time
+        self.sample_count = 0
+        self.cpu_percent_sum = 0.0
+        self.ram_percent_sum = 0.0
+        self.gpu_percent_sum = 0.0
+        self.gpu_sample_count = 0
         self.phase_peak = {
             "cpu_percent": None,
             "ram_used_gb": None,
@@ -724,12 +729,15 @@ class ProgressPrinter:
         cpu_text = f"{float(snapshot.cpu_percent):.0f}%" if snapshot.cpu_percent is not None else "-"
         ram_text = "-"
         if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
-            ram_text = f"{snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB"
+            ram_percent = (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0 if float(snapshot.ram_total_gb) > 0 else 0.0
+            ram_text = f"{ram_percent:.0f}%"
+        gpu_text = f"{float(snapshot.gpu_percent):.0f}%" if snapshot.gpu_percent is not None else "-"
         fields = [
             f"Done {done_text}",
             f"Comp {percent_text}",
             f"CPU {cpu_text:>4}",
-            f"RAM {ram_text}",
+            f"RAM {ram_text:>4}",
+            f"GPU {gpu_text:>4}",
         ]
         if detail:
             fields.append(detail)
@@ -778,6 +786,14 @@ class ProgressPrinter:
         self.last_print_time = now
 
     def _update_phase_peak(self, snapshot) -> None:
+        self.sample_count += 1
+        if snapshot.cpu_percent is not None:
+            self.cpu_percent_sum += float(snapshot.cpu_percent)
+        if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None and float(snapshot.ram_total_gb) > 0:
+            self.ram_percent_sum += (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0
+        if snapshot.gpu_percent is not None:
+            self.gpu_percent_sum += float(snapshot.gpu_percent)
+            self.gpu_sample_count += 1
         for field in ("cpu_percent", "ram_used_gb", "gpu_percent", "vram_used_gb"):
             current = getattr(snapshot, field)
             peak_value = self.phase_peak[field]
@@ -790,10 +806,17 @@ class ProgressPrinter:
 
     def peak_lines(self) -> list[str]:
         lines = []
+        if self.sample_count > 0 and self.cpu_percent_sum > 0:
+            lines.append(f"Avg CPU: {self.cpu_percent_sum / self.sample_count:.0f}%")
+        if self.sample_count > 0 and self.ram_percent_sum > 0:
+            lines.append(f"Avg RAM: {self.ram_percent_sum / self.sample_count:.0f}%")
+        if self.gpu_sample_count > 0:
+            lines.append(f"Avg GPU: {self.gpu_percent_sum / self.gpu_sample_count:.0f}%")
         if self.phase_peak["cpu_percent"] is not None:
             lines.append(f"Peak CPU: {self.phase_peak['cpu_percent']:.0f}%")
         if self.phase_peak["ram_used_gb"] is not None and self.phase_peak["ram_total_gb"] is not None:
-            lines.append(f"Peak RAM: {self.phase_peak['ram_used_gb']:.1f} / {self.phase_peak['ram_total_gb']:.1f} GB")
+            ram_percent = (float(self.phase_peak["ram_used_gb"]) / float(self.phase_peak["ram_total_gb"])) * 100.0 if float(self.phase_peak["ram_total_gb"]) > 0 else 0.0
+            lines.append(f"Peak RAM: {ram_percent:.0f}%")
         if self.phase_peak["gpu_percent"] is not None:
             lines.append(f"Peak GPU: {self.phase_peak['gpu_percent']:.0f}%")
         if self.phase_peak["vram_used_gb"] is not None and self.phase_peak["vram_total_gb"] is not None:

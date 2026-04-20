@@ -244,6 +244,12 @@ def _write_total_score_trace_row(trace_writer, video_label, video_source_path, f
             _timecode_or_empty(actual_total_score_frame, fps),
             _frame_delta_text(actual_total_score_frame, total_score_frame),
             int(result.get("total_score_visible_players") or 0) if result.get("total_score_visible_players") is not None else "",
+            int(trace.get("raw_points_anchor_estimate") or 0) if trace.get("raw_points_anchor_estimate") is not None else "",
+            int(trace.get("expected_total_players") or 0) if trace.get("expected_total_players") is not None else "",
+            int(trace.get("cap_source_frame") or 0) if trace.get("cap_source_frame") is not None else "",
+            int(trace.get("cap_source_visible_rows") or 0) if trace.get("cap_source_visible_rows") is not None else "",
+            str(trace.get("cap_source_label") or ""),
+            1 if bool(trace.get("cap_fallback_used")) else 0,
             1 if bool(trace.get("total_score_used_fallback")) else 0,
             1 if bool(trace.get("ignored_candidate")) else 0,
             str(trace.get("ignore_label") or ""),
@@ -283,7 +289,9 @@ class ProgressPrinter:
         }
         self.sample_count = 0
         self.cpu_percent_sum = 0.0
-        self.ram_used_gb_sum = 0.0
+        self.ram_percent_sum = 0.0
+        self.gpu_percent_sum = 0.0
+        self.gpu_sample_count = 0
 
     def _format_status_line(self, percent_text: str, completed_text: str, snapshot, detail: str = "") -> str:
         fields = [f"Comp {percent_text}", f"Done {completed_text}"]
@@ -291,8 +299,10 @@ class ProgressPrinter:
             cpu_text = f"{float(snapshot.cpu_percent):.0f}%" if snapshot.cpu_percent is not None else "-"
             ram_text = "-"
             if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None:
-                ram_text = f"{snapshot.ram_used_gb:.1f}/{snapshot.ram_total_gb:.1f} GB"
-            fields.extend([f"CPU {cpu_text:>4}", f"RAM {ram_text}"])
+                ram_percent = (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0 if float(snapshot.ram_total_gb) > 0 else 0.0
+                ram_text = f"{ram_percent:.0f}%"
+            gpu_text = f"{float(snapshot.gpu_percent):.0f}%" if snapshot.gpu_percent is not None else "-"
+            fields.extend([f"CPU {cpu_text:>4}", f"RAM {ram_text:>4}", f"GPU {gpu_text:>4}"])
         if detail:
             fields.append(detail)
         return " | ".join(fields)
@@ -335,8 +345,11 @@ class ProgressPrinter:
         self.sample_count += 1
         if snapshot.cpu_percent is not None:
             self.cpu_percent_sum += float(snapshot.cpu_percent)
-        if snapshot.ram_used_gb is not None:
-            self.ram_used_gb_sum += float(snapshot.ram_used_gb)
+        if snapshot.ram_used_gb is not None and snapshot.ram_total_gb is not None and float(snapshot.ram_total_gb) > 0:
+            self.ram_percent_sum += (float(snapshot.ram_used_gb) / float(snapshot.ram_total_gb)) * 100.0
+        if snapshot.gpu_percent is not None:
+            self.gpu_percent_sum += float(snapshot.gpu_percent)
+            self.gpu_sample_count += 1
         for field in ("cpu_percent", "ram_used_gb", "gpu_percent", "vram_used_gb"):
             current = getattr(snapshot, field)
             peak_value = self.phase_peak[field]
@@ -351,14 +364,15 @@ class ProgressPrinter:
         lines = []
         if self.sample_count > 0 and self.cpu_percent_sum > 0:
             lines.append(f"Avg CPU: {self.cpu_percent_sum / self.sample_count:.0f}%")
-        if self.sample_count > 0 and self.ram_used_gb_sum > 0 and self.phase_peak["ram_total_gb"] is not None:
-            lines.append(
-                f"Avg RAM: {self.ram_used_gb_sum / self.sample_count:.1f} / {self.phase_peak['ram_total_gb']:.1f} GB"
-            )
+        if self.sample_count > 0 and self.ram_percent_sum > 0:
+            lines.append(f"Avg RAM: {self.ram_percent_sum / self.sample_count:.0f}%")
+        if self.gpu_sample_count > 0:
+            lines.append(f"Avg GPU: {self.gpu_percent_sum / self.gpu_sample_count:.0f}%")
         if self.phase_peak["cpu_percent"] is not None:
             lines.append(f"Peak CPU: {self.phase_peak['cpu_percent']:.0f}%")
         if self.phase_peak["ram_used_gb"] is not None and self.phase_peak["ram_total_gb"] is not None:
-            lines.append(f"Peak RAM: {self.phase_peak['ram_used_gb']:.1f} / {self.phase_peak['ram_total_gb']:.1f} GB")
+            ram_percent = (float(self.phase_peak["ram_used_gb"]) / float(self.phase_peak["ram_total_gb"])) * 100.0 if float(self.phase_peak["ram_total_gb"]) > 0 else 0.0
+            lines.append(f"Peak RAM: {ram_percent:.0f}%")
         if self.phase_peak["gpu_percent"] is not None:
             lines.append(f"Peak GPU: {self.phase_peak['gpu_percent']:.0f}%")
         if self.phase_peak["vram_used_gb"] is not None and self.phase_peak["vram_total_gb"] is not None:
@@ -1619,6 +1633,7 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
     readable_end_frame = usable_start_frame + total_frames
     sample_frames = np.linspace(usable_start_frame, max(usable_start_frame, readable_end_frame - 1), 19).astype(int)
     scales = []
+    sampled_source_height = 0
     video_name = os.path.basename(processing_video_path)
     original_source_display_name = (
         relative_video_path(Path(video_path), folder_path) if include_subfolders else os.path.basename(video_path)
@@ -1664,6 +1679,11 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
             break
         if not ret:
             continue
+        if sampled_source_height <= 0:
+            try:
+                sampled_source_height = int(frame.shape[0])
+            except Exception:
+                sampled_source_height = 0
         scale_x, scale_y, left, top, crop_width, crop_height = determine_scaling(frame)
         scales.append((scale_x, scale_y, left, top, crop_width, crop_height))
     video_io.add_timing(video_stats, "scaling_scan_s", stage_start)
@@ -1711,8 +1731,14 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
           "median_top": int(np.median([s[3] for s in scales])),
           "median_crop_width": int(np.median([s[4] for s in scales])),
           "median_crop_height": int(np.median([s[5] for s in scales])),
-          "source_height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+          "source_height": int(sampled_source_height or cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
       }
+    low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+    context["is_low_res_source"] = bool(
+        int(context.get("source_height", 0) or 0) > 0
+        and low_res_height > 0
+        and int(context.get("source_height", 0) or 0) <= low_res_height
+    )
     context["detection_segment_tasks"] = initial_scan.build_detection_segment_tasks(
         context["processing_video_path"],
         context["video_label"],
@@ -1732,6 +1758,7 @@ def _prepare_video_context(video_path, folder_path, include_subfolders, video_in
         INITIAL_SCAN_MIN_SEGMENT_FRAMES,
         INITIAL_SCAN_WINDOW_STEPS,
         INITIAL_SCAN_PROGRESS_REPORT_SECONDS,
+        context["is_low_res_source"],
     )
     return context
 
@@ -1761,6 +1788,7 @@ def _run_serial_initial_scan(context, templates, csv_writer, metadata_writer):
         "last_race_frame": 0,
         "next_race_number": 1,
         "capture": cap,
+        "is_low_res_source": bool(context.get("is_low_res_source", False)),
     }
     frame_count = usable_start_frame
     stage_start = time.perf_counter()
@@ -2412,6 +2440,12 @@ def extract_frames(
                 "Actual Total Anchor Time",
                 "Actual Total Minus Requested",
                 "Visible Players",
+                "Raw Points-Anchor Estimate",
+                "Effective Expected Players",
+                "Cap Source Frame",
+                "Cap Source Visible Rows",
+                "Cap Source Label",
+                "Cap Fallback Used",
                 "Used Total Fallback",
                 "Ignored Candidate",
                 "Ignore Label",
@@ -2520,12 +2554,16 @@ def extract_frames(
                 continue
             fps = cap.get(cv2.CAP_PROP_FPS)
             frame_skip = int(3 * max(1, int(fps)))
+            low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+            source_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            is_low_res_source = bool(source_height > 0 and low_res_height > 0 and source_height <= low_res_height)
             score_candidates = []
             runtime_state = {
                 "last_track_frame": 0,
                 "last_race_frame": 0,
                 "next_race_number": 1,
                 "capture": cap,
+                "is_low_res_source": is_low_res_source,
             }
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             nominal_processing_total_frames = total_frames
@@ -2550,6 +2588,7 @@ def extract_frames(
                 )
             sample_frames = np.linspace(0, total_frames - 1, 19).astype(int)
             scales = []
+            sampled_source_height = 0
             video_name = os.path.basename(processing_video_path)
             video_label = build_video_identity(Path(video_path), input_root=folder_path, include_subfolders=include_subfolders)
             original_source_display_name = (
@@ -2595,6 +2634,11 @@ def extract_frames(
                     break
                 if not ret:
                     continue
+                if sampled_source_height <= 0:
+                    try:
+                        sampled_source_height = int(frame.shape[0])
+                    except Exception:
+                        sampled_source_height = 0
                 scale_x, scale_y, left, top, crop_width, crop_height = determine_scaling(frame)
                 scales.append((scale_x, scale_y, left, top, crop_width, crop_height))
             video_io.add_timing(video_stats, "scaling_scan_s", stage_start)
@@ -2623,6 +2667,10 @@ def extract_frames(
             median_crop_height = int(np.median([s[5] for s in scales]))
 
             video_io.seek_to_frame(cap, 0, video_stats)
+            low_res_height = int(APP_CONFIG.low_res_max_source_height or 0)
+            source_height = int(sampled_source_height or cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            is_low_res_source = bool(source_height > 0 and low_res_height > 0 and source_height <= low_res_height)
+            runtime_state["is_low_res_source"] = bool(is_low_res_source)
             detection_segment_tasks = initial_scan.build_detection_segment_tasks(
                 processing_video_path,
                 video_label,
@@ -2642,6 +2690,7 @@ def extract_frames(
                 INITIAL_SCAN_MIN_SEGMENT_FRAMES,
                 INITIAL_SCAN_WINDOW_STEPS,
                 INITIAL_SCAN_PROGRESS_REPORT_SECONDS,
+                is_low_res_source,
             )
 
             LOGGER.log(color_video_scope(f"[Video {video_index}/{total_videos} - Scan - Phase Start]", video_index), "")

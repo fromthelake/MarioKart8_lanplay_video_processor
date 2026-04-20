@@ -37,6 +37,8 @@ INITIAL_SCAN_DIAGNOSTICS_ENABLED = os.environ.get("MK8_INITIAL_SCAN_DIAGNOSTICS"
 POSITION_SCAN_MIN_PLAYERS = max(2, int(os.environ.get("MK8_POSITION_SCAN_MIN_PLAYERS", "6")))
 POSITION_SCAN_MIN_ROW_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_ROW_COEFF", "0.4"))
 POSITION_SCAN_MIN_AVG_COEFF = float(os.environ.get("MK8_POSITION_SCAN_MIN_AVG_COEFF", "0.6"))
+LOW_RES_POSITION_SCAN_MIN_ROW_COEFF = float(os.environ.get("MK8_LOW_RES_POSITION_SCAN_MIN_ROW_COEFF", "0.35"))
+LOW_RES_POSITION_SCAN_MIN_AVG_COEFF = float(os.environ.get("MK8_LOW_RES_POSITION_SCAN_MIN_AVG_COEFF", "0.45"))
 INITIAL_SCAN_SCORE_PREFIX_ROW_START = max(1, int(os.environ.get("MK8_INITIAL_SCAN_SCORE_PREFIX_ROW_START", "2")))
 INITIAL_SCAN_GATE_ROW_START = max(1, int(os.environ.get("MK8_INITIAL_SCAN_GATE_ROW_START", "5")))
 INITIAL_SCAN_GATE_ROW_END = max(INITIAL_SCAN_GATE_ROW_START, int(os.environ.get("MK8_INITIAL_SCAN_GATE_ROW_END", "6")))
@@ -49,6 +51,18 @@ SCORE_SCAN_LOCAL_CONFIRM_RADIUS = max(0, int(os.environ.get("MK8_SCORE_SCAN_LOCA
 SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN", "0.50"))
 SCORE_SCAN_LOCAL_CONFIRM_AVG = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_AVG", "0.85"))
 SCORE_SCAN_LOCAL_CONFIRM_MIN_ROW = float(os.environ.get("MK8_SCORE_SCAN_LOCAL_CONFIRM_MIN_ROW", "0.80"))
+
+
+def _scan_thresholds(*, is_low_res_source=False):
+    if bool(is_low_res_source):
+        return {
+            "row_coeff": float(LOW_RES_POSITION_SCAN_MIN_ROW_COEFF),
+            "avg_coeff": float(LOW_RES_POSITION_SCAN_MIN_AVG_COEFF),
+        }
+    return {
+        "row_coeff": float(POSITION_SCAN_MIN_ROW_COEFF),
+        "avg_coeff": float(POSITION_SCAN_MIN_AVG_COEFF),
+    }
 
 
 INITIAL_SCAN_TARGETS = (
@@ -115,6 +129,7 @@ def _match_score_target_layouts(
     templates,
     stats,
     *,
+    is_low_res_source=False,
     return_layout_metrics=False,
     preferred_layout_ids=None,
     stats_scope="scan",
@@ -138,6 +153,9 @@ def _match_score_target_layouts(
                 *[layout for layout in layout_order if str(layout.layout_id) in preferred_set],
                 *[layout for layout in layout_order if str(layout.layout_id) not in preferred_set],
             ]
+    thresholds = _scan_thresholds(is_low_res_source=bool(is_low_res_source))
+    row_coeff_threshold = float(thresholds["row_coeff"])
+    avg_coeff_threshold = float(thresholds["avg_coeff"])
     for layout in layout_order:
         video_io.increment_counter(stats, "score_layout_evaluation_calls")
         video_io.increment_counter(stats, f"{stats_scope}_score_layout_evaluation_calls")
@@ -176,12 +194,12 @@ def _match_score_target_layouts(
             metric = position_metrics[row_number - 1]
             best_rank = int(metric.get("best_position_template", 0))
             best_score = float(metric.get("best_position_score", 0.0))
-            if best_rank != row_number or best_score < POSITION_SCAN_MIN_ROW_COEFF:
+            if best_rank != row_number or best_score < row_coeff_threshold:
                 break
             prefix_scores.append(best_score)
         prefix_average = float(sum(prefix_scores) / len(prefix_scores)) if prefix_scores else 0.0
         required_prefix_rows = max(1, POSITION_SCAN_MIN_PLAYERS - int(INITIAL_SCAN_SCORE_PREFIX_ROW_START) + 1)
-        exact_prefix_pass = len(prefix_scores) >= required_prefix_rows and prefix_average >= POSITION_SCAN_MIN_AVG_COEFF
+        exact_prefix_pass = len(prefix_scores) >= required_prefix_rows and prefix_average >= avg_coeff_threshold
         local_confirm = None
         if SCORE_SCAN_LOCAL_CONFIRM_MODE == "always":
             local_confirm = _local_offset_scan_confirm_score(bgr_image, layout.layout_id, stats)
@@ -190,7 +208,7 @@ def _match_score_target_layouts(
         elif (
             SCORE_SCAN_LOCAL_CONFIRM_MODE == "fallback"
             and len(prefix_scores) >= required_prefix_rows
-            and SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN <= prefix_average < POSITION_SCAN_MIN_AVG_COEFF
+            and SCORE_SCAN_LOCAL_CONFIRM_FALLBACK_MIN <= prefix_average < avg_coeff_threshold
         ):
             video_io.increment_counter(stats, "scan_score_local_confirm_fallback_calls")
             local_confirm = _local_offset_scan_confirm_score(bgr_image, layout.layout_id, stats)
@@ -585,6 +603,7 @@ def process_frame(frame, frame_number, video_path, video_label, video_source_pat
                     upscaled_image,
                     templates,
                     stats,
+                    is_low_res_source=bool(runtime_state.get("is_low_res_source", False)),
                     preferred_layout_ids=[score_layout_id],
                     stats_scope="scan",
                 )
@@ -712,6 +731,7 @@ def process_segment_frame(frame, frame_number, video_path, video_source_path, te
                     upscaled_image,
                     templates,
                     stats,
+                    is_low_res_source=bool(state.get("is_low_res_source", False)),
                     preferred_layout_ids=[score_layout_id],
                     stats_scope="scan",
                 )
@@ -811,6 +831,7 @@ def scan_detection_segment(task):
         "track_detections": [],
         "race_detections": [],
         "capture": local_cap,
+        "is_low_res_source": bool(task.get("is_low_res_source", False)),
     }
     debug_rows = []
 
@@ -908,7 +929,8 @@ def choose_detection_segment_count(total_frames, requested_workers, minimum_segm
 
 def build_detection_segment_tasks(video_path, video_label, video_source_path, total_frames, fps, templates, scale_x, scale_y, left, top, crop_width,
                                   crop_height, requested_workers, include_debug_rows, overlap_frames,
-                                  minimum_segment_frames, window_steps, progress_report_seconds):
+                                  minimum_segment_frames, window_steps, progress_report_seconds,
+                                  is_low_res_source=False):
     """Build overlapped scan segments but keep output ownership non-overlapping."""
     segment_count = choose_detection_segment_count(total_frames, requested_workers, minimum_segment_frames)
     if segment_count == 1:
@@ -942,6 +964,7 @@ def build_detection_segment_tasks(video_path, video_label, video_source_path, to
                 "include_debug_rows": include_debug_rows,
                 "window_steps": window_steps,
                 "progress_report_seconds": progress_report_seconds,
+                "is_low_res_source": bool(is_low_res_source),
             }
         )
     return tasks

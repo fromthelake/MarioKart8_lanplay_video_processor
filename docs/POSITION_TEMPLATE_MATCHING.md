@@ -98,7 +98,7 @@ After testing the current 10-player and 12-player reference cases, the official 
 
 The row is treated as present only when:
 
-- `Coeff >= 0.55`
+- `Coeff >= 0.50`
 
 Anything below that threshold is treated as empty.
 
